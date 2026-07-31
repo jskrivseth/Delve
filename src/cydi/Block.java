@@ -19,9 +19,12 @@ import java.nio.FloatBuffer;
  */
 public class Block implements Serializable {
 
-    /** Supplies block solidity in chunk-local coordinates, crossing chunk borders. */
+    /** Supplies block solidity and light in chunk-local coordinates. */
     public interface SolidityLookup {
         boolean isSolid(int x, int y, int z);
+
+        /** Sky light level 0..MAX_LIGHT at a chunk-local voxel. */
+        int lightAt(int x, int y, int z);
     }
 
     public static float size = 0.5f;
@@ -125,6 +128,25 @@ public class Block implements Serializable {
         return type == WATER;
     }
 
+    /** Whether sky light passes through this block at all. */
+    public static boolean transmitsLight(int type) {
+        return type == AIR || type == WATER || type == LEAVES || type == GLASS;
+    }
+
+    /**
+     * Light levels consumed passing through a block. Water and foliage dim what
+     * travels through them; air and glass are free.
+     */
+    public static int lightCost(int type) {
+        if (type == WATER) {
+            return 3;
+        }
+        if (type == LEAVES) {
+            return 2;
+        }
+        return 1;
+    }
+
     /** Tiles per atlas row/column. */
     private static final float ATLAS_TILES = 16.0f;
     /**
@@ -135,8 +157,8 @@ public class Block implements Serializable {
 
     /** Vertices emitted per exposed face (2 triangles). */
     public static final int VERTS_PER_FACE = 6;
-    /** position(3) + normal(3) + color+ao(4) + texcoord(2) */
-    public static final int FLOATS_PER_VERTEX = 12;
+    /** position(3) + normal(3) + color+ao(4) + texcoord(2) + skylight(1) */
+    public static final int FLOATS_PER_VERTEX = 13;
     public static final int FLOATS_PER_FACE = VERTS_PER_FACE * FLOATS_PER_VERTEX;
 
     /** Face normals, ordered 0=+z 1=+x 2=+y 3=-x 4=-y 5=-z. */
@@ -283,6 +305,10 @@ public class Block implements Serializable {
             int[] n = FACE_NORMALS[f];
             float[][] corners = FACE_CORNERS[f];
 
+            // Light is sampled from the open voxel this face looks into, which is
+            // what makes a face inside a tunnel darker than one at the entrance.
+            float light = solid.lightAt(x + n[0], y + n[1], z + n[2]) / 15.0f;
+
             // The two axes lying in the face plane.
             int nAxis = (n[0] != 0) ? 0 : (n[1] != 0) ? 1 : 2;
             int t1 = (nAxis + 1) % 3;
@@ -294,12 +320,12 @@ public class Block implements Serializable {
             float ao3 = cornerAo(solid, corners[3], n, t1, t2, x, y, z) * shade;
 
             // Two triangles over the four corners: 0-1-2, 2-3-0.
-            putVertex(buffer, corners[0], n, x, y, z, r, g, b, ao0, u0, u1, v0, v1);
-            putVertex(buffer, corners[1], n, x, y, z, r, g, b, ao1, u0, u1, v0, v1);
-            putVertex(buffer, corners[2], n, x, y, z, r, g, b, ao2, u0, u1, v0, v1);
-            putVertex(buffer, corners[2], n, x, y, z, r, g, b, ao2, u0, u1, v0, v1);
-            putVertex(buffer, corners[3], n, x, y, z, r, g, b, ao3, u0, u1, v0, v1);
-            putVertex(buffer, corners[0], n, x, y, z, r, g, b, ao0, u0, u1, v0, v1);
+            putVertex(buffer, corners[0], n, x, y, z, r, g, b, ao0, u0, u1, v0, v1, light);
+            putVertex(buffer, corners[1], n, x, y, z, r, g, b, ao1, u0, u1, v0, v1, light);
+            putVertex(buffer, corners[2], n, x, y, z, r, g, b, ao2, u0, u1, v0, v1, light);
+            putVertex(buffer, corners[2], n, x, y, z, r, g, b, ao2, u0, u1, v0, v1, light);
+            putVertex(buffer, corners[3], n, x, y, z, r, g, b, ao3, u0, u1, v0, v1, light);
+            putVertex(buffer, corners[0], n, x, y, z, r, g, b, ao0, u0, u1, v0, v1, light);
         }
     }
 
@@ -326,7 +352,8 @@ public class Block implements Serializable {
     private static void putVertex(FloatBuffer buffer, float[] corner, int[] n,
                                   int x, int y, int z,
                                   float r, float g, float b, float ao,
-                                  float u0, float u1, float v0, float v1) {
+                                  float u0, float u1, float v0, float v1,
+                                  float light) {
         buffer.put(x + corner[0]);
         buffer.put(y + corner[1]);
         buffer.put(z + corner[2]);
@@ -341,5 +368,6 @@ public class Block implements Serializable {
         buffer.put(ao);
         buffer.put(corner[3] == 0.0f ? u0 : u1);
         buffer.put(corner[4] == 0.0f ? v0 : v1);
+        buffer.put(light);
     }
 }

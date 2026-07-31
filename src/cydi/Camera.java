@@ -52,10 +52,6 @@ public abstract class Camera {
     private static final Matrix4f viewProjection = new Matrix4f();
     private static final FrustumIntersection frustum = new FrustumIntersection();
 
-    //xLower, xUpper, yLower, yUpper, zLower, zUpper
-    public static float[] CAMERA_BOUNDS = new float[]{
-        0, (World.sizeX * WorldChunk.sizeX) - 1, 0, WorldChunk.sizeY - 1, 0, (World.sizeY * WorldChunk.sizeZ) - 1
-    };
     public static Vector3d CAMERA_POSITION;
 
     public float getYaw() {
@@ -136,9 +132,5 @@ public abstract class Camera {
 
     public void lookThrough() {
         rebuildViewMatrix();
-    }
-
-    protected void applyBounds() {
-        throw new RuntimeException("Not Implemented");
     }
 }

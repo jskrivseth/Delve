@@ -123,6 +123,10 @@ public class Window {
         setVSync(Game.OPT_VSYNC);
     }
 
+    public boolean isFullscreen() {
+        return fullscreen;
+    }
+
     public boolean shouldClose() {
         return glfwWindowShouldClose(handle);
     }

@@ -75,6 +75,12 @@
         <sourceDirectory>src</sourceDirectory>
         <resources>
             <resource><directory>resources</directory></resource>
+            <!-- Bundle the art so the packaged app finds its atlas on the
+                 classpath rather than relying on the working directory. -->
+            <resource>
+                <directory>media</directory>
+                <targetPath>media</targetPath>
+            </resource>
         </resources>
         <plugins>
             <plugin>

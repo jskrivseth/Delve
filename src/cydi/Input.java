@@ -27,6 +27,7 @@ public class Input {
         GLFW_KEY_SPACE, GLFW_KEY_G, GLFW_KEY_ESCAPE, GLFW_KEY_F, GLFW_KEY_C,
         GLFW_KEY_B, GLFW_KEY_R, GLFW_KEY_T, GLFW_KEY_F3, GLFW_KEY_F4,
         GLFW_KEY_F5, GLFW_KEY_F7, GLFW_KEY_F8, GLFW_KEY_F11,
+        GLFW_KEY_L, GLFW_KEY_P,
     };
 
     private final boolean[] previousKeys = new boolean[MAX_KEYS];
@@ -109,6 +110,16 @@ public class Input {
 
         float dt = gameTime / 1000.0f;
 
+        if (Game.MENU_OPEN) {
+            updateMenu();
+            // Discard look deltas so the camera does not spin while the cursor is
+            // free, and skip all world interaction.
+            cursorDeltaX = 0;
+            cursorDeltaY = 0;
+            handleMenuToggle();
+            return;
+        }
+
         // Mouse look
         Game.GAME_CAMERA.yaw((float) cursorDeltaX * Game.PLAYER_MOUSE_SENSITIVITY);
         Game.GAME_CAMERA.pitch((float) cursorDeltaY * Game.PLAYER_MOUSE_SENSITIVITY);
@@ -118,6 +129,33 @@ public class Input {
         handleMovement(dt);
         handleMouseButtons();
         handleToggles();
+    }
+
+    private void updateMenu() {
+        try (org.lwjgl.system.MemoryStack stack = org.lwjgl.system.MemoryStack.stackPush()) {
+            java.nio.DoubleBuffer mx = stack.mallocDouble(1);
+            java.nio.DoubleBuffer my = stack.mallocDouble(1);
+            glfwGetCursorPos(window.handle(), mx, my);
+            Game.MENU.updateHover(mx.get(0), my.get(0));
+
+            boolean left = glfwGetMouseButton(window.handle(), GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+            boolean right = glfwGetMouseButton(window.handle(), GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+            if (left && !leftMouseWasDown) {
+                Game.MENU.click(mx.get(0), my.get(0), false);
+            }
+            if (right && !rightMouseWasDown) {
+                Game.MENU.click(mx.get(0), my.get(0), true);
+            }
+            leftMouseWasDown = left;
+            rightMouseWasDown = right;
+        }
+    }
+
+    private void handleMenuToggle() {
+        if (wasPressed(GLFW_KEY_ESCAPE)) {
+            Game.setMenuOpen(false);
+            firstCursorSample = true;   // resync so the view does not jump
+        }
     }
 
     private void handleMovement(float dt) {
@@ -199,14 +237,13 @@ public class Input {
 
     private void handleToggles() {
         if (wasPressed(GLFW_KEY_ESCAPE)) {
-            window.requestClose();
+            Game.setMenuOpen(true);
         }
         if (wasPressed(GLFW_KEY_F)) {
             Game.OPT_FOG = !Game.OPT_FOG;
         }
         if (wasPressed(GLFW_KEY_C)) {
             Game.OPT_BLOCK_COLLISION = !Game.OPT_BLOCK_COLLISION;
-            java.util.Arrays.fill(Game.GAME_CAMERA.CAMERA_BOUNDS, -1);
         }
         if (wasPressed(GLFW_KEY_B)) {
             Game.OPT_DRAW_COLORED_BLOCKS = !Game.OPT_DRAW_COLORED_BLOCKS;
@@ -238,6 +275,9 @@ public class Input {
         }
         if (wasPressed(GLFW_KEY_F7)) {
             Game.FRUSTUM_CULLING = !Game.FRUSTUM_CULLING;
+        }
+        if (wasPressed(GLFW_KEY_L)) {
+            Game.OPT_FLASHLIGHT = !Game.OPT_FLASHLIGHT;
         }
         if (wasPressed(GLFW_KEY_P)) {
             Game.TIME_PAUSED = !Game.TIME_PAUSED;

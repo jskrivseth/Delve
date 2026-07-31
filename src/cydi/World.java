@@ -142,10 +142,18 @@ public class World {
     public static float getHeightAt(int x, int y) {
         float xPos = x / (float) (128.0f);
         float yPos = y / (float) (128.0f);
-        double v = PerlinNoiseGenerator.getNoise(xPos, yPos, 3, 3.25f, World.sizeY);
+        // Must match WorldChunk.generate() exactly, or the spawn height lands in
+        // the wrong place and the player starts buried.
+        double v = PerlinNoiseGenerator.getNoise(xPos, yPos, 3, 3.25f, WorldChunk.sizeY);
         v += 1.0f;
-        v = (v * (WorldChunk.sizeY / 2));
-        return (int) v;
+        int height = (int) (v * (WorldChunk.sizeY / 2.0));
+        if (height > WorldChunk.sizeY - 4) {
+            height = WorldChunk.sizeY - 4;
+        }
+        if (height < 1) {
+            height = 1;
+        }
+        return Math.max(height, WorldChunk.SEA_LEVEL);
     }
 
     public void update() {
@@ -364,11 +372,6 @@ public class World {
                         VBO_CHUNKS++;
                     }
                 }
-                if (i == currentChunkX && j == currentChunkY) {
-                    if (Game.OPT_BLOCK_COLLISION) {
-                        thisChunk.findCameraBounds(camera);
-                    }
-                }
                 thisChunk.selectedBlock = null;
             }
         }
@@ -456,6 +459,29 @@ public class World {
         int lx = Math.floorMod(worldX, WorldChunk.sizeX);
         int lz = Math.floorMod(worldZ, WorldChunk.sizeZ);
         return !Block.isTransparent(chunk.blocks[lx][y][lz]);
+    }
+
+    /**
+     * Sky light by absolute world coordinates, for light bleeding across chunk
+     * borders. Unloaded chunks report full daylight so seams do not read as dark.
+     */
+    public static int skyLightGlobal(int worldX, int y, int worldZ) {
+        if (y < 0) {
+            return 0;
+        }
+        if (y >= WorldChunk.sizeY) {
+            return WorldChunk.MAX_LIGHT;
+        }
+        WorldChunk chunk = World.getChunk(
+                Math.floorDiv(worldX, WorldChunk.sizeX),
+                Math.floorDiv(worldZ, WorldChunk.sizeZ));
+        if (chunk == null || !chunk.isGenerated) {
+            return WorldChunk.MAX_LIGHT;
+        }
+        int level = chunk.localLight(
+                Math.floorMod(worldX, WorldChunk.sizeX), y,
+                Math.floorMod(worldZ, WorldChunk.sizeZ));
+        return level < 0 ? WorldChunk.MAX_LIGHT : level;
     }
 
     //Looks at the neigher of a block on the edge of a chunk

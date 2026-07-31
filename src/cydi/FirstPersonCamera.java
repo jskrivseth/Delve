@@ -28,12 +28,6 @@ public class FirstPersonCamera extends Camera {
         velocity = new Vector3d(0, 0, 0);
         yaw = 120.0f;
         pitch = 0.0f;
-        this.CAMERA_BOUNDS[0] = -1;
-        this.CAMERA_BOUNDS[1] = -1;
-        this.CAMERA_BOUNDS[2] = 3.0f;
-        this.CAMERA_BOUNDS[3] = -1;
-        this.CAMERA_BOUNDS[4] = -1;
-        this.CAMERA_BOUNDS[5] = -1;
     }
 
 //increment the camera's current yaw rotation
@@ -181,6 +175,7 @@ public class FirstPersonCamera extends Camera {
             // for every axis of every sub-step.
             World.BLOCK_LOCK.readLock().lock();
             try {
+                unstick();
                 for (int s = 0; s < steps; s++) {
                     moveAxis(dx / steps, 0, 0);
                     moveAxis(0, 0, dz / steps);
@@ -200,6 +195,33 @@ public class FirstPersonCamera extends Camera {
         velocity.y /= (this.CAMERA_DRAG - 0.05f);
         velocity.z /= this.CAMERA_DRAG;
         positionChanged();
+    }
+
+    /**
+     * Lifts the player out of solid ground.
+     *
+     * Spawning happens before the surrounding chunks exist, and terrain can also
+     * generate around a player already standing there, so without this the player
+     * ends up sealed in and has to dig out. The caller holds the read lock.
+     */
+    private void unstick() {
+        if (!intersectsWorld()) {
+            return;
+        }
+        double startY = position.y;
+        for (int i = 0; i < WorldChunk.sizeY; i++) {
+            position.y += 1.0;
+            if (!intersectsWorld()) {
+                velocity.x = 0;
+                velocity.y = 0;
+                velocity.z = 0;
+                onGround = true;
+                return;
+            }
+        }
+        // Nowhere clear above; leave the player where they were rather than
+        // teleporting them to the sky.
+        position.y = startY;
     }
 
     private void moveAxis(double dx, double dy, double dz) {

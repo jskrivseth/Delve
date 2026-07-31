@@ -51,6 +51,18 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     public volatile boolean isModified = false;
     /** Highest occupied Y + 1, used to skip the empty air above the terrain. */
     private volatile int maxHeight = sizeY;
+
+    /** Full daylight level; light falls by one per block spread. */
+    public static final int MAX_LIGHT = 15;
+    /**
+     * Sky light per voxel, flattened as (x * sizeY + y) * sizeZ + z.
+     *
+     * A byte array rather than int[][][] because this is rebuilt on every mesh
+     * pass and touched once per voxel.
+     */
+    private volatile byte[] skyLight;
+    /** Scratch BFS queue, reused across rebuilds to avoid per-pass allocation. */
+    private transient int[] lightQueue;
     private boolean modelsSnappedToGround = false;
     /*
      * State
@@ -118,76 +130,6 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         return World.getChunk(x, y);
     }
 
-    public void findCameraBounds(Camera camera) {
-        int[] blockPosition = new int[]{
-            (int) Math.abs(Math.floor(camera.position.x - worldPosX)),
-            (int) Math.abs(Math.floor(camera.position.y - Game.OPT_CAMERA_DISTANCE_FROM_BLOCKS[1])),
-            (int) Math.abs(Math.floor(camera.position.z - worldPosY))
-        };
-
-        //Reset all bounds to "unbounded"
-        camera.CAMERA_BOUNDS[0] = 0;
-        camera.CAMERA_BOUNDS[1] = ((World.sizeX - 1) * WorldChunk.sizeX);
-        camera.CAMERA_BOUNDS[2] = 0;
-        camera.CAMERA_BOUNDS[3] = WorldChunk.sizeY - 1;
-        camera.CAMERA_BOUNDS[4] = 0;
-        camera.CAMERA_BOUNDS[5] = ((World.sizeY - 1) * WorldChunk.sizeZ);
-
-        //given the current blockPosition, see if any blocks exist immediately left, right, up, down, front, back
-
-        //If you are currently on the edge of a chunk, look to the neighbor and see if a block is in your way
-        if (blockPosition[0] == 0 && World.chunkNeighbor(2, blockPosition[0], blockPosition[1], blockPosition[2], posX, posY) != 0) {
-            camera.CAMERA_BOUNDS[0] = blockPosition[0] + worldPosX + Game.OPT_CAMERA_DISTANCE_FROM_BLOCKS[0];
-        } //Look down X-1
-        else if (blockPosition[0] > 0 && blocks[blockPosition[0] - 1][blockPosition[1]][blockPosition[2]] != 0) {
-            camera.CAMERA_BOUNDS[0] = blockPosition[0] + worldPosX + Game.OPT_CAMERA_DISTANCE_FROM_BLOCKS[0];
-        }
-
-        if (blockPosition[0] == sizeX - 1 && World.chunkNeighbor(1, blockPosition[0], blockPosition[1], blockPosition[2], posX, posY) != 0) {
-            camera.CAMERA_BOUNDS[1] = blockPosition[0] + worldPosX + 1 - Game.OPT_CAMERA_DISTANCE_FROM_BLOCKS[0];
-        } //Look up X+1
-        else if (blockPosition[0] < sizeX - 1 && blocks[blockPosition[0] + 1][blockPosition[1]][blockPosition[2]] != 0) {
-            camera.CAMERA_BOUNDS[1] = blockPosition[0] + worldPosX + 1 - Game.OPT_CAMERA_DISTANCE_FROM_BLOCKS[0];
-        }
-
-        //Look down Y-1
-        if (blockPosition[1] > 0 && blocks[blockPosition[0]][blockPosition[1] - 1][blockPosition[2]] != 0) {
-            camera.CAMERA_BOUNDS[2] = blockPosition[1] + Game.OPT_CAMERA_DISTANCE_FROM_BLOCKS[1];
-
-        } else if (blockPosition[1] < sizeY - 1) {
-            int idx = 0;
-            int foundBlock = 0;
-            while (foundBlock == 0 && idx < 5 && blockPosition[1] + idx < sizeY) {
-                foundBlock = blocks[blockPosition[0]][blockPosition[1] + idx][blockPosition[2]];
-                idx++;
-            }
-            if (foundBlock != 0) {
-                camera.CAMERA_BOUNDS[3] = blockPosition[1] + idx - Game.OPT_CAMERA_DISTANCE_FROM_BLOCKS[0] - 1.0f;
-            }
-
-        }
-
-        //If you're stuck underground.. 
-        if (camera.CAMERA_BOUNDS[3] < World.getHeightAt(blockPosition[0], blockPosition[2])) {
-            camera.CAMERA_BOUNDS[3] = -1;
-            camera.position.y = World.getHeightAt((int) Math.floor(camera.position.x), (int) Math.floor(camera.position.z)) + Game.OPT_CAMERA_DISTANCE_FROM_BLOCKS[1] + Block.size;
-        }
-
-        if (blockPosition[2] == 0 && World.chunkNeighbor(3, blockPosition[0], blockPosition[1], blockPosition[2], posX, posY) != 0) {
-            camera.CAMERA_BOUNDS[4] = blockPosition[2] + worldPosY + Game.OPT_CAMERA_DISTANCE_FROM_BLOCKS[2];
-        } //Look down Z-1
-        else if (blockPosition[2] > 0 && blocks[blockPosition[0]][blockPosition[1]][blockPosition[2] - 1] != 0) {
-            camera.CAMERA_BOUNDS[4] = blockPosition[2] + worldPosY + Game.OPT_CAMERA_DISTANCE_FROM_BLOCKS[2];
-        }
-
-        if (blockPosition[2] == sizeZ - 1 && World.chunkNeighbor(4, blockPosition[0], blockPosition[1], blockPosition[2], posX, posY) != 0) {
-            camera.CAMERA_BOUNDS[5] = blockPosition[2] + worldPosY + 1 - Game.OPT_CAMERA_DISTANCE_FROM_BLOCKS[2];
-        } //Look up Z+1
-        else if (blockPosition[2] < sizeZ - 1 && blocks[blockPosition[0]][blockPosition[1]][blockPosition[2] + 1] != 0) {
-            camera.CAMERA_BOUNDS[5] = blockPosition[2] + worldPosY + 1 - Game.OPT_CAMERA_DISTANCE_FROM_BLOCKS[2];
-        }
-
-    }
 
     public void generate() {
         if (this.isGenerating) {
@@ -320,6 +262,137 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         return World.isSolidGlobal(worldPosX + x, y, worldPosY + z);
     }
 
+    private static int lightIndex(int x, int y, int z) {
+        return (x * sizeY + y) * sizeZ + z;
+    }
+
+    /** Sky light at a chunk-local voxel, crossing into neighbours when needed. */
+    @Override
+    public int lightAt(int x, int y, int z) {
+        if (y < 0) {
+            return 0;
+        }
+        if (y >= sizeY) {
+            return MAX_LIGHT;
+        }
+        if (x >= 0 && x < sizeX && z >= 0 && z < sizeZ) {
+            byte[] light = this.skyLight;
+            return light == null ? MAX_LIGHT : light[lightIndex(x, y, z)];
+        }
+        return World.skyLightGlobal(worldPosX + x, y, worldPosY + z);
+    }
+
+    /** Raw local sky light, with no neighbour lookup. Returns -1 when unlit. */
+    int localLight(int x, int y, int z) {
+        byte[] light = this.skyLight;
+        if (light == null || y < 0 || y >= sizeY || x < 0 || x >= sizeX || z < 0 || z >= sizeZ) {
+            return -1;
+        }
+        return light[lightIndex(x, y, z)];
+    }
+
+    /**
+     * Floods sky light through the chunk.
+     *
+     * Columns open to the sky start at full strength and carry it straight down
+     * unattenuated; light then spreads outward losing one level per block, which
+     * is what makes a tunnel fall off with depth. Borders are seeded from already
+     * lit neighbours so light bleeds between chunks.
+     */
+    private void computeSkyLight() {
+        byte[] light = this.skyLight;
+        if (light == null) {
+            light = new byte[sizeX * sizeY * sizeZ];
+            this.skyLight = light;
+        } else {
+            java.util.Arrays.fill(light, (byte) 0);
+        }
+        if (lightQueue == null) {
+            lightQueue = new int[sizeX * sizeY * sizeZ];
+        }
+
+        int head = 0, tail = 0;
+
+        // Seed straight down from open sky.
+        for (int x = 0; x < sizeX; x++) {
+            for (int z = 0; z < sizeZ; z++) {
+                for (int y = sizeY - 1; y >= 0; y--) {
+                    if (!Block.transmitsLight(blocks[x][y][z])) {
+                        break;
+                    }
+                    light[lightIndex(x, y, z)] = (byte) MAX_LIGHT;
+                    lightQueue[tail++] = (x << 11) | (y << 4) | z;
+                }
+            }
+        }
+
+        // Seed the four borders from neighbouring chunks that are already lit.
+        for (int y = 0; y < sizeY; y++) {
+            for (int x = 0; x < sizeX; x++) {
+                tail = seedBorder(light, tail, x, y, 0, worldPosX + x, y, worldPosY - 1);
+                tail = seedBorder(light, tail, x, y, sizeZ - 1, worldPosX + x, y, worldPosY + sizeZ);
+            }
+            for (int z = 0; z < sizeZ; z++) {
+                tail = seedBorder(light, tail, 0, y, z, worldPosX - 1, y, worldPosY + z);
+                tail = seedBorder(light, tail, sizeX - 1, y, z, worldPosX + sizeX, y, worldPosY + z);
+            }
+        }
+
+        while (head < tail) {
+            int packed = lightQueue[head++];
+            int x = (packed >> 11) & 0x1F;
+            int y = (packed >> 4) & 0x7F;
+            int z = packed & 0xF;
+            int level = light[lightIndex(x, y, z)];
+            if (level <= 1) {
+                continue;
+            }
+            tail = spread(light, tail, x + 1, y, z, level);
+            tail = spread(light, tail, x - 1, y, z, level);
+            tail = spread(light, tail, x, y + 1, z, level);
+            tail = spread(light, tail, x, y - 1, z, level);
+            tail = spread(light, tail, x, y, z + 1, level);
+            tail = spread(light, tail, x, y, z - 1, level);
+
+            if (tail >= lightQueue.length - 8) {
+                break;  // saturated; remaining spread would be negligible
+            }
+        }
+    }
+
+    private int seedBorder(byte[] light, int tail, int x, int y, int z,
+                           int worldX, int worldY, int worldZ) {
+        if (!Block.transmitsLight(blocks[x][y][z])) {
+            return tail;
+        }
+        int neighbor = World.skyLightGlobal(worldX, worldY, worldZ);
+        int level = neighbor - 1;
+        int idx = lightIndex(x, y, z);
+        if (level > light[idx]) {
+            light[idx] = (byte) level;
+            lightQueue[tail++] = (x << 11) | (y << 4) | z;
+        }
+        return tail;
+    }
+
+    private int spread(byte[] light, int tail, int x, int y, int z, int level) {
+        if (x < 0 || x >= sizeX || y < 0 || y >= sizeY || z < 0 || z >= sizeZ) {
+            return tail;
+        }
+        if (!Block.transmitsLight(blocks[x][y][z])) {
+            return tail;
+        }
+        int idx = lightIndex(x, y, z);
+        int next = level - Block.lightCost(blocks[x][y][z]);
+        if (next > light[idx]) {
+            light[idx] = (byte) next;
+            if (tail < lightQueue.length) {
+                lightQueue[tail++] = (x << 11) | (y << 4) | z;
+            }
+        }
+        return tail;
+    }
+
     public boolean isReady() {
         return (this.vboVertexHandle != 0 || this.vboIsStale);
     }
@@ -350,6 +423,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         // editing blocks, so both passes run under the shared read lock.
         World.BLOCK_LOCK.readLock().lock();
         try {
+            computeSkyLight();
             int ceiling = Math.min(this.maxHeight, sizeY);
 
             // Pass 1: count exposed faces so the chunk buffer can be sized exactly.

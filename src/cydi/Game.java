@@ -38,6 +38,11 @@ public class Game {
     static World GAME_WORLD;
     static GUI GUI;
     static Input INPUT;
+    static Menu MENU;
+    /** The running game, so menu actions can reach instance methods. */
+    static Game INSTANCE;
+    /** When true the settings overlay is up and world input is suspended. */
+    public static boolean MENU_OPEN = false;
     public static boolean GAME_FLYMODE = false;
     public static boolean FRUSTUM_CULLING = true;
     public static boolean FIND_SELECTED_BLOCK = true;
@@ -69,6 +74,11 @@ public class Game {
     public static int OPT_MAX_DRAW_DISTANCE = Math.max(4, (int) Util.logb(Util.getAvailableMemory() / 104857600.0, 1.10));
     public static boolean OPT_VSYNC = true;
     public static int OPT_CHUNK_SERIALIZE_RADIUS_MULTIPLIER = 1;
+    public static boolean OPT_AMBIENT_OCCLUSION = true;
+    public static boolean OPT_ANTIALIASING = true;
+    public static boolean OPT_FLASHLIGHT = false;
+    /** Light floor for fully enclosed spaces, so caves stay navigable. */
+    public static float OPT_CAVE_MINIMUM_LIGHT = 0.09f;
 
     /*
      * Debug
@@ -76,9 +86,17 @@ public class Game {
     public static boolean DEBUG_DRAW_CAMERA_RAY = false;
     /** 0 and 1 are midnight, 0.25 sunrise, 0.5 noon, 0.75 sunset. */
     public static volatile float TIME_OF_DAY = 0.30f;
-    /** Real seconds for one full day. */
-    public static float DAY_LENGTH_SECONDS = 480f;
+    /** Selectable day lengths in real seconds. */
+    public static final float[] DAY_LENGTH_PRESETS = {60f, 300f, 600f, 900f, 1800f, 3600f};
+    public static final String[] DAY_LENGTH_LABELS = {"1 min", "5 min", "10 min", "15 min", "30 min", "60 min"};
+    public static int DAY_LENGTH_INDEX = 3;
     public static boolean TIME_PAUSED = false;
+    /** Whole days elapsed, which advances the moon phase. */
+    public static int DAY_COUNT = 0;
+
+    public static float dayLengthSeconds() {
+        return DAY_LENGTH_PRESETS[DAY_LENGTH_INDEX];
+    }
     /*
      * Stats
      */
@@ -103,6 +121,7 @@ public class Game {
     private final float[] crosshairVerts = new float[12];
 
     public Game() {
+        INSTANCE = this;
         GAME_WORLD = new World(PLAYER_START_POSITION);
         GAME_CAMERA = GAME_WORLD.camera;
     }
@@ -115,11 +134,13 @@ public class Game {
 
         Renderer.init();
         Renderer.setWireframe(OPT_DRAW_WIRES);
+        TextRenderer.init();
 
         GAME_WORLD.loadModels();
         GAME_WORLD.loadTextures();
         GUI = new GUI();
         INPUT = new Input(this, WINDOW);
+        MENU = new Menu(this);
 
         setupPerspective();
         updateCrosshair();
@@ -172,13 +193,19 @@ public class Game {
         FACE_COUNT = 0;
         BLOCK_COUNT = 0;
         if (!TIME_PAUSED) {
-            TIME_OF_DAY = (TIME_OF_DAY + (gameTime / 1000.0f) / DAY_LENGTH_SECONDS) % 1.0f;
+            float advanced = TIME_OF_DAY + (gameTime / 1000.0f) / dayLengthSeconds();
+            if (advanced >= 1.0f) {
+                DAY_COUNT += (int) advanced;
+            }
+            TIME_OF_DAY = advanced % 1.0f;
         }
-        Renderer.updateSky(TIME_OF_DAY);
+        Renderer.updateSky(TIME_OF_DAY, DAY_COUNT);
         INPUT.update(gameTime);
         updateFPS();
-        GAME_CAMERA.update();
-        GAME_WORLD.update();
+        if (!MENU_OPEN) {
+            GAME_CAMERA.update();
+            GAME_WORLD.update();
+        }
     }
 
     public void switchMode() {
@@ -188,6 +215,14 @@ public class Game {
         updateCrosshair();
     }
 
+    /** Opens or closes the settings overlay, releasing the cursor while open. */
+    public static void setMenuOpen(boolean open) {
+        MENU_OPEN = open;
+        if (WINDOW != null) {
+            WINDOW.setCursorGrabbed(!open);
+        }
+    }
+
     private void render() {
         Renderer.clear();
 
@@ -195,10 +230,16 @@ public class Game {
         Renderer.view().set(Camera.getViewMatrix());
         Renderer.projection().set(Camera.getProjectionMatrix());
 
+        Renderer.drawCelestialBodies();
+
         GAME_WORLD.render();
 
         GUI.render();
         drawCrosshairs();
+
+        if (MENU_OPEN) {
+            MENU.render();
+        }
     }
 
     /** Builds a crosshair in normalized device coordinates, corrected for aspect. */
@@ -233,7 +274,8 @@ public class Game {
                   [ / ]        rewind / advance time    P pause time
                   F4/F5        draw distance -/+   F7 frustum culling
                   F8           vsync               F11 fullscreen
-                  Esc          quit
+                  Esc          settings menu
+                  L            flashlight
                 """);
     }
 
