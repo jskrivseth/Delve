@@ -61,15 +61,21 @@ void main() {
     float away = pow(max(-dot(dir, toSun), 0.0), 1.5);
     twilight += vec3(0.30, 0.28, 0.45) * away * midBand * 0.35;
 
-    vec3 color = base + twilight * duskFactor;
+    // Everything below the horizon is looking at the ground. Without this the
+    // glow mirrors under the horizon and the sun appears to shine through the
+    // earth once it has set.
+    float aboveHorizon = smoothstep(-0.06, 0.03, dir.y);
+
+    vec3 color = base + twilight * duskFactor * aboveHorizon;
 
     // A soft bloom right around the sun's disc, tinted by how low it sits.
     vec3 haloTint = mix(vec3(1.0, 0.96, 0.85), vec3(1.0, 0.55, 0.25), duskFactor);
-    color += haloTint * pow(sunAmount, 48.0) * (0.35 + 0.45 * dayFactor);
+    color += haloTint * pow(sunAmount, 48.0) * (0.35 + 0.45 * dayFactor) * aboveHorizon;
 
-    // Ground haze so the horizon does not cut hard against terrain.
-    float below = clamp(-dir.y * 3.0, 0.0, 1.0);
-    color = mix(color, color * 0.72, below);
+    // Ground haze below the horizon, so the sky does not cut hard against
+    // terrain and no light leaks from under the world.
+    float below = clamp(-dir.y * 4.0, 0.0, 1.0);
+    color = mix(color, base * 0.55, below);
 
     outColor = vec4(color, 1.0);
 }

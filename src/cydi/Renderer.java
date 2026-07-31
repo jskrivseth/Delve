@@ -379,8 +379,8 @@ public class Renderer {
         float dirY = useSun ? -sunDirY : -moonDirY;
         float dirZ = useSun ? -sunDirZ : -moonDirZ;
 
-        if (dirY <= 0.02f) {
-            return false;   // below the horizon, no shafts
+        if (dirY <= 0.01f) {
+            return false;   // below the horizon, so the earth blocks the shafts
         }
 
         // Project the light onto the screen using a rotation-only view, since it
@@ -659,8 +659,10 @@ public class Renderer {
         glDisable(GL_CULL_FACE);
         glBindVertexArray(skyVao);
 
-        // Sun: visible whenever it is above the horizon.
-        float sunVisible = clamp01((-sunDirY + 0.12f) * 4.0f);
+        // Sun: cut off at the horizon so it does not hang below it. The fade is
+        // narrow, since a body visibly below the horizon should be occluded by
+        // the earth rather than drawn against the ground.
+        float sunVisible = clamp01((-sunDirY + 0.01f) * 22.0f);
         if (sunVisible > 0.001f) {
             skyShader.setVector3f("bodyDirection", -sunDirX, -sunDirY, -sunDirZ);
             // The quad is much larger than the disc so the glow and rays have
@@ -679,7 +681,7 @@ public class Renderer {
 
         // Moon: shown whenever it is above the horizon. The two orbits differ,
         // so a daylit moon is expected rather than something to suppress.
-        float moonVisible = clamp01((-moonDirY + 0.12f) * 4.0f);
+        float moonVisible = clamp01((-moonDirY + 0.01f) * 22.0f);
         if (moonVisible > 0.001f) {
             // Fade it back in daylight so it reads as a pale daytime moon.
             float daylight = smoothstep(-0.05f, 0.30f, sunElevation);
