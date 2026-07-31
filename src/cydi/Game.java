@@ -21,7 +21,7 @@ public class Game {
     public static int APP_SCREEN_WIDTH = 1280;
     public static int APP_SCREEN_HEIGHT = 720;
     private boolean APP_FULLSCREEN = false;
-    private static final String APP_WINDOW_TITLE = "CYDI Game";
+    private static final String APP_WINDOW_TITLE = "Delve";
     public static Window WINDOW;
     /*
      * Player preferences
@@ -219,7 +219,7 @@ public class Game {
 
     private static void printControls() {
         System.out.println("""
-                === CYDI controls ===
+                === Delve controls ===
                   W/A/S/D      move
                   Mouse        look
                   Space        jump  (double-tap = toggle fly)
