@@ -93,8 +93,13 @@ public class SaveGame {
         SaveGame save = new SaveGame(name);
         File file = save.metadataFile();
         if (!file.isFile()) {
-            // A world directory without metadata predates seed persistence.
-            save.seed = new java.util.Random().nextLong();
+            // A world directory without metadata predates seed persistence. The
+            // seed is derived from the name rather than randomised, so the world
+            // at least regenerates the same way on every load instead of
+            // rebuilding differently around its saved chunks each time.
+            save.seed = seedFromName(name);
+            System.err.println("World '" + name + "' has no metadata; "
+                    + "using a seed derived from its name (" + save.seed + ").");
             return save;
         }
         Properties props = new Properties();
@@ -145,6 +150,15 @@ public class SaveGame {
         } catch (NumberFormatException e) {
             return fallback;
         }
+    }
+
+    /** Stable seed for worlds saved before the seed was recorded. */
+    private static long seedFromName(String name) {
+        long hash = 1469598103934665603L;
+        for (int i = 0; i < name.length(); i++) {
+            hash = (hash ^ name.charAt(i)) * 1099511628211L;
+        }
+        return hash;
     }
 
     private static double parseDouble(String value, double fallback) {

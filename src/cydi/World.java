@@ -97,17 +97,13 @@ public class World {
         BREAK_BLOCK_REQUESTED = false;
         PLACE_BLOCK_REQUESTED = false;
         WORLD_SEED = seed;
-        // The noise generator is a static singleton with no reseed hook, so the
-        // seed is applied as a coordinate offset instead. Different seeds sample
-        // a different region of the same noise field, which is equivalent here.
-        SEED_OFFSET_X = ((seed >> 16) & 0xFFFF) * 0.7351f;
-        SEED_OFFSET_Z = (seed & 0xFFFF) * 0.9173f;
+        // Reseeding the noise generator is what actually makes a seed mean
+        // something. Offsetting the sample coordinates instead cannot work,
+        // because the generator's permutation table is itself the field being
+        // sampled, and it was previously randomised on every launch.
+        PerlinNoiseGenerator.reseed(seed);
         threadPool = Executors.newFixedThreadPool(3);
     }
-
-    /** Coordinate offsets standing in for a reseed of the noise generator. */
-    public static float SEED_OFFSET_X = 0f;
-    public static float SEED_OFFSET_Z = 0f;
 
     /** Stops worker threads and releases GPU meshes for the current world. */
     public static void shutdown() {
@@ -131,13 +127,11 @@ public class World {
         Vector3f position = new Vector3f(Game.PLAYER_START_POSITION);
         camera = new FirstPersonCamera(position.x, position.y, position.z);
         subTextures = new ArrayList<ByteBuffer>();
-        WORLD_SEED = new Random(System.nanoTime()).nextLong();
     }
 
     public World(Vector3f position) {
         camera = new FirstPersonCamera(position.x, position.y, position.z);
         subTextures = new ArrayList<ByteBuffer>();
-        WORLD_SEED = new Random(System.nanoTime()).nextLong();
     }
 
     /**
@@ -187,8 +181,8 @@ public class World {
     }
 
     public static float getHeightAt(int x, int y) {
-        float xPos = x / 128.0f + SEED_OFFSET_X;
-        float yPos = y / 128.0f + SEED_OFFSET_Z;
+        double xPos = x / 128.0;
+        double yPos = y / 128.0;
         // Must match WorldChunk.generate() exactly, or the spawn height lands in
         // the wrong place and the player starts buried.
         double v = PerlinNoiseGenerator.getNoise(xPos, yPos, 3, 3.25f, WorldChunk.sizeY);
@@ -269,9 +263,12 @@ public class World {
 
             int SWEPT_CHUNKS = 0;
             synchronized (World.destroyChunks) {
-                for (int i = 0; i < Math.min(destroyChunks.size(), World.MAX_CHUNKS_TO_SWEEP); i++) {
-
-                    WorldChunk deadChunk = destroyChunks.get(i);
+                int toSweep = Math.min(destroyChunks.size(), World.MAX_CHUNKS_TO_SWEEP);
+                for (int i = 0; i < toSweep; i++) {
+                    // Always index 0: removing by the loop counter while it
+                    // advances skips every other entry, so chunks stayed queued
+                    // for destruction indefinitely.
+                    WorldChunk deadChunk = destroyChunks.remove(0);
                     if (deadChunk != null) {
                         deadChunk.serialize();
                         deadChunk.deleteVBO();
@@ -281,7 +278,6 @@ public class World {
                     } else {
                         System.out.println("Null position came back from sweeper");
                     }
-                    destroyChunks.remove(i);
                 }
             }
 

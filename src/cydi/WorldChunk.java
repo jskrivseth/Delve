@@ -147,13 +147,22 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             return;
         }
         this.isGenerating = true;
+        try {
+            generateBlocks();
+        } finally {
+            // Cleared in a finally block because a chunk left flagged as
+            // generating is skipped by the renderer forever, leaving a
+            // permanent chunk-shaped hole in the world.
+            this.isGenerating = false;
+        }
+    }
 
+    private void generateBlocks() {
         // A previously edited chunk is restored from disk instead of being
         // regenerated, otherwise the player's changes vanish when it reloads.
         if (this.load()) {
             recomputeMaxHeight();
             this.isModified = true;
-            this.isGenerating = false;
             this.isGenerated = true;
             this.isBuilt = false;
             return;
@@ -165,8 +174,8 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         //Do a 2D perlin noise for the surface
         for (int x = 0; x < sizeX; x++) {
             for (int z = 0; z < sizeZ; z++) {
-                float xPos = (worldPosX + x) / 128.0f + World.SEED_OFFSET_X;
-                float zPos = (worldPosY + z) / 128.0f + World.SEED_OFFSET_Z;
+                double xPos = (worldPosX + x) / 128.0;
+                double zPos = (worldPosY + z) / 128.0;
                 double v = PerlinNoiseGenerator.getNoise(xPos, zPos, 3, 3.25f, sizeY);
                 v += 1.0f;
 
@@ -208,7 +217,6 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         this.blocks = data;
         this.maxHeight = Math.min(highest + 1, sizeY);
 
-        this.isGenerating = false;
         this.isGenerated = true;
         this.isBuilt = false;
     }
@@ -779,8 +787,10 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
 
     public boolean serialize() {
         // Player edits must always persist, otherwise they are lost the moment the
-        // chunk is swept and regenerated from noise.
-        if (this.isModified || Game.OPT_SAVE_CHUNKS) {
+        // chunk is swept and regenerated from noise. An ungenerated chunk is never
+        // written: its block array is still all air, and saving that would turn the
+        // chunk into a void that reloads from disk forever.
+        if (this.isGenerated && (this.isModified || Game.OPT_SAVE_CHUNKS)) {
             this.save();
         }
         this.purgeVBO = true;
@@ -799,6 +809,17 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     public boolean load() {
         int[][][] loaded = Serializer.deserializeArray(saveName());
         if (loaded == null) {
+            return false;
+        }
+        // Meshing and lighting index this array with the static chunk
+        // dimensions, so anything else throws deep inside a worker thread.
+        // Discard it and regenerate rather than let one stale file break
+        // the chunk permanently.
+        if (loaded.length != sizeX || loaded[0].length != sizeY
+                || loaded[0][0].length != sizeZ) {
+            System.err.println("Discarding chunk " + saveName() + " with unexpected size "
+                    + loaded.length + "x" + loaded[0].length + "x" + loaded[0][0].length);
+            Serializer.delete(saveName());
             return false;
         }
         this.blocks = loaded;

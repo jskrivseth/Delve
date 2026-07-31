@@ -9,6 +9,8 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.ObjectOutputStream;
 import java.io.ObjectInputStream;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 
 /**
  * Chunk persistence. Saves live under a dedicated directory so edited chunks
@@ -35,13 +37,35 @@ public class Serializer {
         return fileFor(filename).isFile();
     }
 
+    /**
+     * Removes a chunk file so the chunk regenerates from noise next time. Used
+     * to discard saves that cannot be read back.
+     */
+    public static void delete(String filename) {
+        File file = fileFor(filename);
+        if (file.isFile() && !file.delete()) {
+            System.err.println("Could not delete unreadable chunk " + filename);
+        }
+    }
+
     public static boolean serializeArray(int[][][] array, String filename) {
-        try (FileOutputStream fout = new FileOutputStream(fileFor(filename));
-             ObjectOutputStream oos = new ObjectOutputStream(fout)) {
-            oos.writeObject(array);
+        // Written to a temporary file and moved into place. Writing directly
+        // truncates the existing file first, so a crash or a concurrent reader
+        // would see a half-written chunk, and an unreadable chunk leaves a
+        // permanent hole in the world.
+        File target = fileFor(filename);
+        File temp = new File(target.getParentFile(), filename + ".tmp");
+        try {
+            try (FileOutputStream fout = new FileOutputStream(temp);
+                 ObjectOutputStream oos = new ObjectOutputStream(fout)) {
+                oos.writeObject(array);
+            }
+            Files.move(temp.toPath(), target.toPath(),
+                    StandardCopyOption.REPLACE_EXISTING);
             return true;
         } catch (Exception ex) {
             System.err.println("Failed saving chunk " + filename + ": " + ex.getMessage());
+            temp.delete();
             return false;
         }
     }
@@ -56,6 +80,7 @@ public class Serializer {
             return (int[][][]) ois.readObject();
         } catch (Exception ex) {
             System.err.println("Failed loading chunk " + filename + ": " + ex.getMessage());
+            delete(filename);
             return null;
         }
     }

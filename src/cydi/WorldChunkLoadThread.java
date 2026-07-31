@@ -20,13 +20,12 @@ public class WorldChunkLoadThread implements Runnable {
     @Override
     public void run() {
         synchronized (chunkToProcess) {
-            //setup the chunk
-
-            if (Game.OPT_SAVE_CHUNKS) {
-                chunkToProcess.load();
-            } else {
-                chunkToProcess.generate();
-            }
+            // Always go through generate(). It already restores a saved chunk
+            // when one exists and falls back to noise when it does not, and it
+            // is what marks the chunk generated. Calling load() directly left
+            // the chunk flagged ungenerated whether or not a save existed, so
+            // it was queued for loading every frame and never drawn.
+            chunkToProcess.generate();
         }
     }
 }

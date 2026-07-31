@@ -8,7 +8,15 @@ import java.util.Random;
 
 public class PerlinNoiseGenerator extends NoiseGenerator {
 
-    private static final PerlinNoiseGenerator instance = new PerlinNoiseGenerator();
+    /**
+     * Shared generator. Replaced by {@link #reseed(long)} when a world loads.
+     *
+     * This must be reseeded from the world seed rather than left at a random
+     * default: the permutation table below defines the entire noise field, so a
+     * random one means terrain regenerates differently on every launch and
+     * saved chunks no longer line up with the world around them.
+     */
+    private static volatile PerlinNoiseGenerator instance = new PerlinNoiseGenerator(0L);
 
     protected PerlinNoiseGenerator() {
         this(new Random());
@@ -16,6 +24,11 @@ public class PerlinNoiseGenerator extends NoiseGenerator {
 
     public PerlinNoiseGenerator(long seed) {
         this(new Random(seed));
+    }
+
+    /** Rebuilds the shared generator so a given seed always yields one world. */
+    public static void reseed(long seed) {
+        instance = new PerlinNoiseGenerator(seed);
     }
 
     public PerlinNoiseGenerator(Random rand) {
