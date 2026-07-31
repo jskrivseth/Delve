@@ -206,13 +206,17 @@ public class World {
     }
 
     private void pickSelectedBlock() {
-        if (Game.FIND_SELECTED_BLOCK) {
-            Block selectedBlock = BlockFinder.pickSelectedBlock();
-            if (selectedBlock != null) {
-                BlockFinder.setSelectedBlock(selectedBlock.x, selectedBlock.y, selectedBlock.z);
-                handleSelectedBlock(selectedBlock);
-            }
+        if (!Game.FIND_SELECTED_BLOCK) {
+            return;
         }
+        BlockFinder.RayHit hit = BlockFinder.pickTargetedBlock();
+        if (hit != null) {
+            BlockFinder.setSelectedBlock(hit.x, hit.y, hit.z);
+        }
+        // Called even with nothing targeted, so a click at open sky clears the
+        // request. It used to stay pending and fire at whatever the player
+        // looked at next.
+        handleSelectedBlock(hit);
     }
 
     /**
@@ -220,25 +224,24 @@ public class World {
      * Input is captured on the main loop via GLFW and surfaced here as flags rather
      * than the old LWJGL 2 Mouse event queue.
      */
-    private void handleSelectedBlock(Block selectedBlock) {
-        if (selectedBlock == null) {
+    private void handleSelectedBlock(BlockFinder.RayHit hit) {
+        if (hit == null) {
             BREAK_BLOCK_REQUESTED = false;
             PLACE_BLOCK_REQUESTED = false;
             return;
         }
         if (PLACE_BLOCK_REQUESTED) {
             PLACE_BLOCK_REQUESTED = false;
-            int[] cell = BlockFinder.pickPlacementCell();
-            if (cell != null && !wouldTrapPlayer(cell[0], cell[1], cell[2])) {
-                BlockFinder.setBlockType(cell[0], cell[1], cell[2], Game.SELECTED_BLOCK_TYPE);
+            if (!wouldTrapPlayer(hit.placeX, hit.placeY, hit.placeZ)) {
+                BlockFinder.setBlockType(hit.placeX, hit.placeY, hit.placeZ, Game.SELECTED_BLOCK_TYPE);
                 Game.consoleMsg("Placed " + Block.nameOf(Game.SELECTED_BLOCK_TYPE)
-                        + " at " + cell[0] + "," + cell[1] + "," + cell[2]);
+                        + " at " + hit.placeX + "," + hit.placeY + "," + hit.placeZ);
             }
         }
         if (BREAK_BLOCK_REQUESTED) {
             BREAK_BLOCK_REQUESTED = false;
-            BlockFinder.setBlockType(selectedBlock.x, selectedBlock.y, selectedBlock.z, 0);
-            Game.consoleMsg("Broke a block at " + selectedBlock.x + "," + selectedBlock.y + "," + selectedBlock.z);
+            BlockFinder.setBlockType(hit.x, hit.y, hit.z, 0);
+            Game.consoleMsg("Broke a block at " + hit.x + "," + hit.y + "," + hit.z);
         }
     }
 
