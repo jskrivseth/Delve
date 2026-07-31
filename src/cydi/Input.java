@@ -4,172 +4,256 @@
  */
 package cydi;
 
-import org.lwjgl.Sys;
-import org.lwjgl.input.Keyboard;
-import org.lwjgl.input.Mouse;
-import static org.lwjgl.opengl.GL11.*;
+import static org.lwjgl.glfw.GLFW.*;
 
 /**
+ * Input handling built on GLFW.
  *
- * @author Jesse
+ * LWJGL 3 removed org.lwjgl.input.Keyboard/Mouse, so held-key state is polled via
+ * glfwGetKey and one-shot actions are edge-detected against the previous frame's
+ * state. Mouse look uses relative cursor deltas captured from the cursor callback.
  */
 public class Input {
 
-    Game game;
-    long[] keyPressTimers = new long[10];
+    private final Game game;
+    private final Window window;
 
-    public Input(Game game) {
+    private static final int MAX_KEYS = GLFW_KEY_LAST + 1;
+    /**
+     * Keys polled for edge-triggered actions. Only these are seeded, because
+     * glfwGetKey rejects unassigned codes in the 0..GLFW_KEY_LAST range.
+     */
+    private static final int[] TRACKED_KEYS = {
+        GLFW_KEY_SPACE, GLFW_KEY_G, GLFW_KEY_ESCAPE, GLFW_KEY_F, GLFW_KEY_C,
+        GLFW_KEY_B, GLFW_KEY_R, GLFW_KEY_T, GLFW_KEY_F3, GLFW_KEY_F4,
+        GLFW_KEY_F5, GLFW_KEY_F7, GLFW_KEY_F8, GLFW_KEY_F11,
+    };
+
+    private final boolean[] previousKeys = new boolean[MAX_KEYS];
+    private boolean keyStateSeeded;
+
+    private double lastCursorX;
+    private double lastCursorY;
+    private double cursorDeltaX;
+    private double cursorDeltaY;
+    private boolean firstCursorSample = true;
+
+    private boolean leftMouseWasDown;
+    private boolean rightMouseWasDown;
+
+    private long doubleTapWindowEnd;
+
+    public Input(Game game, Window window) {
         this.game = game;
+        this.window = window;
+
+        glfwSetCursorPosCallback(window.handle(), (win, x, y) -> {
+            if (firstCursorSample) {
+                lastCursorX = x;
+                lastCursorY = y;
+                firstCursorSample = false;
+                return;
+            }
+            cursorDeltaX += x - lastCursorX;
+            cursorDeltaY += y - lastCursorY;
+            lastCursorX = x;
+            lastCursorY = y;
+        });
+
+        // Mouse wheel cycles the block the player will place.
+        glfwSetScrollCallback(window.handle(), (win, dx, dy) -> {
+            if (dy != 0) {
+                cycleBlock(dy > 0 ? 1 : -1);
+            }
+        });
+    }
+
+    private void cycleBlock(int direction) {
+        int[] types = Block.PLACEABLE_TYPES;
+        int index = 0;
+        for (int i = 0; i < types.length; i++) {
+            if (types[i] == Game.SELECTED_BLOCK_TYPE) {
+                index = i;
+                break;
+            }
+        }
+        index = Math.floorMod(index + direction, types.length);
+        Game.SELECTED_BLOCK_TYPE = types[index];
+        Game.consoleMsg("Selected " + Block.nameOf(Game.SELECTED_BLOCK_TYPE));
+    }
+
+    private boolean isDown(int key) {
+        return glfwGetKey(window.handle(), key) == GLFW_PRESS;
+    }
+
+    /** True only on the frame the key transitions from up to down. */
+    private boolean wasPressed(int key) {
+        boolean down = isDown(key);
+        boolean pressed = down && !previousKeys[key];
+        previousKeys[key] = down;
+        return pressed;
     }
 
     public void update(long gameTime) {
-        //controll camera yaw from x movement fromt the mouse
-        Game.GAME_CAMERA.yaw(Mouse.getDX() * Game.PLAYER_MOUSE_SENSITIVITY);
-        //controll camera pitch from y movement fromt the mouse
-        Game.GAME_CAMERA.pitch(-Mouse.getDY() * Game.PLAYER_MOUSE_SENSITIVITY);
-        
+        // Seed key state on the first frame. Sampling edges against an all-false
+        // array would report a spurious press for anything already held at startup.
+        if (!keyStateSeeded) {
+            for (int k : TRACKED_KEYS) {
+                previousKeys[k] = glfwGetKey(window.handle(), k) == GLFW_PRESS;
+            }
+            keyStateSeeded = true;
+            cursorDeltaX = 0;
+            cursorDeltaY = 0;
+            return;
+        }
 
-        //when passing in the distance to move
-        //we times the movementSpeed with dt this is a time scale
-        //so if its a slow frame u move more then a fast frame
-        //so on a slow computer you move just as fast as on a fast computer
-        if (Keyboard.isKeyDown(Keyboard.KEY_W))//move forward
-        {
-            Game.GAME_CAMERA.walkForward(Game.PLAYER_MOVEMENT_SPEED * Game.GAME_TIME / 1000);
+        float dt = gameTime / 1000.0f;
+
+        // Mouse look
+        Game.GAME_CAMERA.yaw((float) cursorDeltaX * Game.PLAYER_MOUSE_SENSITIVITY);
+        Game.GAME_CAMERA.pitch((float) cursorDeltaY * Game.PLAYER_MOUSE_SENSITIVITY);
+        cursorDeltaX = 0;
+        cursorDeltaY = 0;
+
+        handleMovement(dt);
+        handleMouseButtons();
+        handleToggles();
+    }
+
+    private void handleMovement(float dt) {
+        float step = Game.PLAYER_MOVEMENT_SPEED * dt;
+
+        if (isDown(GLFW_KEY_W)) {
+            Game.GAME_CAMERA.walkForward(step);
         }
-        if (Keyboard.isKeyDown(Keyboard.KEY_S))//move backwards
-        {
-            Game.GAME_CAMERA.walkBackwards(Game.PLAYER_MOVEMENT_SPEED * Game.GAME_TIME / 1000);
+        if (isDown(GLFW_KEY_S)) {
+            Game.GAME_CAMERA.walkBackwards(step);
         }
-        if (Keyboard.isKeyDown(Keyboard.KEY_A))//strafe left
-        {
-            Game.GAME_CAMERA.strafeLeft(Game.PLAYER_MOVEMENT_SPEED * Game.GAME_TIME / 1000);
+        if (isDown(GLFW_KEY_A)) {
+            Game.GAME_CAMERA.strafeLeft(step);
         }
-        if (Keyboard.isKeyDown(Keyboard.KEY_D))//strafe right
-        {
-            Game.GAME_CAMERA.strafeRight(Game.PLAYER_MOVEMENT_SPEED * Game.GAME_TIME / 1000);
+        if (isDown(GLFW_KEY_D)) {
+            Game.GAME_CAMERA.strafeRight(step);
         }
-        if (Keyboard.isKeyDown(Keyboard.KEY_LSHIFT))//strafe right
-        {
-            Game.GAME_CAMERA.fallDown(Game.PLAYER_MOVEMENT_SPEED * 2 * Game.GAME_TIME / 1000);
-            if (Game.GAME_CAMERA.onGround) {  //Collided with ground
+        if (isDown(GLFW_KEY_LEFT_SHIFT)) {
+            Game.GAME_CAMERA.fallDown(step * 2.0f);
+            if (Game.GAME_CAMERA.onGround) {
                 Game.GAME_FLYMODE = false;
                 Game.PLAYER_MOVEMENT_SPEED = 2.85f;
             }
         }
+        if (isDown(GLFW_KEY_SPACE) && Game.GAME_FLYMODE) {
+            Game.GAME_CAMERA.flyUp(step);
+        }
 
-        if (Keyboard.isKeyDown(Keyboard.KEY_EQUALS)) {
-            if (Game.PLAYER_MOVEMENT_SPEED < 100.0f) {
-                Game.PLAYER_MOVEMENT_SPEED += 0.5f * Game.GAME_TIME / 100;
+        if (isDown(GLFW_KEY_EQUAL)) {
+            Game.PLAYER_MOVEMENT_SPEED = Math.min(100.0f, Game.PLAYER_MOVEMENT_SPEED + 5.0f * dt);
+        }
+        if (isDown(GLFW_KEY_MINUS)) {
+            Game.PLAYER_MOVEMENT_SPEED = Math.max(0.0f, Game.PLAYER_MOVEMENT_SPEED - 5.0f * dt);
+        }
+
+        // Double-tap space toggles fly mode, single tap jumps.
+        if (wasPressed(GLFW_KEY_SPACE)) {
+            long now = System.currentTimeMillis();
+            if (now < doubleTapWindowEnd) {
+                setFlyMode(!Game.GAME_FLYMODE);
+                doubleTapWindowEnd = 0;
             } else {
-                Game.PLAYER_MOVEMENT_SPEED = 100.0f;
+                doubleTapWindowEnd = now + 300;
+                if (!Game.GAME_FLYMODE) {
+                    Game.GAME_CAMERA.velocity.y += Game.PLAYER_JUMP_FORCE;
+                }
             }
         }
-        if (Keyboard.isKeyDown(Keyboard.KEY_MINUS)) {
-            if (Game.PLAYER_MOVEMENT_SPEED > 0f) {
-                Game.PLAYER_MOVEMENT_SPEED -= 0.5f * Game.GAME_TIME / 100;
+
+        // Dedicated toggle, since double-tapping is easy to miss.
+        if (wasPressed(GLFW_KEY_G)) {
+            setFlyMode(!Game.GAME_FLYMODE);
+        }
+    }
+
+    private void setFlyMode(boolean enabled) {
+        if (Game.GAME_FLYMODE == enabled) {
+            return;
+        }
+        Game.GAME_FLYMODE = enabled;
+        Game.PLAYER_MOVEMENT_SPEED += enabled ? 2 : -2;
+        Game.consoleMsg("Fly mode " + (enabled ? "ON" : "OFF"));
+        System.out.println("Fly mode " + (enabled ? "ON" : "OFF"));
+    }
+
+    private void handleMouseButtons() {
+        boolean left = glfwGetMouseButton(window.handle(), GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+        boolean right = glfwGetMouseButton(window.handle(), GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+
+        if (left && !leftMouseWasDown) {
+            World.BREAK_BLOCK_REQUESTED = true;
+        }
+        if (right && !rightMouseWasDown) {
+            World.PLACE_BLOCK_REQUESTED = true;
+        }
+        leftMouseWasDown = left;
+        rightMouseWasDown = right;
+    }
+
+    private void handleToggles() {
+        if (wasPressed(GLFW_KEY_ESCAPE)) {
+            window.requestClose();
+        }
+        if (wasPressed(GLFW_KEY_F)) {
+            Game.OPT_FOG = !Game.OPT_FOG;
+        }
+        if (wasPressed(GLFW_KEY_C)) {
+            Game.OPT_BLOCK_COLLISION = !Game.OPT_BLOCK_COLLISION;
+            java.util.Arrays.fill(Game.GAME_CAMERA.CAMERA_BOUNDS, -1);
+        }
+        if (wasPressed(GLFW_KEY_B)) {
+            Game.OPT_DRAW_COLORED_BLOCKS = !Game.OPT_DRAW_COLORED_BLOCKS;
+        }
+        if (wasPressed(GLFW_KEY_R)) {
+            Game.DEBUG_DRAW_CAMERA_RAY = !Game.DEBUG_DRAW_CAMERA_RAY;
+        }
+        if (wasPressed(GLFW_KEY_T)) {
+            if (Game.OPT_USE_TEXTURES && Game.OPT_DRAW_TEXTURES) {
+                Game.OPT_DRAW_TEXTURES = false;
+            } else if (Game.OPT_USE_TEXTURES ^ Game.OPT_DRAW_TEXTURES) {
+                Game.OPT_USE_TEXTURES = !Game.OPT_USE_TEXTURES;
             } else {
-                Game.PLAYER_MOVEMENT_SPEED = 0f;
+                Game.OPT_USE_TEXTURES = true;
+                Game.OPT_DRAW_TEXTURES = true;
             }
         }
-
-        if (Keyboard.isKeyDown(Keyboard.KEY_SPACE)) {
-            if (Game.GAME_FLYMODE) {
-                Game.GAME_CAMERA.flyUp(Game.PLAYER_MOVEMENT_SPEED * Game.GAME_TIME / 1000);
-            }
-        } else if (keyPressTimers[0] > 0) {
-            keyPressTimers[0] -= 1;
+        if (wasPressed(GLFW_KEY_F3)) {
+            Game.OPT_DRAW_WIRES = !Game.OPT_DRAW_WIRES;
+            Renderer.setWireframe(Game.OPT_DRAW_WIRES);
         }
-
-        while (Keyboard.next()) {
-            if (Keyboard.getEventKeyState()) {
-
-                if (Keyboard.getEventKey() == Keyboard.KEY_SPACE) {
-
-                    if (keyPressTimers[0] > 0) {
-                        Game.GAME_FLYMODE = !Game.GAME_FLYMODE;
-                        if (Game.GAME_FLYMODE) {
-                            Game.PLAYER_MOVEMENT_SPEED += 2;
-                        } else {
-                            Game.PLAYER_MOVEMENT_SPEED -= 2;
-                        }
-                    } else {
-                        keyPressTimers[0] = Game.FRAMES_PER_SECOND / 4; //Give them 1/4 second to press the key again
-                    }
-                    if (!Game.GAME_FLYMODE) {
-                        Game.GAME_CAMERA.velocity.y += Game.PLAYER_JUMP_FORCE;
-                    }
-
-                }
-
-                if (Keyboard.getEventKey() == Keyboard.KEY_F) {
-                    boolean enabled = glIsEnabled(GL_FOG);
-                    if (enabled) {
-                        glDisable(GL_FOG);
-                    } else {
-                        this.game.setupFog();
-                    }
-                }
-
-                if (Keyboard.getEventKey() == Keyboard.KEY_C) {
-                    Game.OPT_BLOCK_COLLISION = !Game.OPT_BLOCK_COLLISION;
-                    Game.GAME_CAMERA.CAMERA_BOUNDS[0] = -1;
-                    Game.GAME_CAMERA.CAMERA_BOUNDS[1] = -1;
-                    Game.GAME_CAMERA.CAMERA_BOUNDS[2] = -1;
-                    Game.GAME_CAMERA.CAMERA_BOUNDS[3] = -1;
-                    Game.GAME_CAMERA.CAMERA_BOUNDS[4] = -1;
-                    Game.GAME_CAMERA.CAMERA_BOUNDS[5] = -1;
-                }
-
-                if (Keyboard.getEventKey() == Keyboard.KEY_B) {
-                    Game.OPT_DRAW_COLORED_BLOCKS = !Game.OPT_DRAW_COLORED_BLOCKS;
-                }
-
-                if (Keyboard.getEventKey() == Keyboard.KEY_R) {
-                    Game.DEBUG_DRAW_CAMERA_RAY = !Game.DEBUG_DRAW_CAMERA_RAY;
-                }
-
-                if (Keyboard.getEventKey() == Keyboard.KEY_T) {
-                    if (Game.OPT_USE_TEXTURES && Game.OPT_DRAW_TEXTURES) {
-                        Game.OPT_DRAW_TEXTURES = !Game.OPT_DRAW_TEXTURES;
-                    } else if (Game.OPT_USE_TEXTURES ^ Game.OPT_DRAW_TEXTURES) {
-                        Game.OPT_USE_TEXTURES = !Game.OPT_USE_TEXTURES;
-                    } else if (!Game.OPT_USE_TEXTURES && !Game.OPT_DRAW_TEXTURES) {
-                        Game.OPT_USE_TEXTURES = !Game.OPT_USE_TEXTURES;
-                        Game.OPT_DRAW_TEXTURES = !Game.OPT_DRAW_TEXTURES;
-                    }
-                }
-
-                if (Keyboard.getEventKey() == Keyboard.KEY_F3) {
-                    Game.OPT_DRAW_WIRES = !Game.OPT_DRAW_WIRES;
-                }
-                if (Keyboard.getEventKey() == Keyboard.KEY_F4) {
-                    if (Game.OPT_DRAW_DISTANCE > Game.OPT_MIN_DRAW_DISTANCE) {
-                        Game.OPT_DRAW_DISTANCE -= 1;
-                        this.game.setupPerspective();
-                        this.game.setupFog();
-                    }
-                }
-                if (Keyboard.getEventKey() == Keyboard.KEY_F5) {
-                    if (Game.OPT_DRAW_DISTANCE < Game.OPT_MAX_DRAW_DISTANCE) {
-                        if (!Game.MEMORY_BOUND) {
-                            Game.OPT_DRAW_DISTANCE += 1;
-                            this.game.setupPerspective();
-                            this.game.setupFog();
-                        }
-                    }
-                }
-                if (Keyboard.getEventKey() == Keyboard.KEY_F7) {
-                    Game.FRUSTUM_CULLING = !Game.FRUSTUM_CULLING;
-                }
-
-                if (Keyboard.getEventKey() == Keyboard.KEY_F8) {
-                    Game.OPT_VSYNC = !Game.OPT_VSYNC;
-                }
-                if (Keyboard.getEventKey() == Keyboard.KEY_F11) {
-                    this.game.switchMode();
-                }
-            }
+        if (wasPressed(GLFW_KEY_F4) && Game.OPT_DRAW_DISTANCE > Game.OPT_MIN_DRAW_DISTANCE) {
+            Game.OPT_DRAW_DISTANCE -= 1;
+            game.setupPerspective();
+        }
+        if (wasPressed(GLFW_KEY_F5) && Game.OPT_DRAW_DISTANCE < Game.OPT_MAX_DRAW_DISTANCE && !Game.MEMORY_BOUND) {
+            Game.OPT_DRAW_DISTANCE += 1;
+            game.setupPerspective();
+        }
+        if (wasPressed(GLFW_KEY_F7)) {
+            Game.FRUSTUM_CULLING = !Game.FRUSTUM_CULLING;
+        }
+        if (wasPressed(GLFW_KEY_P)) {
+            Game.TIME_PAUSED = !Game.TIME_PAUSED;
+        }
+        if (isDown(GLFW_KEY_LEFT_BRACKET)) {
+            Game.TIME_OF_DAY = (Game.TIME_OF_DAY + 0.995f) % 1.0f;
+        }
+        if (isDown(GLFW_KEY_RIGHT_BRACKET)) {
+            Game.TIME_OF_DAY = (Game.TIME_OF_DAY + 0.005f) % 1.0f;
+        }
+        if (wasPressed(GLFW_KEY_F8)) {
+            Game.OPT_VSYNC = !Game.OPT_VSYNC;
+            window.setVSync(Game.OPT_VSYNC);
+        }
+        if (wasPressed(GLFW_KEY_F11)) {
+            game.switchMode();
         }
     }
 }

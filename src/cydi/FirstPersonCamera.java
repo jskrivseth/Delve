@@ -4,14 +4,8 @@
  */
 package cydi;
 
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
-import static org.lwjgl.opengl.GL11.*;
-import org.lwjgl.util.glu.GLU;
-import org.lwjgl.util.vector.Vector3f;
-import java.nio.FloatBuffer;
+import org.joml.Vector3f;
 import java.util.Arrays;
-import org.lwjgl.opengl.Display;
 
 //First Person Camera Controller
 public class FirstPersonCamera extends Camera {
@@ -36,7 +30,7 @@ public class FirstPersonCamera extends Camera {
         pitch = 0.0f;
         this.CAMERA_BOUNDS[0] = -1;
         this.CAMERA_BOUNDS[1] = -1;
-        this.CAMERA_BOUNDS[2] = -1;
+        this.CAMERA_BOUNDS[2] = 3.0f;
         this.CAMERA_BOUNDS[3] = -1;
         this.CAMERA_BOUNDS[4] = -1;
         this.CAMERA_BOUNDS[5] = -1;
@@ -49,17 +43,17 @@ public class FirstPersonCamera extends Camera {
 //            yaw = 0.0f;
 //        }
         yaw += amount;
-        sight = Vector3d.axisRotation(sight, sky, amount * DEG_TO_RAD);
-        right = Vector3d.cross(sight, sky).normalized();
+        sight = cydi.Vector3d.axisRotation(sight, sky, (float)(amount * DEG_TO_RAD));
+        right = cydi.Vector3d.cross(sight, sky).normalized();
         orientationChanged();
     }
 
-//increment the camera's current yaw rotation
+//increment the camera's current pitch rotation
     public void pitch(float amount) {
         //increment the pitch by the amount param
         if (amount + pitch < 85.0f && amount + pitch > -85.0f) {
             pitch += amount;
-            sight = Vector3d.axisRotation(sight, right, amount * DEG_TO_RAD);
+            sight = cydi.Vector3d.axisRotation(sight, right, (float)(amount * DEG_TO_RAD));
             orientationChanged();
         }
     }
@@ -119,45 +113,188 @@ public class FirstPersonCamera extends Camera {
     }
 
     //translates and rotate the matrix so that it looks through the camera
-    //this dose basic what gluLookAt() does
+    //this does basically what gluLookAt() used to do, but into a JOML matrix
     @Override
     public void lookThrough() {
-        //roatate the pitch around the X axis
-        glRotatef(pitch, 1.0f, 0.0f, 0.0f);
-        //roatate the yaw around the Y axis
-        glRotatef(yaw, 0.0f, 1.0f, 0.0f);
-        //translate to the position vector's location
-        glTranslated(0, -position.y, 0);
+        rebuildViewMatrix();
     }
 
+    /**
+     * Rebuilds the projection matrices for the given framebuffer size.
+     */
     public void setup(int width, int height) {
-        glMatrixMode(GL_PROJECTION);
-        glLoadIdentity();
-        CAMERA_FAR_PLANE = Game.OPT_DRAW_DISTANCE * ((int) ((WorldChunk.sizeX + WorldChunk.sizeZ) / 2));
-        float aspect = (float) width / (float) height;
-        GLU.gluPerspective(CAMERA_FOV, aspect, CAMERA_NEAR_PLANE, CAMERA_FAR_PLANE);
-        glGetFloat(GL_PROJECTION_MATRIX, perspectiveProjectionMatrix);
-        glMatrixMode(GL_PROJECTION);
-        glLoadIdentity();
-        glOrtho(0, Display.getWidth(), Display.getHeight(), 0, 1, -1);
-        glGetFloat(GL_PROJECTION_MATRIX, orthographicProjectionMatrix);
-        glLoadMatrix(perspectiveProjectionMatrix);
-        glMatrixMode(GL_MODELVIEW);
+        // The draw distance is a square of chunks, so the far plane has to reach the
+        // square's diagonal (~1.42x) or the plane slices visible chunks in half.
+        CAMERA_FAR_PLANE = (Game.OPT_DRAW_DISTANCE + 1) * WorldChunk.sizeX * 1.5f;
+        if (CAMERA_FAR_PLANE < CAMERA_NEAR_PLANE + 1.0f) {
+            CAMERA_FAR_PLANE = CAMERA_NEAR_PLANE + 1.0f;
+        }
+        float aspect = height == 0 ? 1.0f : (float) width / (float) height;
+
+        perspectiveProjectionMatrix.identity()
+                .perspective(CAMERA_FOV * DEG_TO_RAD, aspect, CAMERA_NEAR_PLANE, CAMERA_FAR_PLANE);
+
+        orthographicProjectionMatrix.identity()
+                .ortho(0.0f, width, height, 0.0f, -1.0f, 1.0f);
+
+        rebuildViewMatrix();
     }
 
     public void update() {
         applyGravity();
         applyVelocity();
-        if (Game.OPT_BLOCK_COLLISION) {
-            applyBounds();
-        }
     }
+
+    /** Half width of the player box, and how far the eye sits above the feet. */
+    private static final float HALF_WIDTH = 0.3f;
+    private static final float EYE_HEIGHT = 1.62f;
+    private static final float HEAD_ROOM = 0.18f;
+    /** Movement is split into steps so fast flight cannot tunnel through blocks. */
+    private static final double MAX_STEP = 0.4;
 
     @Override
     public void applyGravity() {
-        if (!Game.GAME_FLYMODE && position.y > CAMERA_BOUNDS[2]) {
-            applyAcceleration(new Vector3d(0, -this.CAMERA_GRAVITY * Game.GAME_TIME, 0));
+        // Fly mode is a free-cam: gravity would otherwise fight every ascent.
+        if (Game.GAME_FLYMODE) {
+            return;
         }
+        applyAcceleration(new Vector3d(0, -CAMERA_GRAVITY * Game.GAME_TIME, 0));
+    }
+
+    /**
+     * Moves the player box through the voxel grid, resolving one axis at a time.
+     *
+     * This replaces the old approach of sampling the single block under the camera
+     * and clamping to six precomputed planes, which only ever considered one voxel
+     * and so let the player clip diagonally past block corners.
+     */
+    @Override
+    public void applyVelocity() {
+        double dx = velocity.x;
+        double dy = velocity.y;
+        double dz = velocity.z;
+
+        if (Game.OPT_BLOCK_COLLISION) {
+            double distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
+            int steps = Math.max(1, (int) Math.ceil(distance / MAX_STEP));
+            // Take the read lock once for the whole move rather than re-acquiring it
+            // for every axis of every sub-step.
+            World.BLOCK_LOCK.readLock().lock();
+            try {
+                for (int s = 0; s < steps; s++) {
+                    moveAxis(dx / steps, 0, 0);
+                    moveAxis(0, 0, dz / steps);
+                    moveAxis(0, dy / steps, 0);
+                }
+            } finally {
+                World.BLOCK_LOCK.readLock().unlock();
+            }
+        } else {
+            position.x += dx;
+            position.y += dy;
+            position.z += dz;
+            onGround = false;
+        }
+
+        velocity.x /= this.CAMERA_DRAG;
+        velocity.y /= (this.CAMERA_DRAG - 0.05f);
+        velocity.z /= this.CAMERA_DRAG;
+        positionChanged();
+    }
+
+    private void moveAxis(double dx, double dy, double dz) {
+        if (dx == 0 && dy == 0 && dz == 0) {
+            return;
+        }
+        position.x += dx;
+        position.y += dy;
+        position.z += dz;
+
+        if (!intersectsWorld()) {
+            if (dy != 0) {
+                onGround = false;
+            }
+            return;
+        }
+
+        // Blocked: undo this axis and kill the velocity that drove into the wall.
+        position.x -= dx;
+        position.y -= dy;
+        position.z -= dz;
+
+        if (dx != 0) {
+            velocity.x = 0;
+        }
+        if (dz != 0) {
+            velocity.z = 0;
+        }
+        if (dy != 0) {
+            if (dy < 0) {
+                onGround = true;
+                if (Game.GAME_FLYMODE) {
+                    Game.GAME_FLYMODE = false;
+                }
+            }
+            velocity.y = 0;
+        }
+    }
+
+    /**
+     * True when the player box overlaps any solid voxel.
+     *
+     * The caller already holds the read lock. The AABB spans at most two chunks,
+     * so the chunk handle is cached across the scan instead of being looked up per
+     * voxel.
+     */
+    private boolean intersectsWorld() {
+        double minX = position.x - HALF_WIDTH;
+        double maxX = position.x + HALF_WIDTH;
+        double minY = position.y - EYE_HEIGHT;
+        double maxY = position.y + HEAD_ROOM;
+        double minZ = position.z - HALF_WIDTH;
+        double maxZ = position.z + HALF_WIDTH;
+
+        int x0 = (int) Math.floor(minX), x1 = (int) Math.floor(maxX);
+        int y0 = (int) Math.floor(minY), y1 = (int) Math.floor(maxY);
+        int z0 = (int) Math.floor(minZ), z1 = (int) Math.floor(maxZ);
+
+        if (y1 < 0) {
+            return true;
+        }
+        y0 = Math.max(y0, 0);
+        y1 = Math.min(y1, WorldChunk.sizeY - 1);
+
+        WorldChunk cached = null;
+        int cachedCx = Integer.MIN_VALUE, cachedCz = Integer.MIN_VALUE;
+
+        for (int x = x0; x <= x1; x++) {
+            int cx = Math.floorDiv(x, WorldChunk.sizeX);
+            int lx = Math.floorMod(x, WorldChunk.sizeX);
+            for (int z = z0; z <= z1; z++) {
+                int cz = Math.floorDiv(z, WorldChunk.sizeZ);
+                int lz = Math.floorMod(z, WorldChunk.sizeZ);
+
+                if (cached == null || cx != cachedCx || cz != cachedCz) {
+                    cached = World.getChunk(cx, cz);
+                    cachedCx = cx;
+                    cachedCz = cz;
+                }
+                if (cached == null || !cached.isGenerated) {
+                    continue;   // never trap the player inside unloaded terrain
+                }
+                int[][][] data = cached.blocks;
+                if (data == null) {
+                    continue;
+                }
+                for (int y = y0; y <= y1; y++) {
+                    int type = data[lx][y][lz];
+                    if (type != Block.AIR && type != Block.WATER) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
     }
 
     @Override
@@ -166,57 +303,4 @@ public class FirstPersonCamera extends Camera {
         Vector3d.add(this.velocity, acceleration, this.velocity);
     }
 
-    //Actually move the camera based on velocity
-    @Override
-    public void applyVelocity() {
-        Vector3d.add(position, velocity, position);
-        velocity.x /= this.CAMERA_DRAG;
-        velocity.y /= (this.CAMERA_DRAG - 0.05f); //drag less on Y for gravity
-        velocity.z /= this.CAMERA_DRAG;
-        positionChanged();
-    }
-
-    @Override
-    public void applyBounds() {
-        //Bound on X
-        //If the camera is less than the lower bound, move it up to the lower bound via acceleration. Choose the resulting y that is least
-        if (this.CAMERA_BOUNDS[0] != -1 && position.x <= this.CAMERA_BOUNDS[0]) {
-            position.x = this.CAMERA_BOUNDS[0];
-            velocity.x = 0;
-        }
-        //If the camera is greater than the upper bound, move it down to the upper bound via acceleration. Choose the resulting y that is greatest
-        if (this.CAMERA_BOUNDS[1] != -1 && position.x >= this.CAMERA_BOUNDS[1]) {
-            position.x = this.CAMERA_BOUNDS[1];
-            velocity.x = 0;
-        }
-
-        //Bound on Y
-        //If the camera is less than the lower bound, move it up to the lower bound via acceleration. Choose the resulting y that is least
-        if (this.CAMERA_BOUNDS[2] != -1 && position.y <= this.CAMERA_BOUNDS[2]) {
-            position.y = this.CAMERA_BOUNDS[2];
-            velocity.y = 0;
-            onGround = true;
-        } else {
-            onGround = false;
-        }
-        //If the camera is greater than the upper bound, move it down to the upper bound via acceleration. Choose the resulting y that is greatest
-
-        if (this.CAMERA_BOUNDS[3] != -1 && position.y >= this.CAMERA_BOUNDS[3]) {
-            position.y = this.CAMERA_BOUNDS[3];
-            velocity.y = 0;
-            inputVector.y = 0;
-        }
-
-        //Bound on Y
-        //If the camera is less than the lower bound, move it up to the lower bound via acceleration. Choose the resulting y that is least
-        if (this.CAMERA_BOUNDS[4] != -1 && position.z <= this.CAMERA_BOUNDS[4]) {
-            position.z = this.CAMERA_BOUNDS[4];
-            velocity.z = 0;
-        }
-        //If the camera is greater than the upper bound, move it down to the upper bound via acceleration. Choose the resulting y that is greatest
-        if (this.CAMERA_BOUNDS[5] != -1 && position.z >= this.CAMERA_BOUNDS[5]) {
-            position.z = this.CAMERA_BOUNDS[5];
-            velocity.z = 0;
-        }
-    }
 }

@@ -1,3 +1,67 @@
+# =========================
+# Java / Build Artifacts
+# =========================
+
+*.class
+*.jar
+*.war
+*.ear
+*.nar
+hs_err_pid*
+replay_pid*
+
+# Maven
+target/
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+pom.xml.new
+release.properties
+dependency-reduced-pom.xml
+buildNumber.properties
+.mvn/timing.properties
+.mvn/wrapper/maven-wrapper.jar
+
+# Gradle
+.gradle/
+build/
+
+# Ant / NetBeans generated output
+nbproject/private/
+nbbuild/
+nbdist/
+.nb-gradle/
+dist/
+
+# =========================
+# Out-of-band dependencies
+# =========================
+# Native/binary distributions must be resolved by Maven, never committed.
+libs/
+natives/
+lwjgl-*/
+
+# =========================
+# Logs & Runtime State
+# =========================
+*.log
+errors.log
+chunks/
+saves/
+
+# =========================
+# IDE
+# =========================
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.classpath
+.project
+
 # Windows image file caches
 Thumbs.db
 ehthumbs.db

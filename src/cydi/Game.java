@@ -4,38 +4,14 @@
  */
 package cydi;
 
-import org.lwjgl.Sys;
-import org.lwjgl.input.Keyboard;
-import org.lwjgl.input.Mouse;
-import org.lwjgl.opengl.Display;
-import org.lwjgl.opengl.DisplayMode;
-import static org.lwjgl.opengl.GL11.*;
-import org.lwjgl.util.glu.GLU;
-import org.lwjgl.util.vector.Vector3f;
-import org.lwjgl.util.vector.Vector4f;
-
-import java.nio.FloatBuffer;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
-import org.lwjgl.BufferUtils;
-import org.lwjgl.opengl.GL12;
-
-import java.awt.Font;
-import java.io.InputStream;
-import java.util.Arrays;
-
-import org.lwjgl.LWJGLException;
-import org.newdawn.slick.Color;
-import org.newdawn.slick.TrueTypeFont;
-import org.newdawn.slick.util.ResourceLoader;
-
-import java.util.*;
-import java.util.concurrent.TimeUnit;
-import org.lwjgl.opengl.GL11;
+import static org.lwjgl.glfw.GLFW.glfwGetTime;
+import static org.lwjgl.opengl.GL11.GL_LINES;
 
 /**
+ * Application shell: owns the window, the frame loop and global tuning options.
  *
- * @author Jesse
+ * All fixed-function setup (lighting, fog, matrix modes, texture env) is gone;
+ * those responsibilities now live in the shaders driven by {@link Renderer}.
  */
 public class Game {
 
@@ -45,14 +21,15 @@ public class Game {
     public static int APP_SCREEN_WIDTH = 1280;
     public static int APP_SCREEN_HEIGHT = 720;
     private boolean APP_FULLSCREEN = false;
-    private final String APP_WINDOW_TITLE = "CYDI Game";
-    public static DisplayMode APP_DISPLAY_MODE;
+    private static final String APP_WINDOW_TITLE = "CYDI Game";
+    public static Window WINDOW;
     /*
      * Player preferences
      */
-    public static Vector3f PLAYER_START_POSITION = new Vector3f((World.sizeX / 2) * WorldChunk.sizeX, 3.5f, (World.sizeY / 2) * WorldChunk.sizeZ);
+    public static org.joml.Vector3f PLAYER_START_POSITION =
+            new org.joml.Vector3f((World.sizeX / 2) * WorldChunk.sizeX, 3.5f, (World.sizeY / 2) * WorldChunk.sizeZ);
     public static float PLAYER_MOUSE_SENSITIVITY = 0.15f;
-    public static float PLAYER_MOVEMENT_SPEED = 2.85f; //move 0.5 blocks per second
+    public static float PLAYER_MOVEMENT_SPEED = 2.85f;
     public static float PLAYER_JUMP_FORCE = 0.18f;
     /*
      * Game state
@@ -66,6 +43,8 @@ public class Game {
     public static boolean FIND_SELECTED_BLOCK = true;
     public static Block SELECTED_BLOCK = null;
     public static Block NEW_BLOCK = null;
+    /** Block type the player places, cycled with the mouse wheel. */
+    public static volatile int SELECTED_BLOCK_TYPE = Block.STONE;
     /*
      * Terrain Generator
      */
@@ -80,13 +59,14 @@ public class Game {
     public static float[] OPT_CAMERA_DISTANCE_FROM_BLOCKS = new float[]{0.2f, 1.75f, 0.2f};
     public static boolean OPT_SAVE_CHUNKS = false;
     public static boolean OPT_DRAW_COLORED_BLOCKS = true;
-    private static final float CROSSHAIR_SIZE = 0.025f;
+    public static boolean OPT_FOG = true;
+    private static final float CROSSHAIR_SIZE = 0.03f;
     public static boolean OPT_CULL_CHUNKS = true;
     public static boolean OPT_ONLY_DRAW_EXPOSED_BLOCKS = true;
     public static boolean OPT_DRAW_WIRES = false;
-    public static int OPT_DRAW_DISTANCE = 15;
+    public static int OPT_DRAW_DISTANCE = 8;
     public static int OPT_MIN_DRAW_DISTANCE = 2;
-    public static int OPT_MAX_DRAW_DISTANCE = (int) Util.logb(Util.getAvailableMemory() / 104857600, 1.10);
+    public static int OPT_MAX_DRAW_DISTANCE = Math.max(4, (int) Util.logb(Util.getAvailableMemory() / 104857600.0, 1.10));
     public static boolean OPT_VSYNC = true;
     public static int OPT_CHUNK_SERIALIZE_RADIUS_MULTIPLIER = 1;
 
@@ -94,6 +74,11 @@ public class Game {
      * Debug
      */
     public static boolean DEBUG_DRAW_CAMERA_RAY = false;
+    /** 0 and 1 are midnight, 0.25 sunrise, 0.5 noon, 0.75 sunset. */
+    public static volatile float TIME_OF_DAY = 0.30f;
+    /** Real seconds for one full day. */
+    public static float DAY_LENGTH_SECONDS = 480f;
+    public static boolean TIME_PAUSED = false;
     /*
      * Stats
      */
@@ -102,83 +87,94 @@ public class Game {
     public static long MEMORY_MAX = Util.getMaxMemory();
     public static boolean MEMORY_BOUND = false;
     public static long GAME_TIME;
-    public static long LAST_FRAME_TIME;        //when the last frame was
+    public static long LAST_FRAME_TIME;
     public static int STAT_SWEPT_CHUNKS = 0;
     public static int STAT_BUILT_CHUNKS = 0;
     public static int FACE_COUNT = 0;
     public static int BLOCK_COUNT = 0;
+    public static int LAST_FACE_COUNT = 0;
+    public static int LAST_BLOCK_COUNT = 0;
+    public static int LAST_VBO_CHUNKS = 0;
     public static long LAST_FRAMES_PER_SECOND = 0;
     public static int FRAME_COUNTER = 0;
     public static int FRAMES_PER_SECOND = 0;
-    /*
-     * OTHER
-     */
-    private static int FRAME_RATE = 60;
 
-    /*
-     * Alerts
-     */
+    /** Screen-space crosshair, rebuilt whenever the aspect ratio changes. */
+    private final float[] crosshairVerts = new float[12];
+
     public Game() {
         GAME_WORLD = new World(PLAYER_START_POSITION);
         GAME_CAMERA = GAME_WORLD.camera;
     }
 
-    private void init() throws Exception {
-        createWindow();
-        initGL();
+    private void init() {
+        WINDOW = new Window(APP_WINDOW_TITLE, APP_SCREEN_WIDTH, APP_SCREEN_HEIGHT);
+        WINDOW.create(APP_FULLSCREEN);
+        WINDOW.setCursorGrabbed(true);
+        WINDOW.setVSync(OPT_VSYNC);
+
+        Renderer.init();
+        Renderer.setWireframe(OPT_DRAW_WIRES);
+
         GAME_WORLD.loadModels();
         GAME_WORLD.loadTextures();
         GUI = new GUI();
-        INPUT = new Input(this);
-        GAME_CAMERA.position.y = World.getHeightAt((int) Math.floor(GAME_CAMERA.position.x), (int) Math.floor(GAME_CAMERA.position.z)) + Game.OPT_CAMERA_DISTANCE_FROM_BLOCKS[1] + Block.size * 2;
-    }
+        INPUT = new Input(this, WINDOW);
 
-    private void initGL() {
-        glClearColor(0.52f, 0.80f, 0.92f, 0.2f);          // Sky blue
-        setupDepthBuffer();
-        setupStecilBuffer();
         setupPerspective();
-        setupTextures();
-        Lights.setup();
-        setupFog();
+        updateCrosshair();
+
+        printControls();
+
+        GAME_CAMERA.position.y = World.getHeightAt(
+                (int) Math.floor(GAME_CAMERA.position.x),
+                (int) Math.floor(GAME_CAMERA.position.z)) + OPT_CAMERA_DISTANCE_FROM_BLOCKS[1] + Block.size * 2;
     }
 
     public void play(boolean fullscreen) {
         this.APP_FULLSCREEN = fullscreen;
         try {
             init();
-            //hide the mouse
-            Mouse.setGrabbed(true);
 
-            getDelta();                         // call once before loop to initialise lastFrame
-            LAST_FRAMES_PER_SECOND = getTime(); // call before loop to initialise fps timer
+            getDelta();
+            LAST_FRAMES_PER_SECOND = getTime();
 
-            // keep looping till the display window is closed the ESC key is down
-            while (!Display.isCloseRequested() && !Keyboard.isKeyDown(Keyboard.KEY_ESCAPE)) {
-                if (Display.isVisible()) {
+            while (!WINDOW.shouldClose()) {
+                WINDOW.pollEvents();
 
+                if (WINDOW.consumeResized()) {
+                    setupPerspective();
+                    updateCrosshair();
+                }
 
+                if (WINDOW.isVisible()) {
                     int delta = getDelta();
                     GAME_TIME = delta;
                     update(delta);
-                    //you would draw your scene here.
                     render();
-                    Display.update();
-                    if (Game.OPT_VSYNC) {
-                        Display.sync(FRAME_RATE);
-                    }
+                    WINDOW.swapBuffers();
                 }
             }
-            cleanup();
         } catch (Exception e) {
             e.printStackTrace();
-            System.exit(0);
+        } finally {
+            cleanup();
         }
     }
 
     private void update(long gameTime) {
+        // Snapshot last frame's totals before zeroing, so the HUD reports real
+        // numbers instead of the counters it is about to reset.
+        LAST_FACE_COUNT = FACE_COUNT;
+        LAST_BLOCK_COUNT = BLOCK_COUNT;
+        LAST_VBO_CHUNKS = World.VBO_CHUNKS;
+
         FACE_COUNT = 0;
         BLOCK_COUNT = 0;
+        if (!TIME_PAUSED) {
+            TIME_OF_DAY = (TIME_OF_DAY + (gameTime / 1000.0f) / DAY_LENGTH_SECONDS) % 1.0f;
+        }
+        Renderer.updateSky(TIME_OF_DAY);
         INPUT.update(gameTime);
         updateFPS();
         GAME_CAMERA.update();
@@ -187,120 +183,68 @@ public class Game {
 
     public void switchMode() {
         APP_FULLSCREEN = !APP_FULLSCREEN;
-        try {
-            Display.setFullscreen(APP_FULLSCREEN);
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+        WINDOW.toggleFullscreen();
+        setupPerspective();
+        updateCrosshair();
     }
 
-    private boolean render() {
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);          // Clear The Screen And The Depth Buffer
-        //look through the camera before you draw anything - Performs glLoadIdentity()
-        glLoadIdentity();
+    private void render() {
+        Renderer.clear();
 
         GAME_CAMERA.lookThrough();
-        Lights.update();
+        Renderer.view().set(Camera.getViewMatrix());
+        Renderer.projection().set(Camera.getProjectionMatrix());
+
         GAME_WORLD.render();
 
         GUI.render();
         drawCrosshairs();
+    }
 
-        return true;
+    /** Builds a crosshair in normalized device coordinates, corrected for aspect. */
+    private void updateCrosshair() {
+        float aspect = WINDOW == null ? 1.0f : WINDOW.getAspect();
+        float halfX = CROSSHAIR_SIZE / 2.0f / aspect;
+        float halfY = CROSSHAIR_SIZE / 2.0f;
+
+        crosshairVerts[0] = -halfX; crosshairVerts[1] = 0f;     crosshairVerts[2] = 0f;
+        crosshairVerts[3] = halfX;  crosshairVerts[4] = 0f;     crosshairVerts[5] = 0f;
+        crosshairVerts[6] = 0f;     crosshairVerts[7] = -halfY; crosshairVerts[8] = 0f;
+        crosshairVerts[9] = 0f;     crosshairVerts[10] = halfY; crosshairVerts[11] = 0f;
     }
 
     private void drawCrosshairs() {
-        glPushMatrix();
-        // Reload identity matrix
-        glLoadIdentity();
-        // Draw crosshair
-        boolean lightsWereEnabled = GL11.glGetBoolean(GL_LIGHTING);
-        if (lightsWereEnabled) {
-            glDisable(GL_LIGHTING);
-        }
-        glBegin(GL_LINES);
-        glVertex3f(-CROSSHAIR_SIZE / 2, 0, -0.25f);
-        glVertex3f(CROSSHAIR_SIZE / 2, 0, -0.25f);
-        glVertex3f(0, -CROSSHAIR_SIZE / 2, -0.25f);
-        glVertex3f(0, CROSSHAIR_SIZE / 2, -0.25f);
-        glEnd();
-        if (lightsWereEnabled) {
-            glEnable(GL_LIGHTING);
-        }
-        glPopMatrix();
+        Renderer.drawOverlayGeometry(GL_LINES, crosshairVerts, 4, 1.0f, 1.0f, 1.0f, 0.85f);
     }
 
-    private void createWindow() throws Exception {
-        if (APP_FULLSCREEN) {
-            Display.setFullscreen(true);
-
-
-            try {
-                DisplayMode dm[] = org.lwjgl.util.Display.getAvailableDisplayModes(320, 240, -1, -1, -1, -1, 60, 85);
-                APP_DISPLAY_MODE = new DisplayMode(APP_SCREEN_WIDTH, APP_SCREEN_HEIGHT);
-                org.lwjgl.util.Display.setDisplayMode(dm, new String[]{
-                    "width=" + APP_SCREEN_WIDTH, "height=" + APP_SCREEN_HEIGHT, "freq=85",
-                    "bpp=" + Display.getDisplayMode().getBitsPerPixel()
-                });
-            } catch (Exception e) {
-                Sys.alert("Error", "Could not start full screen, switching to windowed mode");
-                APP_DISPLAY_MODE = new DisplayMode(APP_SCREEN_WIDTH, APP_SCREEN_HEIGHT);
-            }
-        } // else create windowed mode
-        else {
-            APP_DISPLAY_MODE = new DisplayMode(APP_SCREEN_WIDTH, APP_SCREEN_HEIGHT);
-        }
-        Display.setDisplayMode(APP_DISPLAY_MODE);
-        Display.setTitle(APP_WINDOW_TITLE);
-        Display.create();
-    }
-    
-
-    private void setupStecilBuffer() {
-        //glEnable(GL_STENCIL);
-        //glClearStencil(0);
-    }
-
-    private void setupBlending() {
-        glEnable(GL_BLEND);
-        glEnable(GL_POLYGON_SMOOTH);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        glHint(GL_POLYGON_SMOOTH_HINT, GL_NICEST);
+    private static void printControls() {
+        System.out.println("""
+                === CYDI controls ===
+                  W/A/S/D      move
+                  Mouse        look
+                  Space        jump  (double-tap = toggle fly)
+                  G            toggle fly mode
+                  Space/Shift  fly up / down (while flying)
+                  -/=          slower / faster
+                  LMB / RMB    break / place block
+                  Mouse wheel  choose block to place
+                  T            cycle textures      B  vertex colors
+                  F            fog                 F3 wireframe
+                  [ / ]        rewind / advance time    P pause time
+                  F4/F5        draw distance -/+   F7 frustum culling
+                  F8           vsync               F11 fullscreen
+                  Esc          quit
+                """);
     }
 
     public void setupPerspective() {
-        this.GAME_CAMERA.setup(APP_DISPLAY_MODE.getWidth(), APP_DISPLAY_MODE.getHeight());
-    }
-
-
-    public void setupTextures() {
-        glEnable(GL_TEXTURE_2D);
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-        glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
-    }
-
-    private void setupDepthBuffer() {
-        glEnable(GL_DEPTH_TEST); // Enables Depth Testing
-        glEnable(GL_CULL_FACE);
-        glCullFace(GL_BACK);
-        glDepthFunc(GL_LEQUAL);
-    }
-
-    public void setupFog() {
-        glEnable(GL_FOG);
-        //glClearColor(0.52f, 0.80f, 0.92f, 0.2f); // We'll Clear To The Color Of The Fog ( Modified ) 
-        FloatBuffer fogColor = Util.getFloatBuffer(new float[]{0.52f, 0.80f, 0.92f, 0.2f});
-
-        glFogi(GL_FOG_MODE, GL_LINEAR); // Fog Mode
-        glFog(GL_FOG_COLOR, fogColor); // Set Fog Color
-        glFogf(GL_FOG_START, Game.OPT_DRAW_DISTANCE * 10.0f); // Fog Start Depth
-        glFogf(GL_FOG_END, Game.OPT_DRAW_DISTANCE * 12.0f); // Fog End Depth
-        glFogf(GL_FOG_DENSITY, 0.5f); // How Dense Will The Fog Be 
-        glHint(GL_FOG_HINT, GL_NICEST); // Fog Hint Value
+        int w = WINDOW == null ? APP_SCREEN_WIDTH : WINDOW.getWidth();
+        int h = WINDOW == null ? APP_SCREEN_HEIGHT : WINDOW.getHeight();
+        GAME_CAMERA.setup(w, h);
     }
 
     public long getTime() {
-        return (Sys.getTime() * 1000) / Sys.getTimerResolution();
+        return (long) (glfwGetTime() * 1000.0);
     }
 
     public int getDelta() {
@@ -313,36 +257,41 @@ public class Game {
     public void updateFPS() {
         if (getTime() - LAST_FRAMES_PER_SECOND > 1000) {
             FRAMES_PER_SECOND = FRAME_COUNTER;
-            Display.setTitle("FPS: " + FRAMES_PER_SECOND);
+            WINDOW.setTitle(APP_WINDOW_TITLE + " | FPS: " + FRAMES_PER_SECOND
+                    + " | faces: " + LAST_FACE_COUNT
+                    + " | block: " + Block.nameOf(SELECTED_BLOCK_TYPE)
+                    + (GAME_FLYMODE ? " | FLY" : ""));
             FRAME_COUNTER = 0;
             LAST_FRAMES_PER_SECOND += 1000;
-            Game.MEMORY_MAX = Util.getMaxMemory();
-            Game.MEMORY_AVAILBLE = Util.getAvailableMemory();
+            MEMORY_MAX = Util.getMaxMemory();
+            MEMORY_AVAILBLE = Util.getAvailableMemory();
 
-            if (((float) Game.MEMORY_AVAILBLE / (float) Game.MEMORY_MAX) < 0.10f) {
-                this.MEMORY_BOUND = true;
-                //System.gc();
-                Game.consoleMsg("Running low on memory...");
+            if (((float) MEMORY_AVAILBLE / (float) MEMORY_MAX) < 0.10f) {
+                MEMORY_BOUND = true;
+                consoleMsg("Running low on memory...");
             } else {
-                this.MEMORY_BOUND = false;
+                MEMORY_BOUND = false;
             }
             if (World.SWEEPER_IS_SLEEPING) {
                 World.WAKE_SWEEPER = true;
-                Game.STAT_SWEPT_CHUNKS = 0;
+                STAT_SWEPT_CHUNKS = 0;
             }
-            Game.STAT_BUILT_CHUNKS = 0;
+            STAT_BUILT_CHUNKS = 0;
         }
         FRAME_COUNTER++;
     }
 
     public static void consoleMsg(String message) {
-        Game.MESSAGES[1] = Game.MESSAGES[0];
-        Game.MESSAGES[2] = Game.MESSAGES[1];
-        Game.MESSAGES[0] = message;
+        MESSAGES[2] = MESSAGES[1];
+        MESSAGES[1] = MESSAGES[0];
+        MESSAGES[0] = message;
     }
 
     private static void cleanup() {
         World.threadPool.shutdownNow();
-        Display.destroy();
+        Renderer.cleanup();
+        if (WINDOW != null) {
+            WINDOW.destroy();
+        }
     }
 }

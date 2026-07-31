@@ -4,7 +4,7 @@
  */
 package cydi;
 
-import org.lwjgl.util.vector.Vector2f;
+import org.joml.Vector2f;
 import java.util.*;
 
 /**

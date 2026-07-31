@@ -4,34 +4,27 @@
  */
 package cydi;
 
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
+import org.joml.Matrix4f;
 import org.lwjgl.BufferUtils;
-import org.lwjgl.Sys;
-import static org.lwjgl.opengl.GL11.*;
-import org.lwjgl.util.vector.Vector2f;
-import org.lwjgl.util.vector.Vector3f;
-import org.lwjgl.util.vector.Vector4f;
 import java.io.Serializable;
 import java.util.*;
 import java.io.*;
-import org.lwjgl.opengl.GL11;
-import org.lwjgl.opengl.GL15;
-import org.lwjgl.opengl.GL31;
 
-import org.lwjgl.input.Mouse;
+import static org.lwjgl.opengl.GL11.GL_LINES;
 
 /**
  *
  * @author Jesse
  */
-public class WorldChunk implements Serializable {
+public class WorldChunk implements Serializable, Block.SolidityLookup {
 
     /*
      * Handles
      */
-    private int vboVertexHandle;
+    public transient int vboVertexHandle;
+    public transient int vaoHandle;
+    private transient Matrix4f modelMatrix = new Matrix4f();
 
     /*
      * Locks
@@ -54,6 +47,10 @@ public class WorldChunk implements Serializable {
     public boolean neighborsGenerated = false;
     public boolean purgeVBO = false;
     public boolean serialize = false;
+    /** Set when the player edits this chunk, so it is persisted before unloading. */
+    public volatile boolean isModified = false;
+    /** Highest occupied Y + 1, used to skip the empty air above the terrain. */
+    private volatile int maxHeight = sizeY;
     private boolean modelsSnappedToGround = false;
     /*
      * State
@@ -63,11 +60,19 @@ public class WorldChunk implements Serializable {
     /*
      * Data
      */
-    public FloatBuffer vbuffer;
-    public int[][][] blocks;     //Contains all the blocks in this chunk
-    public ArrayList<FloatBuffer> dynamicVertexData;
-    private int numVerts;
-    public ArrayList<GLModel> models;
+    public volatile FloatBuffer vbuffer;
+    public volatile int[][][] blocks;     //Contains all the blocks in this chunk
+    public volatile int numVerts;
+    /** Vertices in the leading opaque range; the remainder is translucent. */
+    public volatile int opaqueVerts;
+    private volatile int pendingOpaqueVerts;
+    /**
+     * Vertex count for the mesh sitting in {@link #vbuffer}, published to
+     * {@link #numVerts} only once that data is actually uploaded. Assigning
+     * numVerts from the builder thread would let the render thread draw the
+     * previous VBO with the new count and read past the end of it.
+     */
+    private volatile int pendingVerts;
     /*
      * Properties
      */
@@ -190,9 +195,20 @@ public class WorldChunk implements Serializable {
             return;
         }
         this.isGenerating = true;
-        if (blocks == null) {
-            blocks = new int[sizeX][sizeY][sizeZ];
+
+        // A previously edited chunk is restored from disk instead of being
+        // regenerated, otherwise the player's changes vanish when it reloads.
+        if (this.load()) {
+            recomputeMaxHeight();
+            this.isModified = true;
+            this.isGenerating = false;
+            this.isGenerated = true;
+            this.isBuilt = false;
+            return;
         }
+
+        int[][][] data = new int[sizeX][sizeY][sizeZ];
+        int highest = 1;
 
         //Do a 2D perlin noise for the surface
         for (int x = 0; x < sizeX; x++) {
@@ -200,30 +216,108 @@ public class WorldChunk implements Serializable {
                 float xPos = (worldPosX + x) / (float) (128.0f);
                 float zPos = (worldPosY + z) / (float) (128.0f);
                 double v = PerlinNoiseGenerator.getNoise(xPos, zPos, 3, 3.25f, sizeY);
-                blocks[x][0][z] = 2;
                 v += 1.0f;
-                if (v > 0) {
-                    for (int y = 0; y < (int) (v * (sizeY / 2)) && y < sizeY - 4; y++) {
-                        if (y < 32) {
-                            blocks[x][y][z] = 2;
-                        }
-                        if (y >= 32 && y < 34) {
-                            blocks[x][y][z] = 3;
-                        }
-                        if (y >= 34 && y < 96) {
-                            blocks[x][y][z] = 1;
-                        }
-                        if (y >= 96) {
-                            blocks[x][y][z] = 4;
-                        }
+
+                int height = (int) (v * (sizeY / 2.0));
+                if (height > sizeY - 4) {
+                    height = sizeY - 4;
+                }
+                if (height < 1) {
+                    height = 1;
+                }
+
+                int surface = surfaceTypeFor(height);
+                for (int y = 0; y <= height; y++) {
+                    int type;
+                    if (y == 0) {
+                        type = Block.BEDROCK;
+                    } else if (y == height) {
+                        type = surface;
+                    } else if (y >= height - 3) {
+                        type = (surface == Block.SAND) ? Block.SAND : Block.DIRT;
+                    } else {
+                        type = Block.STONE;
                     }
+                    data[x][y][z] = type;
+                }
+
+                // Flood everything below sea level so lakes get a flat surface.
+                for (int y = height + 1; y <= SEA_LEVEL; y++) {
+                    data[x][y][z] = Block.WATER;
+                }
+
+                int top = Math.max(height, height < SEA_LEVEL ? SEA_LEVEL : height);
+                if (top + 1 > highest) {
+                    highest = top + 1;
                 }
             }
         }
 
+        this.blocks = data;
+        this.maxHeight = Math.min(highest + 1, sizeY);
+
         this.isGenerating = false;
         this.isGenerated = true;
         this.isBuilt = false;
+    }
+
+    /** Sea level; columns below this are flooded with water. */
+    public static final int SEA_LEVEL = 32;
+
+    private static int surfaceTypeFor(int height) {
+        if (height < SEA_LEVEL) {
+            return Block.SAND;      // lake bed, covered by water above
+        }
+        if (height <= SEA_LEVEL + 2) {
+            return Block.SAND;      // beach
+        }
+        if (height >= 96) {
+            return Block.SNOW;
+        }
+        return Block.GRASS;
+    }
+
+    /** Recomputes the highest occupied Y so meshing can skip the air above it. */
+    private void recomputeMaxHeight() {
+        int highest = 1;
+        for (int x = 0; x < sizeX; x++) {
+            for (int z = 0; z < sizeZ; z++) {
+                for (int y = sizeY - 1; y >= 0; y--) {
+                    if (blocks[x][y][z] != 0) {
+                        if (y + 1 > highest) {
+                            highest = y + 1;
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        this.maxHeight = Math.min(highest + 1, sizeY);
+    }
+
+    /** Raises the meshing ceiling when a block is placed above the old top. */
+    public void noteBlockPlacedAt(int y) {
+        if (y + 2 > this.maxHeight) {
+            this.maxHeight = Math.min(y + 2, sizeY);
+        }
+    }
+
+    /**
+     * Solidity in chunk-local coordinates, following the neighbouring chunk when
+     * the lookup crosses a border. Used for ambient occlusion.
+     */
+    @Override
+    public boolean isSolid(int x, int y, int z) {
+        if (y < 0) {
+            return true;
+        }
+        if (y >= sizeY) {
+            return false;
+        }
+        if (x >= 0 && x < sizeX && z >= 0 && z < sizeZ) {
+            return !Block.isTransparent(blocks[x][y][z]);
+        }
+        return World.isSolidGlobal(worldPosX + x, y, worldPosY + z);
     }
 
     public boolean isReady() {
@@ -245,199 +339,193 @@ public class WorldChunk implements Serializable {
             Game.consoleMsg("Attempt to build a mesh for a chunk that is not generated.. ");
             return;
         }
-        //synchronized (this.buildMeshLock) {
         this.isBuilding = true;
-        this.dynamicVertexData = new ArrayList<FloatBuffer>();
+        if (this.EXPOSED_FACES == null) {
+            this.EXPOSED_FACES = new boolean[6];
+        }
         BLOCK_COUNT = 0;
         FACE_COUNT = 0;
-        int bufferSize = 0;
-        for (int i = 0; i < sizeX; i++) {
-            for (int j = 0; j < sizeY; j++) {
-                for (int k = 0; k < sizeZ; k++) {
-                    if (blocks[i][j][k] != 0) {
-                        int neighborX = 0, neighborY = 0;
-                        if (i == 0) {  // Look down
-                            neighborX = World.chunkNeighbor(2, i, j, k, posX, posY);
-                        } else if (i == sizeX - 1) { //Look up
-                            neighborX = World.chunkNeighbor(1, i, j, k, posX, posY);
-                        }
-                        if (k == 0) { // Look left
-                            neighborY = World.chunkNeighbor(3, i, j, k, posX, posY);
-                        } else if (k == sizeZ - 1) {  //Look right
-                            neighborY = World.chunkNeighbor(4, i, j, k, posX, posY);
-                        }
 
-                        EXPOSED_FACES[0] = (k == sizeZ - 1 && neighborY == 0) || (k < (sizeZ - 1) && blocks[i][j][k + 1] == 0);     //Front     +z
-                        EXPOSED_FACES[1] = (i == sizeX - 1 && neighborX == 0) || (i < (sizeX - 1) && blocks[i + 1][j][k] == 0);     //Right     +x
-                        EXPOSED_FACES[2] = ((j == sizeY - 1) || (j < (sizeY - 1) && blocks[i][j + 1][k] == 0));                     //Top       +y
-                        EXPOSED_FACES[3] = (i == 0 && neighborX == 0) || (i > 0 && blocks[i - 1][j][k] == 0);                       //Left      -x
-                        EXPOSED_FACES[4] = (j > 0 && blocks[i][j - 1][k] == 0);                                                     //Bottom    -y
-                        EXPOSED_FACES[5] = (k == 0 && neighborY == 0) || (k > 0 && blocks[i][j][k - 1] == 0);                       //Back      -z
+        // Voxel data is read here on a worker thread while the main thread may be
+        // editing blocks, so both passes run under the shared read lock.
+        World.BLOCK_LOCK.readLock().lock();
+        try {
+            int ceiling = Math.min(this.maxHeight, sizeY);
 
-                        if (EXPOSED_FACES[0] || EXPOSED_FACES[1] || EXPOSED_FACES[2] || EXPOSED_FACES[3] || EXPOSED_FACES[4] || EXPOSED_FACES[5]) {
-                            FloatBuffer newCube = Block.generateCube(i, j, k, EXPOSED_FACES, blocks[i][j][k]);
-                            dynamicVertexData.add(newCube);
-                            bufferSize += newCube.capacity();
+            // Pass 1: count exposed faces so the chunk buffer can be sized exactly.
+            // Nothing is allocated per block, unlike the old FloatBuffer-per-cube
+            // approach that then had to be merged into a second buffer.
+            int faceCount = 0;
+            int blockCount = 0;
+            for (int i = 0; i < sizeX; i++) {
+                for (int j = 0; j < ceiling; j++) {
+                    for (int k = 0; k < sizeZ; k++) {
+                        if (blocks[i][j][k] != 0) {
+                            faceCount += computeExposedFaces(i, j, k, EXPOSED_FACES);
+                            blockCount++;
                         }
-                        for (int e = 0; e < EXPOSED_FACES.length; e++) {
-                            if (EXPOSED_FACES[e]) {
-                                FACE_COUNT++;
-                            }
-                        }
-                        BLOCK_COUNT++;
                     }
                 }
             }
-        }
 
-        this.vbuffer = Util.getFloatBuffer(bufferSize);
-        //Convert all the individual floatbuffers into one megalithic float buffer
-        for (int i = 0; i < this.dynamicVertexData.size(); i++) {
-            if (this.dynamicVertexData.get(i).capacity() > 0) {
-                try {
-                    this.vbuffer.put(this.dynamicVertexData.get(i));
-                } catch (java.lang.NullPointerException e) {
-                    String error = "vbuffer is null when building mesh for chunk (" + this.posX + "," + this.posY + ")";
-                    Game.consoleMsg(error);
-                    System.out.println(error);
+            BLOCK_COUNT = blockCount;
+            FACE_COUNT = faceCount;
 
-                } catch (Exception e) {
-                    String error = "vbuffer overflow in chunk (" + this.posX + "," + this.posY + ") block " + i + ": Buffer size:" + (bufferSize / 11 / 4) + " verticies:" + (this.vbuffer.capacity() / 11 / 4);
-                    Game.consoleMsg(error);
-                    System.out.println(error);
-                    this.dynamicVertexData = null;
-                    this.vbuffer = null;
-                    return;
+            if (faceCount == 0) {
+                this.pendingVerts = 0;
+                this.vbuffer = null;
+                this.isBuilding = false;
+                this.isBuilt = true;
+                this.vboIsStale = true;
+                return;
+            }
+
+            // Pass 2: opaque faces first, then translucent, so the two occupy
+            // contiguous ranges of one buffer and can be drawn as separate passes.
+            FloatBuffer buffer = BufferUtils.createFloatBuffer(faceCount * Block.FLOATS_PER_FACE);
+            for (int i = 0; i < sizeX; i++) {
+                for (int j = 0; j < ceiling; j++) {
+                    for (int k = 0; k < sizeZ; k++) {
+                        int type = blocks[i][j][k];
+                        if (type != 0 && !Block.isTranslucent(type)
+                                && computeExposedFaces(i, j, k, EXPOSED_FACES) > 0) {
+                            Block.writeCube(buffer, i, j, k, EXPOSED_FACES, type, this);
+                        }
+                    }
                 }
             }
+            this.pendingOpaqueVerts = buffer.position() / Renderer.FLOATS_PER_VERTEX;
+
+            for (int i = 0; i < sizeX; i++) {
+                for (int j = 0; j < ceiling; j++) {
+                    for (int k = 0; k < sizeZ; k++) {
+                        int type = blocks[i][j][k];
+                        if (type != 0 && Block.isTranslucent(type)
+                                && computeExposedFaces(i, j, k, EXPOSED_FACES) > 0) {
+                            Block.writeCube(buffer, i, j, k, EXPOSED_FACES, type, this);
+                        }
+                    }
+                }
+            }
+
+            this.pendingVerts = buffer.position() / Renderer.FLOATS_PER_VERTEX;
+            buffer.flip();
+            this.vbuffer = buffer;
+        } finally {
+            World.BLOCK_LOCK.readLock().unlock();
         }
-        this.dynamicVertexData = null;
-        this.numVerts = this.vbuffer.position() / 12;
-        this.vbuffer.flip();
+
         this.isBuilding = false;
         this.isBuilt = true;
         this.vboIsStale = true;
     }
 
-    public void buildVBO() {
-        if (this.vbuffer == null) {
-            Game.consoleMsg("buildVBO() failed - vbuffer is null");
-            return;
-        } else {
-            if (this.vboVertexHandle == 0) {
-                this.vboVertexHandle = GL15.glGenBuffers();
-            }
-            GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, this.vboVertexHandle);
-            GL15.glBufferData(GL15.GL_ARRAY_BUFFER, this.vbuffer, GL15.GL_STATIC_DRAW);
-            GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, 0);
-            this.vboIsStale = false;
-            this.vbuffer = null;
-            int error = glGetError();
-            if (error != 0) {
-                Game.consoleMsg("buildVBO() - OpenGL error: " + error);
+    /**
+     * Fills {@code out} with the exposure mask for one block and returns how many
+     * faces are exposed. Neighbouring chunks are consulted at the chunk borders.
+     */
+    private int computeExposedFaces(int i, int j, int k, boolean[] out) {
+        int type = blocks[i][j][k];
+        int neighborX = 0, neighborY = 0;
+        if (i == 0) {  // Look down
+            neighborX = World.chunkNeighbor(2, i, j, k, posX, posY);
+        } else if (i == sizeX - 1) { //Look up
+            neighborX = World.chunkNeighbor(1, i, j, k, posX, posY);
+        }
+        if (k == 0) { // Look left
+            neighborY = World.chunkNeighbor(3, i, j, k, posX, posY);
+        } else if (k == sizeZ - 1) {  //Look right
+            neighborY = World.chunkNeighbor(4, i, j, k, posX, posY);
+        }
+
+        out[0] = (k == sizeZ - 1) ? showsFace(type, neighborY) : showsFace(type, blocks[i][j][k + 1]);   //Front  +z
+        out[1] = (i == sizeX - 1) ? showsFace(type, neighborX) : showsFace(type, blocks[i + 1][j][k]);   //Right  +x
+        out[2] = (j == sizeY - 1) || showsFace(type, blocks[i][j + 1][k]);                               //Top    +y
+        out[3] = (i == 0) ? showsFace(type, neighborX) : showsFace(type, blocks[i - 1][j][k]);           //Left   -x
+        out[4] = (j > 0) && showsFace(type, blocks[i][j - 1][k]);                                        //Bottom -y
+        out[5] = (k == 0) ? showsFace(type, neighborY) : showsFace(type, blocks[i][j][k - 1]);           //Back   -z
+
+        int count = 0;
+        for (int f = 0; f < 6; f++) {
+            if (out[f]) {
+                count++;
             }
         }
+        return count;
+    }
+
+    /**
+     * A face is drawn when its neighbour does not fully occlude it. Two adjacent
+     * blocks of the same see-through type (glass against glass) hide the shared
+     * face so the interior of a pane or a tree canopy is not meshed.
+     */
+    private static boolean showsFace(int type, int neighborType) {
+        return Block.isTransparent(neighborType) && neighborType != type;
+    }
+
+    public void buildVBO() {
+        FloatBuffer data = this.vbuffer;
+        if (data == null) {
+            // Mesh built to nothing (fully enclosed or empty chunk).
+            this.numVerts = 0;
+            this.vboIsStale = false;
+            return;
+        }
+        Renderer.uploadChunkMesh(this, data);
+        // Only now is the count valid for the buffer the GPU holds.
+        this.numVerts = this.pendingVerts;
+        this.opaqueVerts = this.pendingOpaqueVerts;
+        this.vboIsStale = false;
+        this.vbuffer = null;
     }
 
     public void drawMesh() {
-
-        if (this.numVerts > 0) {
-            if (this.vboVertexHandle == 0) {
-                Game.consoleMsg("Request to draw a mesh with invalid VBO");
-                return;
-            }
-            glPushMatrix();
-            glTranslated(this.worldPosX - Game.GAME_CAMERA.position.x, 0, this.worldPosY - Game.GAME_CAMERA.position.z);
-
-            if (Game.OPT_DRAW_WIRES) {
-                drawBoundingBox();
-            }
-
-            GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, this.vboVertexHandle);
-
-            if (Game.OPT_USE_TEXTURES) {
-                glBindTexture(GL_TEXTURE_2D, World.worldTexture.getTextureID());
-                glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-                //glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST); // Minecraft! (try using GL_LINEAR and you'll see what I mean)
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-            } else {
-                glBindTexture(GL_TEXTURE_2D, 0);
-            }
-
-//            final int position = 3;
-//            final int normal = 3;
-//            final int color = 4;
-//            final int texcoords = 2;
-//            final int sizeOfInt = 4; // 4 bytes in an int
-//            final int vertexDataSize = (position + texcoords + normal + color) * sizeOfInt;  // = 48
-
-            glVertexPointer(3, GL_FLOAT, 48, 0L);
-            glNormalPointer(GL_FLOAT, 48, 12);
-            glColorPointer(3, GL_FLOAT, 48, 24);
-            glTexCoordPointer(2, GL_FLOAT, 48, 40);
-
-            //Draw now
-            glDrawArrays(GL_TRIANGLES, 1, this.numVerts);
-            GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, 0);
-
-            if (selectedBlock != null) {
-                glPushMatrix();
-                //glLoadIdentity();
-                Vector selectedBlockVector = Block.openGLCoordinatesForBlock(selectedBlock);
-                glLineWidth(4.0f);
-                glDisable(GL_LIGHTING);
-                //glColor3f(1,1,1);
-                // Just use immediate mode/fixed function pipeline
-                glBegin(GL_LINE_STRIP);
-                glVertex3f(selectedBlockVector.x, selectedBlockVector.y, selectedBlockVector.z);
-                glVertex3f(selectedBlockVector.x + 1, selectedBlockVector.y, selectedBlockVector.z);
-                glVertex3f(selectedBlockVector.x + 1, selectedBlockVector.y + 1, selectedBlockVector.z);
-                glVertex3f(selectedBlockVector.x, selectedBlockVector.y + 1, selectedBlockVector.z);
-                glVertex3f(selectedBlockVector.x, selectedBlockVector.y, selectedBlockVector.z);
-                glVertex3f(selectedBlockVector.x, selectedBlockVector.y, selectedBlockVector.z - 1);
-                glVertex3f(selectedBlockVector.x + 1, selectedBlockVector.y, selectedBlockVector.z - 1);
-                glVertex3f(selectedBlockVector.x + 1, selectedBlockVector.y + 1, selectedBlockVector.z - 1);
-                glVertex3f(selectedBlockVector.x, selectedBlockVector.y + 1, selectedBlockVector.z - 1);
-                glVertex3f(selectedBlockVector.x, selectedBlockVector.y, selectedBlockVector.z - 1);
-                glEnd();
-
-                glBegin(GL_LINES);
-                glVertex3f(selectedBlockVector.x, selectedBlockVector.y + 1, selectedBlockVector.z);
-                glVertex3f(selectedBlockVector.x, selectedBlockVector.y + 1, selectedBlockVector.z - 1);
-
-                glVertex3f(selectedBlockVector.x + 1, selectedBlockVector.y + 1, selectedBlockVector.z);
-                glVertex3f(selectedBlockVector.x + 1, selectedBlockVector.y + 1, selectedBlockVector.z - 1);
-
-                glVertex3f(selectedBlockVector.x + 1, selectedBlockVector.y, selectedBlockVector.z);
-                glVertex3f(selectedBlockVector.x + 1, selectedBlockVector.y, selectedBlockVector.z - 1);
-                glEnd();
-                glEnable(GL_LIGHTING);
-                //glColor3f(-1,-1,-1);
-                glLineWidth(1.0f);
-                glPopMatrix();
-            }
-            glPopMatrix();
-
-        } else {
-            //Nothing to draw.. 
-            Game.consoleMsg("Request to draw a mesh with zero verticies - chunk " + this.worldPosX + "," + this.worldPosY);
+        if (this.numVerts <= 0 || this.vaoHandle == 0) {
+            return;
         }
 
+        Renderer.renderChunkMesh(this);
+
+        if (this.selectedBlock != null) {
+            drawSelectionBox();
+        }
+        if (Game.OPT_DRAW_WIRES) {
+            drawBoundingBox();
+        }
     }
 
-    private void renderModels() {
-        for (GLModel m : this.models) {
-            if (!this.modelsSnappedToGround) {
-                float terrainHeight = World.getHeightAt((int) m.position.x + this.worldPosX, (int) m.position.z + this.worldPosY);
-                if ((int) m.position.y != terrainHeight) {
-                    m.position.y = terrainHeight - 1.0f;
-                }
-            }
-            m.render();
-        }
-        this.modelsSnappedToGround = true;
+    /** Wireframe cube around the block currently under the crosshair. */
+    private void drawSelectionBox() {
+        Vector b = Block.openGLCoordinatesForBlock(this.selectedBlock);
+        float x = b.x, y = b.y, z = b.z;
+
+        float[] v = {
+            // bottom loop
+            x, y, z - 1,  x + 1, y, z - 1,
+            x + 1, y, z - 1,  x + 1, y, z,
+            x + 1, y, z,  x, y, z,
+            x, y, z,  x, y, z - 1,
+            // top loop
+            x, y + 1, z - 1,  x + 1, y + 1, z - 1,
+            x + 1, y + 1, z - 1,  x + 1, y + 1, z,
+            x + 1, y + 1, z,  x, y + 1, z,
+            x, y + 1, z,  x, y + 1, z - 1,
+            // verticals
+            x, y, z - 1,  x, y + 1, z - 1,
+            x + 1, y, z - 1,  x + 1, y + 1, z - 1,
+            x + 1, y, z,  x + 1, y + 1, z,
+            x, y, z,  x, y + 1, z,
+        };
+
+        Renderer.drawDebugGeometry(GL_LINES, v, v.length / 3, chunkModelMatrix(), 1f, 1f, 1f, 1f);
+    }
+
+    /** Model matrix placing this chunk in camera-relative world space. */
+    private Matrix4f chunkModelMatrix() {
+        return modelMatrix.identity().translate(
+                (float) (this.worldPosX - Game.GAME_CAMERA.position.x),
+                0f,
+                (float) (this.worldPosY - Game.GAME_CAMERA.position.z));
     }
 
     public void render() {
@@ -453,7 +541,7 @@ public class WorldChunk implements Serializable {
             this.meshIsStale = false;
             this.refreshMesh();
         }
-        if (this.vboVertexHandle != 0) {
+        if (this.vaoHandle != 0) {
             drawMesh();
         }
         Game.BLOCK_COUNT += BLOCK_COUNT;
@@ -461,71 +549,43 @@ public class WorldChunk implements Serializable {
     }
 
     private void drawBoundingBox() {
-        glPushMatrix();
-        glDisable(GL_LIGHTING);
+        float w = sizeX;
+        float h = sizeY;
+        float d = sizeZ;
 
-        float worldPosX = sizeX * Block.size;
-        float worldPosY = sizeY * Block.size;
-        float worldPosZ = sizeZ * Block.size;
+        float[] v = {
+            0, 0, 0,  w, 0, 0,   w, 0, 0,  w, 0, d,
+            w, 0, d,  0, 0, d,   0, 0, d,  0, 0, 0,
+            0, h, 0,  w, h, 0,   w, h, 0,  w, h, d,
+            w, h, d,  0, h, d,   0, h, d,  0, h, 0,
+            0, 0, 0,  0, h, 0,   w, 0, 0,  w, h, 0,
+            w, 0, d,  w, h, d,   0, 0, d,  0, h, d,
+        };
 
-        glTranslatef(worldPosX, sizeY / 2, worldPosZ);
-        glColor3f(1.0f, 0.0f, 0.0f);
-        glBegin(GL_LINE_LOOP);                        // Draw
-        glVertex3f(-worldPosX, worldPosY, -worldPosZ);
-        glVertex3f(-worldPosX, worldPosY, worldPosZ);
-        glVertex3f(-worldPosX, -worldPosY, worldPosZ);
-        glVertex3f(-worldPosX, -worldPosY, -worldPosZ);
-        glVertex3f(-worldPosX, worldPosY, -worldPosZ);
-        glVertex3f(worldPosX, worldPosY, -worldPosZ);
-        glVertex3f(worldPosX, worldPosY, worldPosZ);
-        glVertex3f(worldPosX, -worldPosY, worldPosZ);
-        glVertex3f(worldPosX, -worldPosY, -worldPosZ);
-        glVertex3f(worldPosX, worldPosY, -worldPosZ);
-        glVertex3f(-worldPosX, -worldPosY, worldPosZ);
-        glVertex3f(worldPosX, -worldPosY, worldPosZ);
-        glVertex3f(worldPosX, worldPosY, worldPosZ);
-        glVertex3f(-worldPosX, worldPosY, worldPosZ);
-        glVertex3f(worldPosX, -worldPosY, -worldPosZ);
-        glVertex3f(-worldPosX, -worldPosY, -worldPosZ);
-        glEnd();                                           // Done Drawing
-        glColor3f(1.0f, 1.0f, 1.0f);
-        glEnable(GL_LIGHTING);
-        glPopMatrix();
+        Renderer.drawDebugGeometry(GL_LINES, v, v.length / 3, chunkModelMatrix(), 1f, 0f, 0f, 1f);
     }
 
+    /**
+     * Frustum test against the chunk's camera-relative bounding box.
+     */
     public boolean isVisible() {
-        this.getBbox();
-        return !Util.culled(Camera.planeEqs, this.bbox);
-    }
-
-    private float[][] getBbox() {
-        if (this.bbox == null) {
-            this.bbox = new float[8][3];
+        if (!Game.FRUSTUM_CULLING) {
+            return true;
         }
-        this.bbox[0][0] = this.bbox[1][0] = this.bbox[2][0] = this.bbox[3][0] = (this.worldPosX - (float) Game.GAME_CAMERA.position.x);
-        this.bbox[4][0] = this.bbox[5][0] = this.bbox[6][0] = this.bbox[7][0] = ((this.worldPosX - (float) Game.GAME_CAMERA.position.x) + (sizeX));
-        this.bbox[2][1] = this.bbox[3][1] = this.bbox[6][1] = this.bbox[7][1] = 0.0f;
-        this.bbox[0][1] = this.bbox[1][1] = this.bbox[4][1] = this.bbox[5][1] = sizeY;
-        this.bbox[0][2] = this.bbox[2][2] = this.bbox[4][2] = this.bbox[6][2] = (this.worldPosY - (float) Game.GAME_CAMERA.position.z);
-        this.bbox[1][2] = this.bbox[3][2] = this.bbox[5][2] = this.bbox[7][2] = ((this.worldPosY - (float) Game.GAME_CAMERA.position.z) + (sizeZ));
-        //}
-        return this.bbox;
+        float minX = (float) (this.worldPosX - Game.GAME_CAMERA.position.x);
+        float minZ = (float) (this.worldPosY - Game.GAME_CAMERA.position.z);
+        return Camera.isBoxVisible(minX, 0f, minZ, minX + sizeX, sizeY, minZ + sizeZ);
     }
 
     public void deleteVBO() {
-        if (this.vboVertexHandle != 0) {
-            GL15.glDeleteBuffers(this.vboVertexHandle);
-            this.vboVertexHandle = 0;
-        }
+        Renderer.deleteChunkMesh(this);
+        this.numVerts = 0;
     }
 
     public void refreshMesh() {
         this.isRefreshing = true;
-        //Fire a thread to rebuild the vbuffer
-        Runnable chunkBufferBuilder = new WorldChunkBufferBuilderThread(this);
-        Thread chunkBufferBuilderThread = new Thread(chunkBufferBuilder);
-        chunkBufferBuilderThread.start();
-
+        // Reuse the shared pool rather than spawning a raw Thread per rebuild.
+        World.threadPool.execute(new WorldChunkBufferBuilderThread(this));
     }
 
     public void rebuildNeighborVBOs() {
@@ -546,36 +606,44 @@ public class WorldChunk implements Serializable {
     }
 
     public boolean serialize() {
-        //this.isDone = false;
-        //System.out.println("Serializing chunk " + this.worldPositionX + ", " + this.worldPositionZ);
-        //TODO: Write the blocks to disc
-        //this.deleteVBO();   //Do this in the render loop
-        if (Game.OPT_SAVE_CHUNKS) {
+        // Player edits must always persist, otherwise they are lost the moment the
+        // chunk is swept and regenerated from noise.
+        if (this.isModified || Game.OPT_SAVE_CHUNKS) {
             this.save();
         }
         this.purgeVBO = true;
-        //this.deleteVBO();
         return true;
     }
 
     public boolean save() {
-        return Serializer.serializeArray(this.blocks, this.posX + "-" + this.posY + ".txt");
+        World.BLOCK_LOCK.readLock().lock();
+        try {
+            return Serializer.serializeArray(this.blocks, saveName());
+        } finally {
+            World.BLOCK_LOCK.readLock().unlock();
+        }
     }
 
     public boolean load() {
-        this.blocks = Serializer.deserializeArray(this.posX + "-" + this.posY + ".txt");
-        return (this.blocks != null);
+        int[][][] loaded = Serializer.deserializeArray(saveName());
+        if (loaded == null) {
+            return false;
+        }
+        this.blocks = loaded;
+        return true;
+    }
+
+    private String saveName() {
+        return this.posX + "-" + this.posY + ".chunk";
     }
 
     protected void finalize() throws Throwable {
-        if (this.vboVertexHandle != 0) {
+        if (this.vboVertexHandle != 0 || this.vaoHandle != 0) {
             String error = "Attempt to run garbage collection on a chunk with an active VBO - the memory will leak!!";
             System.out.println(error);
             Game.consoleMsg(error);
         }
-        if (this.dynamicVertexData != null) {
-            this.dynamicVertexData.clear();
-        }
+        this.vbuffer = null;
     }
 
     public String toString() {
