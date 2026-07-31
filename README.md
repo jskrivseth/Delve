@@ -35,6 +35,7 @@ Central; no manual downloads or `libs/` folder are required.
 | LMB / RMB | Break / place block |
 | Mouse wheel | Choose block to place |
 | `[` / `]` / `P` | Rewind / advance / pause time |
+| `L` | Flashlight |
 | `T` | Cycle textures |
 | `B` | Vertex colours |
 | `F` | Fog |
@@ -43,30 +44,56 @@ Central; no manual downloads or `libs/` folder are required.
 | `F7` | Frustum culling |
 | `F8` | VSync |
 | `F11` | Fullscreen |
-| `Esc` | Quit |
+| `Esc` | Settings menu (save and exit from here) |
+
+## Texture packs
+
+Packs are loaded at runtime from `texturepacks/`, as either a directory or a
+`.zip`, and selected from the settings menu. Both Minecraft layouts work:
+
+- **Classic** — a single `terrain.png` atlas
+- **Modern** — individual files under `assets/minecraft/textures/block/`, which
+  are assembled into an atlas on load
+
+`sun.png` and `moon_phases.png` may also be overridden. Anything a pack does not
+supply falls back to the default art, so partial packs are fine. Block UVs are
+baked against fixed atlas slots, so switching packs only swaps GL textures and
+never re-meshes chunks.
 
 ## Architecture
 
 | Area | Notes |
 | --- | --- |
-| `Game` | Window title shows FPS, face count and selected block |
+| `Game` | Screen state machine, window title shows FPS, face count, selected block |
+| `TitleScreen` / `Menu` | World picker and settings, drawn via `MenuPanel` |
 | `Window` | GLFW window and OpenGL 3.3 core context |
-| `Renderer` | Chunk, debug-line and HUD passes; VAO based |
+| `Renderer` | Chunk, sky, post-processing, debug-line and HUD passes; VAO based |
+| `Framebuffer` | Colour + depth target for the post-processing passes |
 | `ShaderProgram` | Compile/link with cached uniform locations |
-| `Texture` | STB-backed atlas loading |
+| `Texture` / `TexturePack` | STB-backed atlas loading, runtime pack swapping |
+| `TextRenderer` | AWT font rasterised to a GL atlas at startup |
 | `WorldChunk` | 16x128x16 voxels, single-pass meshing with face culling |
 | `Block` | Palette, atlas tiles, per-vertex ambient occlusion |
 | `BlockFinder` | Voxel raycasting for selection and placement |
 | `FirstPersonCamera` | AABB-vs-voxel collision, JOML matrices |
+| `SaveGame` / `Serializer` | Named worlds, metadata and chunk persistence |
 
 ### Rendering
 
-- One VAO/VBO per chunk, 12 floats per vertex
-  (position, normal, colour + AO, texcoord)
+- One VAO/VBO per chunk, 13 floats per vertex
+  (position, normal, colour + AO, texcoord, sky light)
 - Face culling against neighbours, including across chunk borders
 - Per-vertex ambient occlusion, carried in the vertex alpha channel
-- Hemispheric sky/ground ambient plus a directional sun
+- Per-voxel sky light, flood filled with a BFS that converges across chunk
+  borders; water and leaves attenuate more than air
+- Hemispheric sky/ground ambient plus directional sun and moon
 - Day/night cycle driving sun direction, sky colour and fog
+- Directional sky gradient, banded by height and angle to the sun, so twilight
+  runs orange through pink into violet
+- Screen-space god rays marched from the light and masked by scene depth, so
+  shafts break around terrain
+- Sun and moon on independent orbits, both able to share the sky, with an
+  eight-day lunar phase cycle
 - Opaque pass followed by a blended pass for water
 - Alpha cutout for foliage and glass
 - Frustum culling per chunk via JOML `FrustumIntersection`
@@ -81,11 +108,18 @@ require a lock ordering to stay deadlock free.
 
 ### Persistence
 
-Chunks edited by the player are flagged and written to `saves/`, then reloaded
-instead of being regenerated from noise.
+Each world owns a directory under `saves/` holding its chunk files and a
+`world.properties` recording the seed, player position and orientation, time of
+day and day count. Chunks edited by the player are flagged and written out, then
+reloaded instead of being regenerated from noise.
 
-> Note: the world seed is currently randomised per launch, so saved chunks
-> reload against different surrounding terrain. See the backlog.
+The seed reseeds the Perlin generator itself. Offsetting the sample coordinates
+is not a substitute, because the generator's permutation table is the noise
+field being sampled: leaving it randomised meant terrain regenerated differently
+on every launch and saved chunks no longer matched the world around them.
+
+Chunk files are written to a temporary file and moved into place, so a crash or
+a concurrent read cannot leave a half-written chunk behind.
 
 ## Licence
 
