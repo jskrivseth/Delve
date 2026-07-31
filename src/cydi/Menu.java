@@ -112,6 +112,19 @@ public class Menu {
                 () -> Game.OPT_CAVE_MINIMUM_LIGHT =
                         Math.min(0.30f, Game.OPT_CAVE_MINIMUM_LIGHT + 0.03f)));
 
+        rows.add(new Row("God Rays",
+                () -> Game.OPT_GOD_RAYS ? "On" : "Off",
+                () -> Game.OPT_GOD_RAYS = !Game.OPT_GOD_RAYS, null));
+
+        rows.add(new Row("Texture Pack",
+                Renderer::getTexturePackName,
+                () -> Renderer.cycleTexturePack(1),
+                () -> Renderer.cycleTexturePack(-1)));
+
+        rows.add(new Row("Rescan Packs",
+                () -> String.valueOf(Renderer.getTexturePacks().size()),
+                Renderer::rescanTexturePacks, null));
+
         rows.add(new Row("Back to Game", () -> "Esc", () -> Game.setMenuOpen(false), null));
         rows.add(new Row("Save and Exit to Title", () -> "", () -> game.saveAndExit(), null));
     }

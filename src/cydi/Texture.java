@@ -104,6 +104,48 @@ public class Texture {
         }
     }
 
+    /**
+     * Uploads an already-decoded image. Used by the texture pack loader, which
+     * has to assemble atlases in memory before they reach the GPU.
+     *
+     * @param pixelArt nearest filtering and clamped mips, for block textures
+     */
+    public static Texture fromImage(java.awt.image.BufferedImage image, boolean pixelArt) {
+        int w = image.getWidth();
+        int h = image.getHeight();
+        ByteBuffer pixels = memAlloc(w * h * 4);
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                int argb = image.getRGB(x, y);
+                pixels.put((byte) ((argb >> 16) & 0xFF));
+                pixels.put((byte) ((argb >> 8) & 0xFF));
+                pixels.put((byte) (argb & 0xFF));
+                pixels.put((byte) ((argb >>> 24) & 0xFF));
+            }
+        }
+        pixels.flip();
+
+        int id = glGenTextures();
+        glBindTexture(GL_TEXTURE_2D, id);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        if (pixelArt) {
+            // Mip levels are capped because deep mips average whole atlas tiles
+            // together and bleed neighbouring textures into each face.
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_LINEAR);
+            glGenerateMipmap(GL_TEXTURE_2D);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 2);
+        } else {
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        }
+        glBindTexture(GL_TEXTURE_2D, 0);
+        memFree(pixels);
+        return new Texture(id, w, h);
+    }
+
     public void bind() {
         glBindTexture(GL_TEXTURE_2D, id);
     }

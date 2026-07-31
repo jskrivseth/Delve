@@ -85,6 +85,7 @@ public class Game {
     public static boolean OPT_AMBIENT_OCCLUSION = true;
     public static boolean OPT_ANTIALIASING = true;
     public static boolean OPT_FLASHLIGHT = false;
+    public static boolean OPT_GOD_RAYS = true;
     /** Light floor for fully enclosed spaces, so caves stay navigable. */
     public static float OPT_CAVE_MINIMUM_LIGHT = 0.09f;
 
@@ -309,9 +310,8 @@ public class Game {
     }
 
     private void render() {
-        Renderer.clear();
-
         if (SCREEN != Screen.PLAYING) {
+            Renderer.clear();
             TITLE.render();
             return;
         }
@@ -320,9 +320,11 @@ public class Game {
         Renderer.view().set(Camera.getViewMatrix());
         Renderer.projection().set(Camera.getProjectionMatrix());
 
+        // The world is rendered offscreen so god rays can sample depth.
+        Renderer.beginScene(WINDOW.getWidth(), WINDOW.getHeight());
         Renderer.drawCelestialBodies();
-
         GAME_WORLD.render();
+        Renderer.endScene(WINDOW.getWidth(), WINDOW.getHeight());
 
         GUI.render();
         drawCrosshairs();
