@@ -165,8 +165,8 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         //Do a 2D perlin noise for the surface
         for (int x = 0; x < sizeX; x++) {
             for (int z = 0; z < sizeZ; z++) {
-                float xPos = (worldPosX + x) / (float) (128.0f);
-                float zPos = (worldPosY + z) / (float) (128.0f);
+                float xPos = (worldPosX + x) / 128.0f + World.SEED_OFFSET_X;
+                float zPos = (worldPosY + z) / 128.0f + World.SEED_OFFSET_Z;
                 double v = PerlinNoiseGenerator.getNoise(xPos, zPos, 3, 3.25f, sizeY);
                 v += 1.0f;
 

@@ -19,6 +19,12 @@ public class Serializer {
     private static final File SAVE_DIR = new File("saves");
 
     private static File fileFor(String filename) {
+        // Chunks live inside the active world's directory so multiple saves do
+        // not overwrite each other.
+        SaveGame save = Game.CURRENT_SAVE;
+        if (save != null) {
+            return save.chunkFile(filename);
+        }
         if (!SAVE_DIR.exists()) {
             SAVE_DIR.mkdirs();
         }

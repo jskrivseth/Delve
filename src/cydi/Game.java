@@ -39,10 +39,18 @@ public class Game {
     static GUI GUI;
     static Input INPUT;
     static Menu MENU;
+    static TitleScreen TITLE;
     /** The running game, so menu actions can reach instance methods. */
     static Game INSTANCE;
     /** When true the settings overlay is up and world input is suspended. */
     public static boolean MENU_OPEN = false;
+
+    /** Which screen currently owns input and rendering. */
+    public enum Screen { TITLE, PLAYING }
+
+    public static Screen SCREEN = Screen.TITLE;
+    /** The world being played, or null while on the title screen. */
+    public static SaveGame CURRENT_SAVE;
     public static boolean GAME_FLYMODE = false;
     public static boolean FRUSTUM_CULLING = true;
     public static boolean FIND_SELECTED_BLOCK = true;
@@ -122,34 +130,101 @@ public class Game {
 
     public Game() {
         INSTANCE = this;
-        GAME_WORLD = new World(PLAYER_START_POSITION);
-        GAME_CAMERA = GAME_WORLD.camera;
     }
 
     private void init() {
         WINDOW = new Window(APP_WINDOW_TITLE, APP_SCREEN_WIDTH, APP_SCREEN_HEIGHT);
         WINDOW.create(APP_FULLSCREEN);
-        WINDOW.setCursorGrabbed(true);
         WINDOW.setVSync(OPT_VSYNC);
 
         Renderer.init();
         Renderer.setWireframe(OPT_DRAW_WIRES);
         TextRenderer.init();
 
-        GAME_WORLD.loadModels();
-        GAME_WORLD.loadTextures();
         GUI = new GUI();
         INPUT = new Input(this, WINDOW);
         MENU = new Menu(this);
+        TITLE = new TitleScreen();
+
+        printControls();
+
+        // Start on the title screen with the cursor free.
+        SCREEN = Screen.TITLE;
+        WINDOW.setCursorGrabbed(false);
+    }
+
+    /**
+     * Loads or creates a world and switches to gameplay.
+     */
+    public void startWorld(SaveGame save) {
+        CURRENT_SAVE = save;
+        World.reset(save.seed);
+
+        GAME_WORLD = new World(PLAYER_START_POSITION);
+        GAME_CAMERA = GAME_WORLD.camera;
+        GAME_WORLD.loadModels();
+        GAME_WORLD.loadTextures();
+
+        TIME_OF_DAY = save.timeOfDay;
+        DAY_COUNT = save.dayCount;
+
+        if (save.hasPlayerPosition) {
+            GAME_CAMERA.position.x = save.playerX;
+            GAME_CAMERA.position.y = save.playerY;
+            GAME_CAMERA.position.z = save.playerZ;
+            GAME_CAMERA.setOrientation(save.yaw, save.pitch);
+        } else {
+            GAME_CAMERA.position.y = World.getHeightAt(
+                    (int) Math.floor(GAME_CAMERA.position.x),
+                    (int) Math.floor(GAME_CAMERA.position.z))
+                    + OPT_CAMERA_DISTANCE_FROM_BLOCKS[1] + Block.size * 2;
+        }
 
         setupPerspective();
         updateCrosshair();
 
-        printControls();
+        SCREEN = Screen.PLAYING;
+        MENU_OPEN = false;
+        WINDOW.setCursorGrabbed(true);
+        INPUT.resetLook();
+        System.out.println("Playing world '" + save.name + "' (seed " + save.seed + ")");
+    }
 
-        GAME_CAMERA.position.y = World.getHeightAt(
-                (int) Math.floor(GAME_CAMERA.position.x),
-                (int) Math.floor(GAME_CAMERA.position.z)) + OPT_CAMERA_DISTANCE_FROM_BLOCKS[1] + Block.size * 2;
+    /** Writes the world and returns to the title screen. */
+    public void saveAndExit() {
+        saveWorld();
+        World.shutdown();
+        SCREEN = Screen.TITLE;
+        MENU_OPEN = false;
+        CURRENT_SAVE = null;
+        GAME_WORLD = null;
+        WINDOW.setCursorGrabbed(false);
+        TITLE.openMain();
+    }
+
+    /** Persists player state and every modified chunk still in memory. */
+    public void saveWorld() {
+        if (CURRENT_SAVE == null || GAME_CAMERA == null) {
+            return;
+        }
+        CURRENT_SAVE.playerX = GAME_CAMERA.position.x;
+        CURRENT_SAVE.playerY = GAME_CAMERA.position.y;
+        CURRENT_SAVE.playerZ = GAME_CAMERA.position.z;
+        CURRENT_SAVE.yaw = GAME_CAMERA.getYaw();
+        CURRENT_SAVE.pitch = GAME_CAMERA.getPitch();
+        CURRENT_SAVE.timeOfDay = TIME_OF_DAY;
+        CURRENT_SAVE.dayCount = DAY_COUNT;
+        CURRENT_SAVE.hasPlayerPosition = true;
+        CURRENT_SAVE.write();
+
+        int saved = 0;
+        for (WorldChunk chunk : new java.util.ArrayList<>(World.chunks)) {
+            if (chunk != null && chunk.isModified && chunk.isGenerated) {
+                chunk.save();
+                saved++;
+            }
+        }
+        System.out.println("Saved world '" + CURRENT_SAVE.name + "' (" + saved + " chunks)");
     }
 
     public void play(boolean fullscreen) {
@@ -176,6 +251,10 @@ public class Game {
                     WINDOW.swapBuffers();
                 }
             }
+            // Closing the window mid-game should not discard progress.
+            if (SCREEN == Screen.PLAYING) {
+                saveWorld();
+            }
         } catch (Exception e) {
             e.printStackTrace();
         } finally {
@@ -184,6 +263,14 @@ public class Game {
     }
 
     private void update(long gameTime) {
+        updateFPS();
+        INPUT.update(gameTime);
+
+        if (SCREEN != Screen.PLAYING) {
+            Renderer.updateSky(TIME_OF_DAY, DAY_COUNT);
+            return;
+        }
+
         // Snapshot last frame's totals before zeroing, so the HUD reports real
         // numbers instead of the counters it is about to reset.
         LAST_FACE_COUNT = FACE_COUNT;
@@ -192,7 +279,7 @@ public class Game {
 
         FACE_COUNT = 0;
         BLOCK_COUNT = 0;
-        if (!TIME_PAUSED) {
+        if (!TIME_PAUSED && !MENU_OPEN) {
             float advanced = TIME_OF_DAY + (gameTime / 1000.0f) / dayLengthSeconds();
             if (advanced >= 1.0f) {
                 DAY_COUNT += (int) advanced;
@@ -200,8 +287,6 @@ public class Game {
             TIME_OF_DAY = advanced % 1.0f;
         }
         Renderer.updateSky(TIME_OF_DAY, DAY_COUNT);
-        INPUT.update(gameTime);
-        updateFPS();
         if (!MENU_OPEN) {
             GAME_CAMERA.update();
             GAME_WORLD.update();
@@ -225,6 +310,11 @@ public class Game {
 
     private void render() {
         Renderer.clear();
+
+        if (SCREEN != Screen.PLAYING) {
+            TITLE.render();
+            return;
+        }
 
         GAME_CAMERA.lookThrough();
         Renderer.view().set(Camera.getViewMatrix());
@@ -330,7 +420,7 @@ public class Game {
     }
 
     private static void cleanup() {
-        World.threadPool.shutdownNow();
+        World.shutdown();
         Renderer.cleanup();
         if (WINDOW != null) {
             WINDOW.destroy();

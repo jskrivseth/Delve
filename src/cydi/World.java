@@ -80,6 +80,53 @@ public class World {
      */
     public static ExecutorService threadPool = Executors.newFixedThreadPool(3);
 
+    /**
+     * Clears all world state so a different save can be loaded in the same
+     * session, and seeds terrain generation.
+     */
+    public static void reset(long seed) {
+        shutdown();
+        chunkIndex.clear();
+        chunks.clear();
+        destroyChunks.clear();
+        GEN_CHUNKS = 0;
+        BUILT_CHUNKS = 0;
+        VBO_CHUNKS = 0;
+        SWEEPER_IS_SLEEPING = true;
+        WAKE_SWEEPER = true;
+        BREAK_BLOCK_REQUESTED = false;
+        PLACE_BLOCK_REQUESTED = false;
+        WORLD_SEED = seed;
+        // The noise generator is a static singleton with no reseed hook, so the
+        // seed is applied as a coordinate offset instead. Different seeds sample
+        // a different region of the same noise field, which is equivalent here.
+        SEED_OFFSET_X = ((seed >> 16) & 0xFFFF) * 0.7351f;
+        SEED_OFFSET_Z = (seed & 0xFFFF) * 0.9173f;
+        threadPool = Executors.newFixedThreadPool(3);
+    }
+
+    /** Coordinate offsets standing in for a reseed of the noise generator. */
+    public static float SEED_OFFSET_X = 0f;
+    public static float SEED_OFFSET_Z = 0f;
+
+    /** Stops worker threads and releases GPU meshes for the current world. */
+    public static void shutdown() {
+        threadPool.shutdownNow();
+        try {
+            threadPool.awaitTermination(2, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        for (WorldChunk chunk : new ArrayList<>(chunks)) {
+            if (chunk != null) {
+                Renderer.deleteChunkMesh(chunk);
+            }
+        }
+        chunks.clear();
+        chunkIndex.clear();
+        destroyChunks.clear();
+    }
+
     public World() {
         Vector3f position = new Vector3f(Game.PLAYER_START_POSITION);
         camera = new FirstPersonCamera(position.x, position.y, position.z);
@@ -140,8 +187,8 @@ public class World {
     }
 
     public static float getHeightAt(int x, int y) {
-        float xPos = x / (float) (128.0f);
-        float yPos = y / (float) (128.0f);
+        float xPos = x / 128.0f + SEED_OFFSET_X;
+        float yPos = y / 128.0f + SEED_OFFSET_Z;
         // Must match WorldChunk.generate() exactly, or the spawn height lands in
         // the wrong place and the player starts buried.
         double v = PerlinNoiseGenerator.getNoise(xPos, yPos, 3, 3.25f, WorldChunk.sizeY);

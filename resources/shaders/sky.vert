@@ -5,7 +5,8 @@ layout (location = 0) in vec2 inOffset;
 uniform mat4 projection;
 uniform mat4 viewRotation;
 uniform vec3 bodyDirection;
-uniform float bodySize;
+/** Half extent of the quad, which spans the glow rather than just the disc. */
+uniform float quadSize;
 
 out vec2 fragOffset;
 
@@ -16,7 +17,7 @@ void main() {
     // Building the quad perpendicular to the body direction instead leaves it
     // subject to perspective stretch toward the screen edges.
     vec3 viewDir = normalize(mat3(viewRotation) * normalize(bodyDirection));
-    vec3 viewPos = viewDir + vec3(inOffset.x, inOffset.y, 0.0) * bodySize;
+    vec3 viewPos = viewDir + vec3(inOffset.x, inOffset.y, 0.0) * quadSize;
 
     vec4 pos = projection * vec4(viewPos, 1.0);
     // Force to the far plane so terrain always draws in front.

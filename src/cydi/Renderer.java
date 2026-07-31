@@ -62,7 +62,9 @@ public class Renderer {
     private static float ambR = 0.40f, ambG = 0.45f, ambB = 0.55f;
     private static float groundR = 0.22f, groundG = 0.20f, groundB = 0.17f;
     private static float sunElevation = 1f;
+    private static float moonElevation = -1f;
     private static float moonIllumination = 1f;
+    private static float moonPhaseAngle = (float) Math.PI;
     private static int moonPhase = 0;
 
     /** Names for the eight moon phases, indexed by {@link #getMoonPhase()}. */
@@ -227,36 +229,52 @@ public class Renderer {
         sunDirY = -elevation / len;
         sunDirZ = -0.35f / len;
 
-        // The moon rides opposite the sun.
-        moonDirX = -sunDirX;
-        moonDirY = -sunDirY;
-        moonDirZ = -sunDirZ;
+        // The moon keeps its own slightly longer day, so it drifts against the
+        // sun instead of sitting exactly opposite it, and rises a little later
+        // each night. Its orbit is also tilted onto a different track.
+        double lunarDay = (dayCount + timeOfDay) / LUNAR_PERIOD_DAYS;
+        double moonAngle = (lunarDay - 0.25) * 2.0 * Math.PI;
+        float moonElev = (float) Math.sin(moonAngle);
+        float moonAzim = (float) Math.cos(moonAngle);
+        float moonTilt = 0.55f;   // offset track, not the sun's mirror
+        float moonLen = (float) Math.sqrt(moonAzim * moonAzim + moonElev * moonElev + moonTilt * moonTilt);
+        moonDirX = -moonAzim / moonLen;
+        moonDirY = -moonElev / moonLen;
+        moonDirZ = -moonTilt / moonLen;
+        moonElevation = moonElev;
 
         float day = smoothstep(-0.10f, 0.22f, elevation);
         float night = 1.0f - day;
         // Warm band that peaks while the sun sits near the horizon.
         float dusk = (float) Math.exp(-(elevation * 5.0) * (elevation * 5.0)) * day;
 
-        // Eight phases; illumination peaks at full moon and vanishes at new moon.
-        moonPhase = Math.floorMod(dayCount, 8);
-        float phaseAngle = moonPhase / 8.0f * 2.0f * (float) Math.PI;
-        moonIllumination = (1.0f - (float) Math.cos(phaseAngle)) * 0.5f;
+        // Phase follows the angle between the sun and moon directions, which is
+        // what actually drives it, rather than being keyed off the day counter.
+        float cosSep = sunDirX * moonDirX + sunDirY * moonDirY + sunDirZ * moonDirZ;
+        float separation = (float) Math.acos(Math.max(-1.0, Math.min(1.0, cosSep)));
+        moonIllumination = (1.0f - (float) Math.cos(separation)) * 0.5f;
+        moonPhaseAngle = separation;
+        moonPhase = (int) Math.round(separation / Math.PI * 4.0) % 8;
 
-        float moonUp = Math.max(-elevation, 0.0f);
-        float moonStrength = night * moonIllumination * moonUp;
+        float moonUp = Math.max(-moonDirY, 0.0f);
+        // Moonlight depends on the moon's own elevation and phase, not on
+        // whether the sun happens to be up, since both can share the sky.
+        float moonStrength = moonIllumination * moonUp;
+        // It is only perceptible once the sun stops washing it out.
+        float moonVisibleStrength = moonStrength * night;
 
-        skyR = lerp(0.04f, 0.52f, day) + dusk * 0.42f + moonStrength * 0.05f;
-        skyG = lerp(0.06f, 0.80f, day) + dusk * 0.10f + moonStrength * 0.07f;
-        skyB = lerp(0.14f, 0.92f, day) - dusk * 0.10f + moonStrength * 0.12f;
+        skyR = lerp(0.04f, 0.52f, day) + dusk * 0.42f + moonVisibleStrength * 0.05f;
+        skyG = lerp(0.06f, 0.80f, day) + dusk * 0.10f + moonVisibleStrength * 0.07f;
+        skyB = lerp(0.14f, 0.92f, day) - dusk * 0.10f + moonVisibleStrength * 0.12f;
 
         sunR = lerp(0.00f, 0.72f, day) + dusk * 0.25f;
         sunG = lerp(0.00f, 0.66f, day) - dusk * 0.05f;
         sunB = lerp(0.00f, 0.56f, day) - dusk * 0.12f;
 
         // Cool, dim moonlight so nights read as lit rather than merely dark.
-        moonR = 0.22f * moonStrength;
-        moonG = 0.26f * moonStrength;
-        moonB = 0.38f * moonStrength;
+        moonR = 0.22f * moonVisibleStrength;
+        moonG = 0.26f * moonVisibleStrength;
+        moonB = 0.38f * moonVisibleStrength;
 
         // Night keeps a raised blue skylight so the world stays navigable.
         float nightAmbient = 0.16f + 0.10f * moonIllumination;
@@ -270,6 +288,9 @@ public class Renderer {
 
         glClearColor(skyR, skyG, skyB, 1.0f);
     }
+
+    /** Lunar day length relative to the solar day, so the moon drifts. */
+    private static final double LUNAR_PERIOD_DAYS = 1.035;
 
     private static float lerp(float a, float b, float t) {
         return a + (b - a) * t;
@@ -304,27 +325,39 @@ public class Renderer {
         glBindVertexArray(skyVao);
 
         // Sun: visible whenever it is above the horizon.
-        float sunVisible = clamp01((-sunDirY + 0.15f) * 3.0f);
+        float sunVisible = clamp01((-sunDirY + 0.12f) * 4.0f);
         if (sunVisible > 0.001f) {
             skyShader.setVector3f("bodyDirection", -sunDirX, -sunDirY, -sunDirZ);
-            skyShader.setFloat("bodySize", 0.055f);
-            skyShader.setVector3f("bodyColor", 1.0f, 0.94f, 0.78f);
+            // The quad is much larger than the disc so the glow and rays have
+            // room to fade out instead of ending at a hard edge.
+            skyShader.setFloat("quadSize", 0.30f);
+            skyShader.setFloat("discRadius", 0.17f);
+            skyShader.setVector3f("bodyColor", 1.0f, 0.95f, 0.82f);
             skyShader.setFloat("bodyAlpha", sunVisible);
             skyShader.setBoolean("showPhase", false);
-            skyShader.setFloat("glow", 0.30f);
+            skyShader.setBoolean("showRays", true);
+            skyShader.setFloat("rayTime", (float) org.lwjgl.glfw.GLFW.glfwGetTime());
+            skyShader.setFloat("glowStrength", 0.55f);
             glDrawArrays(GL_TRIANGLES, 0, 6);
         }
 
-        // Moon: fades in as the sun sets, and shows its phase.
-        float moonVisible = clamp01((-moonDirY + 0.15f) * 3.0f) * clamp01(0.35f - sunElevation * 1.5f);
-        if (moonVisible > 0.001f && moonIllumination > 0.01f) {
+        // Moon: shown whenever it is above the horizon. The two orbits differ,
+        // so a daylit moon is expected rather than something to suppress.
+        float moonVisible = clamp01((-moonDirY + 0.12f) * 4.0f);
+        if (moonVisible > 0.001f && moonIllumination > 0.02f) {
+            // Fade it back in daylight so it reads as a pale daytime moon.
+            float daylight = smoothstep(-0.05f, 0.30f, sunElevation);
+            float alpha = moonVisible * (1.0f - daylight * 0.62f);
+
             skyShader.setVector3f("bodyDirection", -moonDirX, -moonDirY, -moonDirZ);
-            skyShader.setFloat("bodySize", 0.045f);
-            skyShader.setVector3f("bodyColor", 0.86f, 0.89f, 1.0f);
-            skyShader.setFloat("bodyAlpha", moonVisible);
+            skyShader.setFloat("quadSize", 0.13f);
+            skyShader.setFloat("discRadius", 0.62f);
+            skyShader.setVector3f("bodyColor", 0.90f, 0.92f, 1.0f);
+            skyShader.setFloat("bodyAlpha", alpha);
             skyShader.setBoolean("showPhase", true);
-            skyShader.setFloat("phaseAngle", moonPhase / 8.0f * 2.0f * (float) Math.PI);
-            skyShader.setFloat("glow", 0.12f);
+            skyShader.setBoolean("showRays", false);
+            skyShader.setFloat("phaseAngle", moonPhaseAngle);
+            skyShader.setFloat("glowStrength", 0.10f);
             glDrawArrays(GL_TRIANGLES, 0, 6);
         }
 

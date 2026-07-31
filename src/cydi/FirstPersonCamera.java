@@ -21,8 +21,18 @@ public class FirstPersonCamera extends Camera {
         acceleration = new Vector3d(0, 0, 0);
     }
 
+    /** Restores a saved orientation, rebuilding the derived sight vectors. */
+    public void setOrientation(float newYaw, float newPitch) {
+        this.yaw = 0;
+        this.pitch = 0;
+        this.sight = new Vector3d(0, 0, -1);
+        this.right = new Vector3d(-1, 0, 0);
+        yaw(newYaw);
+        pitch(newPitch);
+    }
+
     public void resetPosition() {
-        position.x = Game.PLAYER_START_POSITION.x;
+        position.y = Game.PLAYER_START_POSITION.y;
         position.y = Game.PLAYER_START_POSITION.y;
         position.z = Game.PLAYER_START_POSITION.z;
         velocity = new Vector3d(0, 0, 0);

@@ -95,7 +95,13 @@ void main() {
         // the very crevices it is meant to reveal.
         float directAo = mix(1.0, ao, 0.3);
 
-        lit += albedo * flashlightColor * cone * falloff * falloff * facing * directAo;
+        // A torch is invisible against full daylight. Fading it out as the scene
+        // brightens keeps caves lit without blowing out sunlit ground.
+        float sceneLuma = dot(ambient + direct, vec3(0.299, 0.587, 0.114));
+        float adaptation = clamp(1.0 - sceneLuma * 1.35, 0.0, 1.0);
+
+        lit += albedo * flashlightColor * cone * falloff * falloff
+             * facing * directAo * adaptation;
     }
 
     if (fogEnabled) {

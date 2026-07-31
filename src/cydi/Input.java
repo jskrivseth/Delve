@@ -108,6 +108,13 @@ public class Input {
             return;
         }
 
+        if (Game.SCREEN != Game.Screen.PLAYING) {
+            updateTitle();
+            cursorDeltaX = 0;
+            cursorDeltaY = 0;
+            return;
+        }
+
         float dt = gameTime / 1000.0f;
 
         if (Game.MENU_OPEN) {
@@ -129,6 +136,38 @@ public class Input {
         handleMovement(dt);
         handleMouseButtons();
         handleToggles();
+    }
+
+    private void updateTitle() {
+        try (org.lwjgl.system.MemoryStack stack = org.lwjgl.system.MemoryStack.stackPush()) {
+            java.nio.DoubleBuffer mx = stack.mallocDouble(1);
+            java.nio.DoubleBuffer my = stack.mallocDouble(1);
+            glfwGetCursorPos(window.handle(), mx, my);
+            Game.TITLE.updateHover(mx.get(0), my.get(0));
+
+            boolean left = glfwGetMouseButton(window.handle(), GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+            if (left && !leftMouseWasDown) {
+                Game.TITLE.click(mx.get(0), my.get(0));
+            }
+            leftMouseWasDown = left;
+        }
+
+        if (wasPressed(GLFW_KEY_ESCAPE)) {
+            if (Game.TITLE.isShowingWorlds()) {
+                Game.TITLE.openMain();
+            } else {
+                window.requestClose();
+            }
+        }
+    }
+
+    /** Clears look state so resuming a world does not jump the view. */
+    public void resetLook() {
+        firstCursorSample = true;
+        cursorDeltaX = 0;
+        cursorDeltaY = 0;
+        leftMouseWasDown = true;
+        rightMouseWasDown = true;
     }
 
     private void updateMenu() {
