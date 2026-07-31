@@ -46,6 +46,37 @@ Central; no manual downloads or `libs/` folder are required.
 | `F11` | Fullscreen |
 | `Esc` | Settings menu (save and exit from here) |
 
+On the title screen, left- and right-clicking **World Preset** cycles the planet
+a new world is generated on. The choice is recorded in the save, so an existing
+world always reloads on the planet it was created for.
+
+## Planets
+
+A world is generated against one of four planet presets. Each preset is a
+`PlanetProfile` subclass owning its own physics, atmosphere and sky, so adding a
+planet means adding a class rather than threading another branch through the
+renderer.
+
+| Planet | Feel |
+| --- | --- |
+| Earth | Baseline gravity, blue sky, orange twilight, one moon, mixed cloud decks |
+| Mars | Low gravity, rusty daytime sky inverting to blue twilight, two small moons on separate orbits |
+| Venus | High gravity, thick yellow haze, no moon, a deep opaque cloud deck |
+| Triton | Very low gravity, near-vacuum sky at under a tenth of Earth's sunlight, no moon, Neptune looming over the horizon |
+
+Jump force scales *with* gravity — a person pushes harder against a heavier
+world — while a per-planet velocity cap keeps low-gravity worlds from
+slingshotting the player into orbit.
+
+## Biomes
+
+Earth terrain is divided into ten biomes selected from temperature and moisture
+fields: hot desert, savanna, shrubland, temperate grassland, temperate forest,
+boreal forest, tundra, tropical rainforest, wetland and alpine. Neighbouring
+biomes are blended rather than stamped, so surface blocks, foliage and terrain
+shaping cross-fade over a margin instead of changing along a hard line. The
+window title reports the biome under the player.
+
 ## Texture packs
 
 Packs are loaded at runtime from `texturepacks/`, as either a directory or a
@@ -68,6 +99,10 @@ never re-meshes chunks.
 | `TitleScreen` / `Menu` | World picker and settings, drawn via `MenuPanel` |
 | `Window` | GLFW window and OpenGL 3.3 core context |
 | `Renderer` | Chunk, sky, post-processing, debug-line and HUD passes; VAO based |
+| `PlanetProfile` / `PlanetProfiles` | Per-planet physics, atmosphere, sky bodies and cloud tuning |
+| `WorldPreset` | Static facade the rest of the engine reads planet values through |
+| `BiomeDefinition` / `EarthBiome` | Biome table: surface blocks, foliage, terrain shaping |
+| `BiomeBlend` | Cross-fades biome parameters so borders are gradients, not seams |
 | `Framebuffer` | Colour + depth target for the post-processing passes |
 | `ShaderProgram` | Compile/link with cached uniform locations |
 | `Texture` / `TexturePack` | STB-backed atlas loading, runtime pack swapping |
@@ -92,6 +127,14 @@ never re-meshes chunks.
   runs orange through pink into violet
 - Screen-space god rays marched from the light and masked by scene depth, so
   shafts break around terrain
+- Volumetric clouds on Earth and Venus: the layer is a real slab, raymarched
+  with a secondary march toward the sun for self-shadowing, Beer-Lambert
+  extinction, a Henyey-Greenstein phase for the silver lining and a powder term
+  so thin edges stay wispy while cores can blot out the sun. The same density
+  field shadows the ground and breaks the god rays, so a cloud, its shadow and
+  the gap it cuts in the shafts all agree
+- Clouds drift on world-space wind and evolve with the day cycle rather than in
+  lock step with it
 - Sun and moon on independent orbits, both able to share the sky, with an
   eight-day lunar phase cycle
 - Opaque pass followed by a blended pass for water
@@ -109,9 +152,9 @@ require a lock ordering to stay deadlock free.
 ### Persistence
 
 Each world owns a directory under `saves/` holding its chunk files and a
-`world.properties` recording the seed, player position and orientation, time of
-day and day count. Chunks edited by the player are flagged and written out, then
-reloaded instead of being regenerated from noise.
+`world.properties` recording the seed, planet preset, player position and
+orientation, time of day and day count. Chunks edited by the player are flagged
+and written out, then reloaded instead of being regenerated from noise.
 
 The seed reseeds the Perlin generator itself. Offsetting the sample coordinates
 is not a substitute, because the generator's permutation table is the noise

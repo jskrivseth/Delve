@@ -169,17 +169,99 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         }
 
         int[][][] data = new int[sizeX][sizeY][sizeZ];
+        int[][] heightMap = new int[sizeX][sizeZ];
+        int[][] surfaceMap = new int[sizeX][sizeZ];
+        int[][] biomeTypeMap = new int[sizeX][sizeZ];
+        float[][] tundraWeightMap = new float[sizeX][sizeZ];
+        float[][] desertWeightMap = new float[sizeX][sizeZ];
+        float[][] forestWeightMap = new float[sizeX][sizeZ];
+        float[][] grassyWeightMap = new float[sizeX][sizeZ];
+        float[][] ruggednessMap = new float[sizeX][sizeZ];
+        float[][] wetlandMap = new float[sizeX][sizeZ];
+        int worldPreset = WorldPreset.clamp(World.WORLD_PRESET);
         int highest = 1;
 
-        //Do a 2D perlin noise for the surface
+        // Climate + relief driven terrain. Temperature/moisture choose a simple
+        // biome, while ruggedness controls whether an area is flat or mountainy.
         for (int x = 0; x < sizeX; x++) {
             for (int z = 0; z < sizeZ; z++) {
-                double xPos = (worldPosX + x) / 128.0;
-                double zPos = (worldPosY + z) / 128.0;
-                double v = PerlinNoiseGenerator.getNoise(xPos, zPos, 3, 3.25f, sizeY);
-                v += 1.0f;
+                int worldX = worldPosX + x;
+                int worldZ = worldPosY + z;
+                double wx = warpedX(worldX, worldZ);
+                double wz = warpedZ(worldX, worldZ);
 
-                int height = (int) (v * (sizeY / 2.0));
+                // Medium-frequency climate so biome patches are smaller.
+                float temperature = sample01(wx, wz, 230.0, 0, 0);
+                float moisture = sample01(wx, wz, 240.0, 137, -89);
+                // Add detail-scale climate variation to break up giant blobs.
+                temperature = clamp01(temperature + (sample01(wx, wz, 120.0, 311, -173) - 0.5f) * 0.26f);
+                moisture = clamp01(moisture + (sample01(wx, wz, 130.0, -421, 257) - 0.5f) * 0.30f);
+                float ruggedness = sample01(wx, wz, 560.0, -211, 173);
+                float continent = sample01(wx, wz, 960.0, 41, -271);
+                float macro = sample01(wx, wz, 1800.0, 73, -511);
+                float mountainRegion = sample01(wx, wz, 1350.0, -733, 419);
+                BiomeBlend biome = blendBiomes(temperature, moisture, wx, wz);
+
+                // Macro zones: lowlands and highlands modulate base and relief
+                // smoothly so large regions share a broad topography.
+                float highlands = smoothstep(0.54f, 0.80f, macro) * smoothstep(0.50f, 0.82f, mountainRegion);
+                float lowlands = (1.0f - smoothstep(0.18f, 0.36f, macro))
+                        * (1.0f - smoothstep(0.58f, 0.84f, mountainRegion));
+
+                float detail = fbm01(wx, wz);
+                float micro = fbm01(wx * 2 + 311, wz * 2 - 227);
+                float clumpPrimary = sample01(wx, wz, 780.0, -503, 907);
+                float clumpSecondary = sample01(wx, wz, 360.0, 211, -311);
+                float dramaticBand = smoothstep(0.52f, 0.80f, clumpPrimary + (clumpSecondary - 0.5f) * 0.32f);
+                float ridgeNoise = (float) PerlinNoiseGenerator.getNoise(wx / 190.0, wz / 190.0);
+                float ridge = 1.0f - Math.abs(ridgeNoise);
+
+                float desertW = biome.weight(BiomeDefinition.DESERT);
+                float tundraW = biome.weight(BiomeDefinition.TUNDRA);
+                float forestW = biome.weight(BiomeDefinition.FOREST);
+                float grassyW = biome.weight(BiomeDefinition.GRASSY);
+                float biomeDrama = desertW * BiomeDefinition.ALL[BiomeDefinition.DESERT].dramaBias
+                        + tundraW * BiomeDefinition.ALL[BiomeDefinition.TUNDRA].dramaBias
+                        + forestW * BiomeDefinition.ALL[BiomeDefinition.FOREST].dramaBias
+                        + grassyW * BiomeDefinition.ALL[BiomeDefinition.GRASSY].dramaBias;
+                float clumpFactor = lerp(0.78f, 2.05f, clamp01(dramaticBand * biomeDrama));
+                float mountainMask = smoothstep(0.50f, 0.86f,
+                        mountainRegion * 0.62f + highlands * 0.34f + dramaticBand * 0.18f);
+                // Colder climates support stronger alpine relief.
+                mountainMask *= lerp(0.82f, 1.15f, tundraW);
+
+                float relief = lerp(0.15f, 0.42f, ruggedness);
+                // Biome parameters are blended rather than hard-switched, so
+                // borders transition by continuously changing terrain shape.
+                float biomeRelief = desertW * BiomeDefinition.ALL[BiomeDefinition.DESERT].reliefScale
+                        + tundraW * BiomeDefinition.ALL[BiomeDefinition.TUNDRA].reliefScale
+                        + forestW * BiomeDefinition.ALL[BiomeDefinition.FOREST].reliefScale
+                        + grassyW * BiomeDefinition.ALL[BiomeDefinition.GRASSY].reliefScale;
+                relief *= biomeRelief;
+                relief *= lerp(0.74f, 1.42f, highlands);
+                relief *= lerp(0.70f, 1.00f, 1.0f - lowlands);
+                relief *= clumpFactor;
+                relief *= lerp(1.0f, 2.35f, mountainMask);
+
+                float biomeBase = desertW * BiomeDefinition.ALL[BiomeDefinition.DESERT].baseBias
+                        + tundraW * BiomeDefinition.ALL[BiomeDefinition.TUNDRA].baseBias
+                        + forestW * BiomeDefinition.ALL[BiomeDefinition.FOREST].baseBias
+                        + grassyW * BiomeDefinition.ALL[BiomeDefinition.GRASSY].baseBias;
+                float base = 0.22f + continent * 0.30f + biomeBase
+                        + highlands * 0.08f - lowlands * 0.06f; // continental scale + macro zones
+                base += mountainMask * 0.09f;
+                float clumpN = clamp01((clumpFactor - 0.78f) / (2.05f - 0.78f));
+                float broad = (detail - 0.5f) * 2.0f;
+                float fine = (micro - 0.5f) * 2.0f;
+                float ridged = (ridge - 0.5f) * 2.0f;
+                float terrainSignal = broad * (0.74f + 0.30f * clumpN)
+                        + fine * (0.14f + 0.58f * clumpN)
+                        + ridged * (0.10f + 0.90f * mountainMask);
+                float normalizedHeight = base + terrainSignal * relief * 0.88f;
+                // Keep tundra bands notably more alpine than surrounding climates.
+                normalizedHeight += tundraW * (0.040f + highlands * 0.028f);
+                normalizedHeight = remapHeightForPreset(worldPreset, normalizedHeight, ruggedness, highlands, lowlands, mountainMask, detail, micro, ridge);
+                int height = (int) (normalizedHeight * (sizeY - 6));
                 if (height > sizeY - 4) {
                     height = sizeY - 4;
                 }
@@ -187,7 +269,26 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                     height = 1;
                 }
 
-                int surface = surfaceTypeFor(height);
+                float wetland = clamp01((moisture - 0.58f) * 2.4f)
+                        * clamp01((SEA_LEVEL + 10 - height) / 14.0f)
+                        * clamp01(1.0f - ruggedness * 1.1f)
+                        * lowlands;
+
+                int biomeType = worldPreset == WorldPreset.EARTH
+                        ? classifyEarthBiome(temperature, moisture, ruggedness, height, wetland, biome)
+                        : -1;
+                int surface = worldPreset == WorldPreset.EARTH
+                        ? surfaceTypeFor(height, biome, ruggedness, temperature, highlands, wetland, worldX, worldZ, biomeType)
+                        : surfaceTypeForPlanet(worldPreset, height, ruggedness, temperature, moisture, worldX, worldZ, highlands, lowlands);
+                heightMap[x][z] = height;
+                surfaceMap[x][z] = surface;
+                biomeTypeMap[x][z] = biomeType;
+                tundraWeightMap[x][z] = biome.weight(BiomeDefinition.TUNDRA);
+                desertWeightMap[x][z] = biome.weight(BiomeDefinition.DESERT);
+                forestWeightMap[x][z] = biome.weight(BiomeDefinition.FOREST);
+                grassyWeightMap[x][z] = biome.weight(BiomeDefinition.GRASSY);
+                ruggednessMap[x][z] = ruggedness;
+                wetlandMap[x][z] = wetland;
                 for (int y = 0; y <= height; y++) {
                     int type;
                     if (y == 0) {
@@ -195,16 +296,34 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                     } else if (y == height) {
                         type = surface;
                     } else if (y >= height - 3) {
-                        type = (surface == Block.SAND) ? Block.SAND : Block.DIRT;
+                        type = worldPreset == WorldPreset.EARTH
+                                ? fillerTypeFor(surface, biome, y, height, worldX, worldZ, wetland)
+                                : fillerTypeForPlanet(worldPreset, surface, y, height);
                     } else {
-                        type = Block.STONE;
+                        type = worldPreset == WorldPreset.EARTH
+                                ? geologyTypeFor(y, worldX, worldZ)
+                                : geologyTypeForPlanet(worldPreset, y, worldX, worldZ);
                     }
                     data[x][y][z] = type;
                 }
 
-                // Flood everything below sea level so lakes get a flat surface.
-                for (int y = height + 1; y <= SEA_LEVEL; y++) {
-                    data[x][y][z] = Block.WATER;
+                if (worldPreset == WorldPreset.EARTH) {
+                    // Flood everything below sea level so lakes get a flat surface.
+                    for (int y = height + 1; y <= SEA_LEVEL; y++) {
+                        data[x][y][z] = Block.WATER;
+                    }
+                    // Wetland puddles above sea level.
+                    if (wetland > 0.56f && height >= SEA_LEVEL + 1 && height <= SEA_LEVEL + 6
+                            && (hash(worldX, worldZ, height, 404) % 100) < 34) {
+                        data[x][height][z] = Block.CLAY;
+                        if (height + 1 < sizeY - 1) {
+                            data[x][height + 1][z] = Block.WATER;
+                        }
+                    }
+                } else if (worldPreset == WorldPreset.TRITON) {
+                    for (int y = height + 1; y <= SEA_LEVEL - 4; y++) {
+                        data[x][y][z] = Block.FROST_ICE;
+                    }
                 }
 
                 int top = Math.max(height, height < SEA_LEVEL ? SEA_LEVEL : height);
@@ -212,6 +331,13 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                     highest = top + 1;
                 }
             }
+        }
+
+        if (worldPreset == WorldPreset.EARTH) {
+            highest = plantTrees(data, heightMap, surfaceMap, biomeTypeMap, tundraWeightMap, desertWeightMap, forestWeightMap, grassyWeightMap, ruggednessMap, wetlandMap, highest);
+            highest = plantVegetation(data, heightMap, surfaceMap, biomeTypeMap, tundraWeightMap, desertWeightMap, forestWeightMap, grassyWeightMap, wetlandMap, highest);
+        } else {
+            highest = placePlanetBoulders(data, heightMap, surfaceMap, ruggednessMap, worldPreset, highest);
         }
 
         this.blocks = data;
@@ -224,17 +350,818 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     /** Sea level; columns below this are flooded with water. */
     public static final int SEA_LEVEL = 32;
 
-    private static int surfaceTypeFor(int height) {
+    private static float lerp(float a, float b, float t) {
+        return a + (b - a) * t;
+    }
+
+    private static float clamp01(float v) {
+        return Math.max(0f, Math.min(1f, v));
+    }
+
+    private static float smoothstep(float edge0, float edge1, float x) {
+        float t = clamp01((x - edge0) / Math.max(edge1 - edge0, 0.0001f));
+        return t * t * (3f - 2f * t);
+    }
+
+    private static float sample01(int worldX, int worldZ, double scale, int ox, int oz) {
+        return (float) ((PerlinNoiseGenerator.getNoise((worldX + ox) / scale, (worldZ + oz) / scale) + 1.0) * 0.5);
+    }
+
+    private static float sample01(double worldX, double worldZ, double scale, int ox, int oz) {
+        return (float) ((PerlinNoiseGenerator.getNoise((worldX + ox) / scale, (worldZ + oz) / scale) + 1.0) * 0.5);
+    }
+
+    private static float fbm01(int worldX, int worldZ) {
+        double n = 0.0;
+        double amp = 1.0;
+        double freq = 1.0 / 140.0;
+        double sum = 0.0;
+        for (int i = 0; i < 5; i++) {
+            n += PerlinNoiseGenerator.getNoise(worldX * freq, worldZ * freq) * amp;
+            sum += amp;
+            amp *= 0.52;
+            freq *= 2.08;
+        }
+        float signed = (float) (n / Math.max(sum, 0.0001));
+        return (signed + 1.0f) * 0.5f;
+    }
+
+    private static float fbm01(double worldX, double worldZ) {
+        double n = 0.0;
+        double amp = 1.0;
+        double freq = 1.0 / 140.0;
+        double sum = 0.0;
+        for (int i = 0; i < 5; i++) {
+            n += PerlinNoiseGenerator.getNoise(worldX * freq, worldZ * freq) * amp;
+            sum += amp;
+            amp *= 0.52;
+            freq *= 2.08;
+        }
+        float signed = (float) (n / Math.max(sum, 0.0001));
+        return (signed + 1.0f) * 0.5f;
+    }
+
+    private static double warpedX(int worldX, int worldZ) {
+        double broad = PerlinNoiseGenerator.getNoise((worldX - 413) / 430.0, (worldZ + 271) / 430.0);
+        double detail = PerlinNoiseGenerator.getNoise((worldX + 193) / 150.0, (worldZ - 877) / 150.0);
+        return worldX + broad * 92.0 + detail * 28.0;
+    }
+
+    private static double warpedZ(int worldX, int worldZ) {
+        double broad = PerlinNoiseGenerator.getNoise((worldX + 521) / 430.0, (worldZ - 149) / 430.0);
+        double detail = PerlinNoiseGenerator.getNoise((worldX - 739) / 150.0, (worldZ + 347) / 150.0);
+        return worldZ + broad * 92.0 + detail * 28.0;
+    }
+
+    private static BiomeBlend blendBiomes(float temperature, float moisture, double worldX, double worldZ) {
+        BiomeBlend blend = new BiomeBlend();
+        // Local perturbation so transition bands meander instead of forming wide
+        // smooth corridors across the whole world.
+        float tw = (sample01(worldX, worldZ, 150.0, -91, 63) - 0.5f) * 0.18f;
+        float mw = (sample01(worldX, worldZ, 150.0, 127, -147) - 0.5f) * 0.18f;
+        float t = clamp01(temperature + tw);
+        float m = clamp01(moisture + mw);
+        float sum = 0f;
+        for (BiomeDefinition def : BiomeDefinition.ALL) {
+            float dx = t - def.centerTemp;
+            float dz = m - def.centerMoisture;
+            float dist2 = dx * dx + dz * dz;
+            // Inverse-distance weighting gives a smooth blend where every
+            // parameter can be mixed continuously instead of hard switching.
+            float w = 1.0f / (dist2 + 0.010f);
+            // Reduce grassy/forest dominance so uncommon climates appear more.
+            if (def.id == BiomeDefinition.TUNDRA || def.id == BiomeDefinition.DESERT) {
+                w *= 1.18f;
+            } else {
+                w *= 0.88f;
+            }
+            // Sharpen blending a bit so patches are distinct while still smooth.
+            w = (float) Math.pow(w, 1.18);
+            blend.setWeight(def.id, w);
+            sum += w;
+        }
+        if (sum > 0f) {
+            for (BiomeDefinition def : BiomeDefinition.ALL) {
+                blend.setWeight(def.id, blend.weight(def.id) / sum);
+            }
+        }
+        return blend;
+    }
+
+    private static int classifyEarthBiome(float temperature, float moisture, float ruggedness,
+                                          int height, float wetland, BiomeBlend biome) {
+        float hot = smoothstep(0.60f, 0.84f, temperature);
+        float cold = 1.0f - smoothstep(0.24f, 0.44f, temperature);
+        float wet = smoothstep(0.52f, 0.82f, moisture);
+        float dry = 1.0f - smoothstep(0.30f, 0.56f, moisture);
+        float alpineFactor = smoothstep(80.0f, 102.0f, height) * smoothstep(0.46f, 0.78f, ruggedness);
+        float lowlandFactor = 1.0f - smoothstep(58.0f, 84.0f, height);
+
+        float[] scores = new float[10];
+        scores[EarthBiome.ALPINE] = alpineFactor;
+        scores[EarthBiome.WETLAND] = wetland * lowlandFactor * 1.2f;
+        scores[EarthBiome.HOT_DESERT] = hot * dry;
+        scores[EarthBiome.SAVANNA] = hot * (1.0f - dry) * (1.0f - wet) * 0.95f;
+        scores[EarthBiome.TROPICAL_RAINFOREST] = hot * wet * 1.1f;
+        scores[EarthBiome.TUNDRA] = cold * smoothstep(66.0f, 96.0f, height) * 1.05f;
+        scores[EarthBiome.BOREAL_FOREST] = cold * wet * (1.0f - alpineFactor) * 0.98f;
+        scores[EarthBiome.TEMPERATE_GRASSLAND] = (1.0f - hot) * (1.0f - cold) * dry;
+        scores[EarthBiome.SHRUBLAND] = (1.0f - cold) * (1.0f - wet) * (1.0f - dry) * 0.92f;
+        scores[EarthBiome.TEMPERATE_FOREST] = (1.0f - hot * 0.5f) * wet * 0.96f;
+
+        // Keep legacy Earth blend influences in play so migration stays coherent.
+        scores[EarthBiome.HOT_DESERT] += biome.weight(BiomeDefinition.DESERT) * 0.38f;
+        scores[EarthBiome.TUNDRA] += biome.weight(BiomeDefinition.TUNDRA) * 0.34f;
+        scores[EarthBiome.TEMPERATE_FOREST] += biome.weight(BiomeDefinition.FOREST) * 0.28f;
+        scores[EarthBiome.TEMPERATE_GRASSLAND] += biome.weight(BiomeDefinition.GRASSY) * 0.24f;
+
+        int best = 0;
+        float bestScore = scores[0];
+        for (int i = 1; i < scores.length; i++) {
+            if (scores[i] > bestScore) {
+                bestScore = scores[i];
+                best = i;
+            }
+        }
+        return best;
+    }
+
+    private static float remapHeightForPreset(int preset, float normalizedHeight, float ruggedness,
+                                              float highlands, float lowlands, float mountainMask,
+                                              float detail, float micro, float ridge) {
+        if (preset == WorldPreset.MARS) {
+            float craterBand = smoothstep(0.46f, 0.78f, detail * 0.65f + micro * 0.35f);
+            return normalizedHeight * 0.88f
+                    + ruggedness * 0.05f
+                    + mountainMask * 0.10f
+                    + (ridge - 0.5f) * 0.14f
+                    - craterBand * 0.06f;
+        }
+        if (preset == WorldPreset.VENUS) {
+            float volcanicSwells = smoothstep(0.42f, 0.74f, micro * 0.55f + ridge * 0.45f);
+            return normalizedHeight * 0.92f
+                    + highlands * 0.07f
+                    + volcanicSwells * 0.09f
+                    - lowlands * 0.03f;
+        }
+        if (preset == WorldPreset.TRITON) {
+            float icyPlains = smoothstep(0.35f, 0.70f, detail * 0.58f + ridge * 0.42f);
+            return normalizedHeight * 0.82f
+                    - lowlands * 0.06f
+                    + icyPlains * 0.07f
+                    + (ruggedness - 0.5f) * 0.05f;
+        }
+        return normalizedHeight;
+    }
+
+    private static int surfaceTypeForPlanet(int preset, int height, float ruggedness,
+                                            float temperature, float moisture,
+                                            int worldX, int worldZ, float highlands, float lowlands) {
+        if (preset == WorldPreset.MARS) {
+            float dunes = sample01(worldX, worldZ, 120.0, 409, -211);
+            if (height >= 88 && ruggedness > 0.66f) {
+                return Block.BASALT;
+            }
+            if (dunes > 0.62f && ruggedness < 0.56f) {
+                return Block.RED_SAND;
+            }
+            return Block.THOLIN;
+        }
+        if (preset == WorldPreset.VENUS) {
+            float sulfurPatch = sample01(worldX, worldZ, 155.0, -317, 503);
+            if (height >= 94 && ruggedness > 0.70f) {
+                return Block.BASALT;
+            }
+            if (sulfurPatch > 0.60f || (highlands > 0.56f && temperature > 0.62f)) {
+                return Block.SULFUR_STONE;
+            }
+            return ruggedness > 0.52f ? Block.BASALT : Block.VOLCANIC_ASH;
+        }
+        // Triton: frozen nitrogen plains with darker streaks.
+        float streak = sample01(worldX, worldZ, 90.0, 97, -613);
+        if (height >= 84 && ruggedness > 0.62f) {
+            return Block.FROST_ICE;
+        }
+        if (streak > 0.72f && lowlands > 0.35f) {
+            return Block.THOLIN;
+        }
+        return Block.SLUSH;
+    }
+
+    private static int fillerTypeForPlanet(int preset, int surface, int y, int height) {
+        int depth = height - y;
+        if (preset == WorldPreset.MARS) {
+            if (surface == Block.RED_SAND) {
+                return depth >= 3 ? Block.RED_SANDSTONE : Block.RED_SAND;
+            }
+            return depth >= 3 ? Block.BASALT : Block.THOLIN;
+        }
+        if (preset == WorldPreset.VENUS) {
+            if (surface == Block.SULFUR_STONE) {
+                return depth >= 3 ? Block.BASALT : Block.SULFUR_STONE;
+            }
+            if (surface == Block.VOLCANIC_ASH) {
+                return depth >= 3 ? Block.BASALT : Block.VOLCANIC_ASH;
+            }
+            return Block.BASALT;
+        }
+        if (surface == Block.FROST_ICE) {
+            return depth <= 2 ? Block.FROST_ICE : Block.SLUSH;
+        }
+        if (surface == Block.THOLIN) {
+            return depth <= 2 ? Block.THOLIN : Block.SLUSH;
+        }
+        return depth <= 1 ? Block.SLUSH : Block.FROST_ICE;
+    }
+
+    private static int geologyTypeForPlanet(int preset, int y, int worldX, int worldZ) {
+        float a = (float) PerlinNoiseGenerator.getNoise(worldX / 92.0, (worldZ + y * 2) / 92.0);
+        if (preset == WorldPreset.MARS) {
+            if (a > 0.22f) {
+                return Block.BASALT;
+            }
+            if (a > -0.12f) {
+                return Block.THOLIN;
+            }
+            return Block.DEEPSLATE;
+        }
+        if (preset == WorldPreset.VENUS) {
+            if (a > 0.28f) {
+                return Block.BASALT;
+            }
+            if (a > -0.05f) {
+                return Block.VOLCANIC_ASH;
+            }
+            return Block.GRANITE;
+        }
+        if (a > 0.24f) {
+            return Block.FROST_ICE;
+        }
+        if (a > -0.04f) {
+            return Block.SLUSH;
+        }
+        return Block.THOLIN;
+    }
+
+    private int placePlanetBoulders(int[][][] data, int[][] heightMap, int[][] surfaceMap,
+                                    float[][] ruggednessMap, int preset, int highest) {
+        for (int x = 2; x < sizeX - 2; x++) {
+            for (int z = 2; z < sizeZ - 2; z++) {
+                int y = heightMap[x][z];
+                if (y < 2 || y >= sizeY - 6) {
+                    continue;
+                }
+                int worldX = worldPosX + x;
+                int worldZ = worldPosY + z;
+                float rugged = ruggednessMap[x][z];
+                int spacing = 11 + (hash(worldX, worldZ, preset, 33) % 7); // 11..17
+                int cellX = Math.floorDiv(worldX, spacing);
+                int cellZ = Math.floorDiv(worldZ, spacing);
+                int slotX = Math.floorMod(worldX, spacing);
+                int slotZ = Math.floorMod(worldZ, spacing);
+                int targetX = hash(cellX, cellZ, preset, 91) % spacing;
+                int targetZ = hash(cellZ, cellX, preset, 113) % spacing;
+                if (slotX != targetX || slotZ != targetZ) {
+                    continue;
+                }
+                float chance = 0.26f + rugged * 0.44f;
+                float roll = (hash(worldX, worldZ, y, 157) & 0xFFFF) / 65535.0f;
+                if (roll > chance) {
+                    continue;
+                }
+                if (!isGroundLocallyFlat(heightMap, x, z, 3)) {
+                    continue;
+                }
+
+                int radius = 2 + hash(worldX, worldZ, y, 201) % 3; // 2..4
+                int cap = radius - 1 + hash(worldX, worldZ, y, 233) % 2; // tighter dome
+                int blockA = boulderBlockForPreset(preset, worldX, worldZ, 0);
+                int blockB = boulderBlockForPreset(preset, worldX, worldZ, 1);
+                highest = Math.max(highest, placeBoulderBlob(data, x, y, z, radius, cap, blockA, blockB));
+            }
+        }
+        return highest;
+    }
+
+    private static int boulderBlockForPreset(int preset, int worldX, int worldZ, int variant) {
+        int h = hash(worldX, worldZ, preset, 311 + variant * 17) % 100;
+        if (preset == WorldPreset.MARS) {
+            return h < 82 ? Block.BASALT_BOULDER : Block.SULFUR_BOULDER;
+        }
+        if (preset == WorldPreset.VENUS) {
+            return h < 72 ? Block.SULFUR_BOULDER : Block.BASALT_BOULDER;
+        }
+        return h < 78 ? Block.FROST_BOULDER : Block.SULFUR_BOULDER;
+    }
+
+    private static int placeBoulderBlob(int[][][] data, int cx, int baseY, int cz, int radius, int cap,
+                                        int primary, int accent) {
+        int topY = baseY + 1;
+        int maxY = Math.max(radius + 1, cap);
+        float flatten = 0.72f;
+        for (int dy = -1; dy <= maxY; dy++) {
+            int y = baseY + dy;
+            if (y <= 1 || y >= sizeY - 1) {
+                continue;
+            }
+            for (int dz = -radius; dz <= radius; dz++) {
+                for (int dx = -radius; dx <= radius; dx++) {
+                    int x = cx + dx;
+                    int z = cz + dz;
+                    if (x < 1 || x >= sizeX - 1 || z < 1 || z >= sizeZ - 1) {
+                        continue;
+                    }
+                    float nx = dx / (float) radius;
+                    float ny = dy / (radius * flatten);
+                    float nz = dz / (float) radius;
+                    float radial = nx * nx + ny * ny + nz * nz;
+                    float shellNoise = ((hash(x, y, z, 419) & 0xFFFF) / 65535.0f - 0.5f) * 0.46f;
+                    float threshold = 0.92f + shellNoise;
+                    if (radial > threshold) {
+                        continue;
+                    }
+                    if (dy > 0 && data[x][y][z] != Block.AIR) {
+                        continue;
+                    }
+                    int type = (radial > threshold - 0.16f && ((hash(x, y, z, 503) % 100) < 26))
+                            ? accent : primary;
+                    data[x][y][z] = type;
+                    if (y > topY) {
+                        topY = y;
+                    }
+                }
+            }
+        }
+        return topY + 1;
+    }
+
+    private static int surfaceTypeFor(int height, BiomeBlend biome, float ruggedness,
+                                      float temperature, float highlands, float wetland,
+                                      int worldX, int worldZ, int biomeType) {
+        float desertW = biome.weight(BiomeDefinition.DESERT);
+        float tundraW = biome.weight(BiomeDefinition.TUNDRA);
+        float forestW = biome.weight(BiomeDefinition.FOREST);
+        float grassyW = biome.weight(BiomeDefinition.GRASSY);
+        boolean desertDominant = biome.dominantBiome() == BiomeDefinition.DESERT;
+        boolean tundraDominant = biome.dominantBiome() == BiomeDefinition.TUNDRA;
         if (height < SEA_LEVEL) {
-            return Block.SAND;      // lake bed, covered by water above
+            return desertW > 0.55f ? Block.RED_SAND : Block.SAND;
         }
         if (height <= SEA_LEVEL + 2) {
-            return Block.SAND;      // beach
+            return desertW > 0.55f ? Block.RED_SAND : Block.SAND;
         }
-        if (height >= 96) {
+        if (biomeType == EarthBiome.HOT_DESERT) {
+            if (height >= 90 && ruggedness > 0.76f) {
+                return Block.STONE;
+            }
+            return temperature > 0.72f ? Block.RED_SAND : Block.SAND;
+        }
+        if (biomeType == EarthBiome.WETLAND) {
+            return wetland > 0.72f ? Block.CLAY : Block.MUD;
+        }
+        if (biomeType == EarthBiome.ALPINE) {
+            return ruggedness > 0.66f ? Block.STONE : Block.SNOW;
+        }
+        if (desertDominant) {
+            if (height >= 92 && ruggedness > 0.78f) {
+                return Block.STONE;
+            }
+            return temperature > 0.72f ? Block.RED_SAND : Block.SAND;
+        }
+        if (wetland > 0.65f && height <= SEA_LEVEL + 8) {
+            return Block.CLAY;
+        }
+        // Snow line tracks temperature and broad relief so snow stays altitude-
+        // correlated instead of touching warm low-altitude surfaces.
+        float snowline = lerp(108.0f, 74.0f, clamp01(1.0f - temperature));
+        snowline -= highlands * 10.0f;
+        if (tundraDominant) {
+            float thaw = sample01(worldX, worldZ, 95.0, 211, -67);
+            if (height >= snowline + 5.0f || (height >= snowline && ruggedness > 0.62f)) {
+                return Block.SNOW;
+            }
+            if (wetland > 0.50f && height <= SEA_LEVEL + 14) {
+                return Block.SLUSH;
+            }
+            if (thaw > 0.60f) {
+                return Block.MUD;
+            }
+            return Block.DIRT;
+        }
+        if (tundraW > 0.44f && wetland > 0.56f && height <= SEA_LEVEL + 10) {
+            return Block.SLUSH;
+        }
+        if (tundraW > 0.48f) {
+            return height >= snowline - 2.0f ? Block.SNOW : Block.DIRT;
+        }
+        if (biomeType == EarthBiome.SAVANNA) {
+            return ruggedness > 0.68f ? Block.STONE : Block.DIRT;
+        }
+        if (biomeType == EarthBiome.SHRUBLAND) {
+            return ruggedness > 0.58f ? Block.STONE : Block.DIRT;
+        }
+        if (biomeType == EarthBiome.TEMPERATE_GRASSLAND) {
+            return Block.GRASS;
+        }
+        if (biomeType == EarthBiome.TEMPERATE_FOREST) {
+            return wetland > 0.54f ? Block.MUD : Block.GRASS;
+        }
+        if (biomeType == EarthBiome.BOREAL_FOREST) {
+            return height >= snowline - 1.0f ? Block.SNOW : Block.DIRT;
+        }
+        if (biomeType == EarthBiome.TROPICAL_RAINFOREST) {
+            return wetland > 0.58f ? Block.MUD : Block.GRASS;
+        }
+        if (desertW > 0.52f) {
+            return Block.RED_SAND;
+        }
+        if (height >= snowline && ruggedness > 0.40f) {
             return Block.SNOW;
         }
+        if (height >= 86 && ruggedness > 0.70f) {
+            return Block.STONE;
+        }
+        if (forestW > 0.45f || grassyW > 0.35f) {
+            return Block.GRASS;
+        }
         return Block.GRASS;
+    }
+
+    private static int fillerTypeFor(int surface, BiomeBlend biome, int y, int height,
+                                     int worldX, int worldZ, float wetland) {
+        int depth = height - y;
+        if (surface == Block.SAND) {
+            return depth >= 3 ? Block.SANDSTONE : Block.SAND;
+        }
+        if (surface == Block.RED_SAND) {
+            return depth >= 3 ? Block.RED_SANDSTONE : Block.RED_SAND;
+        }
+        if (surface == Block.CLAY) {
+            return Block.CLAY;
+        }
+        if (surface == Block.MUD) {
+            return depth >= 3 ? Block.DIRT : Block.MUD;
+        }
+        if (surface == Block.SLUSH) {
+            if (depth <= 1) {
+                return Block.SLUSH;
+            }
+            return depth <= 3 ? Block.MUD : Block.DIRT;
+        }
+        if (surface == Block.SNOW && biome.weight(BiomeDefinition.TUNDRA) > 0.40f) {
+            return depth <= 1 ? Block.SNOW : (depth <= 3 ? Block.SLUSH : Block.DIRT);
+        }
+        if (surface == Block.STONE) {
+            return Block.ANDESITE;
+        }
+        // Damp, low columns can lay clay under shallow lake water.
+        if (wetland > 0.48f || height <= SEA_LEVEL + 2) {
+            float wetness = (float) ((PerlinNoiseGenerator.getNoise((worldX - 41) / 170.0, (worldZ + 23) / 170.0) + 1.0) * 0.5);
+            if (wetness > 0.65f && depth <= 5) {
+                return Block.CLAY;
+            }
+        }
+        return Block.DIRT;
+    }
+
+    private static int geologyTypeFor(int y, int worldX, int worldZ) {
+        if (y < 10) {
+            return Block.DEEPSLATE;
+        }
+        float a = (float) PerlinNoiseGenerator.getNoise(worldX / 96.0, (worldZ + y * 2) / 96.0);
+        if (a > 0.40f) {
+            return Block.GRANITE;
+        }
+        if (a > 0.14f) {
+            return Block.DIORITE;
+        }
+        if (a > -0.08f) {
+            return Block.ANDESITE;
+        }
+        float damp = (float) ((PerlinNoiseGenerator.getNoise((worldX - 79) / 210.0, (worldZ + 53) / 210.0) + 1.0) * 0.5);
+        if (damp > 0.76f && y < SEA_LEVEL + 12) {
+            return Block.MOSSY_COBBLESTONE;
+        }
+        return Block.STONE;
+    }
+
+    private int plantVegetation(int[][][] data,
+                                int[][] heightMap,
+                                int[][] surfaceMap,
+                                int[][] biomeTypeMap,
+                                float[][] tundraWeightMap,
+                                float[][] desertWeightMap,
+                                float[][] forestWeightMap,
+                                float[][] grassyWeightMap,
+                                float[][] wetlandMap,
+                                int highest) {
+        for (int x = 1; x < sizeX - 1; x++) {
+            for (int z = 1; z < sizeZ - 1; z++) {
+                int y = heightMap[x][z];
+                if (y < 1 || y >= sizeY - 2) {
+                    continue;
+                }
+                int surface = surfaceMap[x][z];
+                if (surface != Block.GRASS && surface != Block.CLAY && surface != Block.SNOW
+                        && surface != Block.DIRT && surface != Block.MUD && surface != Block.SLUSH) {
+                    continue;
+                }
+                if (data[x][y + 1][z] != Block.AIR) {
+                    continue;
+                }
+                // Keep plants away from chunk borders so decoration does not
+                // depend on neighbour load order.
+                if (x < 2 || x > sizeX - 3 || z < 2 || z > sizeZ - 3) {
+                    continue;
+                }
+
+                int wx = worldPosX + x;
+                int wz = worldPosY + z;
+                float tundraW = tundraWeightMap[x][z];
+                float desertW = desertWeightMap[x][z];
+                float forestW = forestWeightMap[x][z];
+                float grassyW = grassyWeightMap[x][z];
+                float wet = wetlandMap[x][z];
+                int biomeType = biomeTypeMap[x][z];
+                if (desertW > 0.42f) {
+                    continue;
+                }
+                int h = hash(wx, wz, y, 911);
+
+                float plantChance = 0.05f + forestW * 0.22f + grassyW * 0.16f + wet * 0.22f;
+                plantChance *= (1.0f - tundraW * 0.72f);
+                plantChance *= (1.0f - desertW * 0.95f);
+                if (biomeType == EarthBiome.TROPICAL_RAINFOREST) {
+                    plantChance *= 1.38f;
+                } else if (biomeType == EarthBiome.SAVANNA || biomeType == EarthBiome.BOREAL_FOREST) {
+                    plantChance *= 0.82f;
+                } else if (biomeType == EarthBiome.ALPINE || biomeType == EarthBiome.SHRUBLAND) {
+                    plantChance *= 0.56f;
+                }
+                if (((h & 0xFFFF) / 65535.0f) > plantChance) {
+                    continue;
+                }
+
+                int type;
+                int pick = (h >>> 16) & 0xFF;
+                switch (biomeType) {
+                    case EarthBiome.TUNDRA -> type = pick < 86 ? Block.BROWN_GRASS : (pick < 96 ? Block.MUSHROOM : Block.TALL_GRASS);
+                    case EarthBiome.BOREAL_FOREST -> type = pick < 72 ? Block.BROWN_GRASS : (pick < 92 ? Block.MUSHROOM : Block.TALL_GRASS);
+                    case EarthBiome.SAVANNA -> type = pick < 80 ? Block.BROWN_GRASS : (pick < 94 ? Block.TALL_GRASS : Block.FLOWER);
+                    case EarthBiome.SHRUBLAND -> type = pick < 74 ? Block.BROWN_GRASS : (pick < 92 ? Block.MUSHROOM : Block.FLOWER);
+                    case EarthBiome.TROPICAL_RAINFOREST -> type = pick < 66 ? Block.TALL_GRASS : (pick < 86 ? Block.FLOWER : Block.MUSHROOM);
+                    case EarthBiome.WETLAND -> type = pick < 70 ? Block.TALL_GRASS : (pick < 82 ? Block.FLOWER : Block.MUSHROOM);
+                    case EarthBiome.ALPINE -> type = pick < 88 ? Block.BROWN_GRASS : Block.MUSHROOM;
+                    default -> {
+                        if (wet > 0.62f) {
+                            type = pick < 74 ? Block.TALL_GRASS : (pick < 90 ? Block.FLOWER : Block.MUSHROOM);
+                        } else if (forestW > 0.58f) {
+                            type = pick < 62 ? Block.TALL_GRASS : (pick < 82 ? Block.FLOWER : Block.MUSHROOM);
+                        } else {
+                            type = pick < 76 ? Block.TALL_GRASS : Block.FLOWER;
+                        }
+                    }
+                }
+                if (surface == Block.SNOW && type == Block.FLOWER) {
+                    type = tundraW > 0.45f ? Block.BROWN_GRASS : Block.TALL_GRASS;
+                }
+
+                data[x][y + 1][z] = type;
+                if (y + 2 > highest) {
+                    highest = y + 2;
+                }
+            }
+        }
+        return highest;
+    }
+
+    /**
+     * Deterministic tree pass over generated terrain.
+     *
+     * Trees are constrained to interior columns so canopies do not depend on
+     * neighbouring chunks that may not be generated yet.
+     */
+    private int plantTrees(int[][][] data,
+                           int[][] heightMap,
+                           int[][] surfaceMap,
+                           int[][] biomeTypeMap,
+                           float[][] tundraWeightMap,
+                           float[][] desertWeightMap,
+                           float[][] forestWeightMap,
+                           float[][] grassyWeightMap,
+                           float[][] ruggednessMap,
+                           float[][] wetlandMap,
+                           int highest) {
+        for (int x = 2; x < sizeX - 2; x++) {
+            for (int z = 2; z < sizeZ - 2; z++) {
+                int y = heightMap[x][z];
+                int surface = surfaceMap[x][z];
+                if ((surface != Block.GRASS && surface != Block.DIRT && surface != Block.MUD)
+                        || y <= SEA_LEVEL + 1 || y >= sizeY - 10) {
+                    continue;
+                }
+
+                int biomeType = biomeTypeMap[x][z];
+                float forestW = forestWeightMap[x][z];
+                float grassyW = grassyWeightMap[x][z];
+                float tundraW = tundraWeightMap[x][z];
+                float desertW = desertWeightMap[x][z];
+                float ruggedness = ruggednessMap[x][z];
+                float wetland = wetlandMap[x][z];
+                if (desertW > 0.35f || tundraW > 0.48f) {
+                    continue;
+                }
+                float biomeTreeFactor = treeDensityFactorForBiome(biomeType);
+                if (biomeTreeFactor <= 0.01f) {
+                    continue;
+                }
+                if (!shouldPlantTree(worldPosX + x, worldPosY + z, forestW, grassyW, ruggedness, wetland, biomeTreeFactor)) {
+                    continue;
+                }
+                if (!isGroundLocallyFlat(heightMap, x, z, 2)) {
+                    continue;
+                }
+
+                int style = hash(worldPosX + x, y, worldPosY + z, 71) % 4;
+                int trunk = 4 + hash(worldPosX + x, y, worldPosY + z, 173) % 4; // 4..7
+                int crownR = 1 + hash(worldPosX + x, y, worldPosY + z, 241) % 2; // 1..2
+                highest = Math.max(highest, placeTree(data, x, y, z, trunk, crownR, style));
+            }
+        }
+        return highest;
+    }
+
+    private static boolean shouldPlantTree(int worldX, int worldZ, float forestW, float grassyW,
+                                           float ruggedness, float wetland, float biomeTreeFactor) {
+        float suitability = (forestW * 1.05f + grassyW * 0.55f - ruggedness * 0.35f - wetland * 0.22f) * biomeTreeFactor;
+        if (suitability <= 0.30f) {
+            return false;
+        }
+        int spacing = 10 + Math.max(0, (int) ((1.0f - suitability) * 10.0f)); // 10..20
+        int cellX = Math.floorDiv(worldX, spacing);
+        int cellZ = Math.floorDiv(worldZ, spacing);
+        int slotX = Math.floorMod(worldX, spacing);
+        int slotZ = Math.floorMod(worldZ, spacing);
+        int targetX = hash(cellX, cellZ, spacing, 11) % spacing;
+        int targetZ = hash(cellZ, cellX, spacing, 23) % spacing;
+        // One candidate per spacing cell gives broad distribution without clumps.
+        if (slotX != targetX || slotZ != targetZ) {
+            return false;
+        }
+        float chance = 0.38f + suitability * 0.56f;
+        float roll = (hash(worldX, worldZ, spacing, 37) & 0xFFFF) / 65535.0f;
+        return roll < chance;
+    }
+
+    private static float treeDensityFactorForBiome(int biomeType) {
+        return switch (biomeType) {
+            case EarthBiome.HOT_DESERT -> 0.0f;
+            case EarthBiome.SAVANNA -> 0.38f;
+            case EarthBiome.SHRUBLAND -> 0.28f;
+            case EarthBiome.TEMPERATE_GRASSLAND -> 0.16f;
+            case EarthBiome.TEMPERATE_FOREST -> 1.00f;
+            case EarthBiome.BOREAL_FOREST -> 0.82f;
+            case EarthBiome.TUNDRA -> 0.06f;
+            case EarthBiome.TROPICAL_RAINFOREST -> 1.22f;
+            case EarthBiome.WETLAND -> 0.40f;
+            case EarthBiome.ALPINE -> 0.08f;
+            default -> 0.55f;
+        };
+    }
+
+    private static boolean isGroundLocallyFlat(int[][] heightMap, int x, int z, int tolerance) {
+        int h = heightMap[x][z];
+        for (int dz = -1; dz <= 1; dz++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                if (Math.abs(heightMap[x + dx][z + dz] - h) > tolerance) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    private static int placeTree(int[][][] data, int x, int groundY, int z,
+                                 int trunkHeight, int crownRadius, int style) {
+        int topY = Math.min(sizeY - 2, groundY + trunkHeight);
+        for (int y = groundY + 1; y <= topY; y++) {
+            data[x][y][z] = Block.WOOD;
+        }
+
+        int crownCenterY = Math.min(sizeY - 2, topY);
+        int maxPlacedY = topY;
+        int lower = (style == 2) ? -2 : -1;
+        int upper = (style == 1) ? 2 : 1;
+        for (int y = crownCenterY + lower; y <= crownCenterY + upper; y++) {
+            if (y < 1 || y >= sizeY - 1) {
+                continue;
+            }
+            int r = crownRadius;
+            if (style == 0) {
+                r = (y >= crownCenterY) ? Math.max(1, crownRadius - 1) : crownRadius;
+            } else if (style == 1) {
+                r = (y == crownCenterY + 2) ? 1 : crownRadius + 1;
+            } else if (style == 3) {
+                r = (y == crownCenterY + 1) ? 1 : crownRadius;
+            } else {
+                r = (y <= crownCenterY - 1) ? crownRadius + 1 : crownRadius;
+            }
+            if (r < 1) {
+                r = 1;
+            }
+            for (int dz = -r; dz <= r; dz++) {
+                for (int dx = -r; dx <= r; dx++) {
+                    if (Math.abs(dx) + Math.abs(dz) > r + 1) {
+                        continue;
+                    }
+                    if (style == 3 && ((hash(x + dx, y, z + dz, 99) % 100) < 28)) {
+                        continue;
+                    }
+                    int px = x + dx;
+                    int pz = z + dz;
+                    if (px < 0 || px >= sizeX || pz < 0 || pz >= sizeZ) {
+                        continue;
+                    }
+                    if (data[px][y][pz] == Block.AIR || data[px][y][pz] == Block.LEAVES) {
+                        data[px][y][pz] = Block.LEAVES;
+                        if (y > maxPlacedY) {
+                            maxPlacedY = y;
+                        }
+                    }
+                }
+            }
+        }
+        if (topY + 1 < sizeY - 1 && data[x][topY + 1][z] == Block.AIR) {
+            data[x][topY + 1][z] = Block.LEAVES;
+            maxPlacedY = Math.max(maxPlacedY, topY + 1);
+        }
+        // Occasional side branches for variety.
+        if (style == 1 || style == 2) {
+            int by = groundY + 2 + hash(x, z, trunkHeight, 58) % Math.max(1, trunkHeight - 1);
+            if (by < topY - 1) {
+                int dir = hash(x, z, groundY, 121) % 4;
+                int bx = x + (dir == 0 ? 1 : dir == 1 ? -1 : 0);
+                int bz = z + (dir == 2 ? 1 : dir == 3 ? -1 : 0);
+                if (bx > 0 && bx < sizeX - 1 && bz > 0 && bz < sizeZ - 1) {
+                    data[bx][by][bz] = Block.WOOD;
+                    if (data[bx][by + 1][bz] == Block.AIR) {
+                        data[bx][by + 1][bz] = Block.LEAVES;
+                        maxPlacedY = Math.max(maxPlacedY, by + 1);
+                    }
+                }
+            }
+        }
+        return maxPlacedY + 1;
+    }
+
+    private static int hash(int a, int b, int c, int salt) {
+        int h = a * 73856093 ^ b * 19349663 ^ c * 83492791 ^ salt * 374761393;
+        h ^= (h >>> 13);
+        h *= 1274126177;
+        h ^= (h >>> 16);
+        return h & 0x7fffffff;
+    }
+
+    /** Human-readable biome label for HUD/window title. */
+    public static String biomeLabelAt(int worldX, int worldZ) {
+        int worldPreset = WorldPreset.clamp(World.WORLD_PRESET);
+        double wx = warpedX(worldX, worldZ);
+        double wz = warpedZ(worldX, worldZ);
+        float temperature = sample01(wx, wz, 230.0, 0, 0);
+        float moisture = sample01(wx, wz, 240.0, 137, -89);
+        temperature = clamp01(temperature + (sample01(wx, wz, 120.0, 311, -173) - 0.5f) * 0.26f);
+        moisture = clamp01(moisture + (sample01(wx, wz, 130.0, -421, 257) - 0.5f) * 0.30f);
+        float ruggedness = sample01(wx, wz, 560.0, -211, 173);
+        float macro = sample01(wx, wz, 1800.0, 73, -511);
+        float mountainRegion = sample01(wx, wz, 1350.0, -733, 419);
+
+        BiomeBlend blend = blendBiomes(temperature, moisture, wx, wz);
+        float highlands = smoothstep(0.54f, 0.80f, macro) * smoothstep(0.50f, 0.82f, mountainRegion);
+        float lowlands = (1.0f - smoothstep(0.18f, 0.36f, macro))
+                * (1.0f - smoothstep(0.58f, 0.84f, mountainRegion));
+        int height = (int) World.getHeightAt(worldX, worldZ);
+        float wetland = clamp01((moisture - 0.58f) * 2.4f)
+                * clamp01((SEA_LEVEL + 10 - height) / 14.0f)
+                * clamp01(1.0f - ruggedness * 1.1f)
+                * lowlands;
+        String base;
+        if (worldPreset == WorldPreset.EARTH) {
+            int biomeType = classifyEarthBiome(temperature, moisture, ruggedness, height, wetland, blend);
+            base = EarthBiome.nameOf(biomeType);
+        } else if (worldPreset == WorldPreset.MARS) {
+            base = temperature > 0.64f ? "Martian Dune Field" : "Martian Basalt Plains";
+        } else if (worldPreset == WorldPreset.VENUS) {
+            base = ruggedness > 0.58f ? "Venusian Highlands" : "Venusian Lava Plains";
+        } else {
+            base = wetland > 0.55f ? "Triton Ice Basin" : "Triton Cryo Plains";
+        }
+        if (highlands > 0.60f) {
+            return base + " Highlands";
+        }
+        if (lowlands > 0.55f) {
+            return base + " Lowlands";
+        }
+        return base;
     }
 
     /** Recomputes the highest occupied Y so meshing can skip the air above it. */
@@ -540,8 +1467,17 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             for (int i = 0; i < sizeX; i++) {
                 for (int j = 0; j < ceiling; j++) {
                     for (int k = 0; k < sizeZ; k++) {
-                        if (blocks[i][j][k] != 0) {
-                            faceCount += computeExposedFaces(i, j, k, EXPOSED_FACES);
+                        int type = blocks[i][j][k];
+                        if (type != 0) {
+                            if (Block.isSpritePlant(type)) {
+                                faceCount += 4; // two crossed quads, double sided
+                            } else if (Block.isMarchingRock(type)) {
+                                if (computeExposedFaces(i, j, k, EXPOSED_FACES) > 0) {
+                                    faceCount += 8; // centered closed rock mesh (octahedron)
+                                }
+                            } else {
+                                faceCount += computeExposedFaces(i, j, k, EXPOSED_FACES);
+                            }
                             blockCount++;
                         }
                     }
@@ -567,9 +1503,14 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                 for (int j = 0; j < ceiling; j++) {
                     for (int k = 0; k < sizeZ; k++) {
                         int type = blocks[i][j][k];
-                        if (type != 0 && !Block.isTranslucent(type)
-                                && computeExposedFaces(i, j, k, EXPOSED_FACES) > 0) {
-                            Block.writeCube(buffer, i, j, k, EXPOSED_FACES, type, this);
+                        if (type != 0 && !Block.isTranslucent(type)) {
+                            if (Block.isSpritePlant(type)) {
+                                Block.writeCrossSprite(buffer, i, j, k, type, this);
+                            } else if (Block.isMarchingRock(type) && computeExposedFaces(i, j, k, EXPOSED_FACES) > 0) {
+                                Block.writeMarchingRock(buffer, i, j, k, EXPOSED_FACES, type, this);
+                            } else if (computeExposedFaces(i, j, k, EXPOSED_FACES) > 0) {
+                                Block.writeCube(buffer, i, j, k, EXPOSED_FACES, type, this);
+                            }
                         }
                     }
                 }

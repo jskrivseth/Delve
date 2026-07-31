@@ -18,6 +18,7 @@ public class TitleScreen {
     private int hovered = -1;
     private boolean showingWorlds;
     private List<String> worlds = new ArrayList<>();
+    private int selectedPreset = WorldPreset.EARTH;
 
     public void openWorldList() {
         showingWorlds = true;
@@ -52,6 +53,8 @@ public class TitleScreen {
         } else {
             labels.add("New World");
             values.add("");
+            labels.add("World Preset");
+            values.add(WorldPreset.nameOf(selectedPreset));
             labels.add("Load World");
             values.add(SaveGame.list().size() + " saved");
             labels.add("Quit");
@@ -63,7 +66,7 @@ public class TitleScreen {
         hovered = panel.rowAt(mouseX, mouseY);
     }
 
-    public void click(double mouseX, double mouseY) {
+    public void click(double mouseX, double mouseY, boolean secondary) {
         int index = panel.rowAt(mouseX, mouseY);
         if (index < 0) {
             return;
@@ -83,12 +86,25 @@ public class TitleScreen {
         }
         switch (index) {
             case 0 -> Game.INSTANCE.startWorld(
-                    SaveGame.create(SaveGame.nextDefaultName(), new java.util.Random().nextLong()));
-            case 1 -> openWorldList();
-            case 2 -> Game.WINDOW.requestClose();
+                    SaveGame.create(SaveGame.nextDefaultName(), new java.util.Random().nextLong(), selectedPreset));
+            case 1 -> cyclePreset(secondary ? -1 : 1);
+            case 2 -> openWorldList();
+            case 3 -> Game.WINDOW.requestClose();
             default -> {
             }
         }
+    }
+
+    private void cyclePreset(int direction) {
+        int idx = 0;
+        for (int i = 0; i < WorldPreset.ALL.length; i++) {
+            if (WorldPreset.ALL[i] == selectedPreset) {
+                idx = i;
+                break;
+            }
+        }
+        idx = Math.floorMod(idx + direction, WorldPreset.ALL.length);
+        selectedPreset = WorldPreset.ALL[idx];
     }
 
     public void render() {

@@ -29,6 +29,8 @@ public class Game {
     public static org.joml.Vector3f PLAYER_START_POSITION =
             new org.joml.Vector3f((World.sizeX / 2) * WorldChunk.sizeX, 3.5f, (World.sizeY / 2) * WorldChunk.sizeZ);
     public static float PLAYER_MOUSE_SENSITIVITY = 0.15f;
+    public static float PLAYER_BASE_MOVEMENT_SPEED = 2.85f;
+    public static float PLAYER_FLY_SPEED_BONUS = 2.0f;
     public static float PLAYER_MOVEMENT_SPEED = 2.85f;
     public static float PLAYER_JUMP_FORCE = 0.18f;
     /*
@@ -86,6 +88,10 @@ public class Game {
     public static boolean OPT_ANTIALIASING = true;
     public static boolean OPT_FLASHLIGHT = false;
     public static boolean OPT_GOD_RAYS = true;
+    /** User multiplier for global fog thickness (1.0 = tuned default). */
+    public static float OPT_FOG_DENSITY = 1.0f;
+    /** User multiplier for near persistent valley mist (1.0 = tuned default). */
+    public static float OPT_FOG_PERSISTENCE = 1.0f;
     /** Light floor for fully enclosed spaces, so caves stay navigable. */
     public static float OPT_CAVE_MINIMUM_LIGHT = 0.09f;
 
@@ -159,7 +165,8 @@ public class Game {
      */
     public void startWorld(SaveGame save) {
         CURRENT_SAVE = save;
-        World.reset(save.seed);
+        World.reset(save.seed, save.worldPreset);
+        applyWorldPresetPhysics(save.worldPreset);
 
         GAME_WORLD = new World(PLAYER_START_POSITION);
         GAME_CAMERA = GAME_WORLD.camera;
@@ -188,7 +195,18 @@ public class Game {
         MENU_OPEN = false;
         WINDOW.setCursorGrabbed(true);
         INPUT.resetLook();
-        System.out.println("Playing world '" + save.name + "' (seed " + save.seed + ")");
+        System.out.println("Playing world '" + save.name + "' (seed " + save.seed
+                + ", preset " + WorldPreset.nameOf(save.worldPreset) + ")");
+    }
+
+    private static void applyWorldPresetPhysics(int preset) {
+        int p = WorldPreset.clamp(preset);
+        PLAYER_BASE_MOVEMENT_SPEED = WorldPreset.baseMoveSpeed(p);
+        PLAYER_FLY_SPEED_BONUS = WorldPreset.flySpeedBonus(p);
+        PLAYER_MOVEMENT_SPEED = PLAYER_BASE_MOVEMENT_SPEED + (GAME_FLYMODE ? PLAYER_FLY_SPEED_BONUS : 0f);
+        PLAYER_JUMP_FORCE = WorldPreset.jumpForce(p);
+        Camera.CAMERA_GRAVITY = WorldPreset.gravity(p);
+        Camera.CAMERA_DRAG = WorldPreset.drag(p);
     }
 
     /** Writes the world and returns to the title screen. */
@@ -391,9 +409,16 @@ public class Game {
     public void updateFPS() {
         if (getTime() - LAST_FRAMES_PER_SECOND > 1000) {
             FRAMES_PER_SECOND = FRAME_COUNTER;
+            String biomeLabel = "";
+            if (GAME_CAMERA != null) {
+                int wx = (int) Math.floor(GAME_CAMERA.position.x);
+                int wz = (int) Math.floor(GAME_CAMERA.position.z);
+                biomeLabel = " | biome: " + WorldChunk.biomeLabelAt(wx, wz);
+            }
             WINDOW.setTitle(APP_WINDOW_TITLE + " | FPS: " + FRAMES_PER_SECOND
                     + " | faces: " + LAST_FACE_COUNT
                     + " | block: " + Block.nameOf(SELECTED_BLOCK_TYPE)
+                    + biomeLabel
                     + (GAME_FLYMODE ? " | FLY" : ""));
             FRAME_COUNTER = 0;
             LAST_FRAMES_PER_SECOND += 1000;

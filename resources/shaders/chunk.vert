@@ -17,6 +17,7 @@ out float fragViewDistance;
 out float fragSkyLight;
 out vec3 fragViewPos;
 out vec3 fragViewNormal;
+out vec3 fragWorldPos;
 
 void main() {
     vec4 worldPos = model * vec4(inPosition, 1.0);
@@ -31,6 +32,7 @@ void main() {
     fragTexCoord = inTexCoord;
     fragSkyLight = inSkyLight;
     fragViewPos = viewPos.xyz;
+    fragWorldPos = worldPos.xyz;
     fragViewDistance = length(viewPos.xyz);
 
     gl_Position = projection * viewPos;

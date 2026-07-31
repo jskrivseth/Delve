@@ -320,7 +320,7 @@ public class FirstPersonCamera extends Camera {
                 }
                 for (int y = y0; y <= y1; y++) {
                     int type = data[lx][y][lz];
-                    if (type != Block.AIR && type != Block.WATER) {
+                    if (Block.isCollidable(type)) {
                         return true;
                     }
                 }

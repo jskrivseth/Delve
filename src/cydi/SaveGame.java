@@ -25,6 +25,7 @@ public class SaveGame {
 
     public final String name;
     public long seed;
+    public int worldPreset = WorldPreset.EARTH;
     public double playerX, playerY, playerZ;
     public float yaw, pitch;
     public float timeOfDay = 0.30f;
@@ -82,8 +83,13 @@ public class SaveGame {
     }
 
     public static SaveGame create(String name, long seed) {
+        return create(name, seed, WorldPreset.EARTH);
+    }
+
+    public static SaveGame create(String name, long seed, int worldPreset) {
         SaveGame save = new SaveGame(name);
         save.seed = seed;
+        save.worldPreset = WorldPreset.clamp(worldPreset);
         save.directory().mkdirs();
         save.write();
         return save;
@@ -110,6 +116,7 @@ public class SaveGame {
             return save;
         }
         save.seed = parseLong(props.getProperty("seed"), 0L);
+        save.worldPreset = WorldPreset.clamp((int) parseLong(props.getProperty("worldPreset"), WorldPreset.EARTH));
         save.playerX = parseDouble(props.getProperty("playerX"), 0);
         save.playerY = parseDouble(props.getProperty("playerY"), 0);
         save.playerZ = parseDouble(props.getProperty("playerZ"), 0);
@@ -124,6 +131,7 @@ public class SaveGame {
     public void write() {
         Properties props = new Properties();
         props.setProperty("seed", Long.toString(seed));
+        props.setProperty("worldPreset", Integer.toString(WorldPreset.clamp(worldPreset)));
         props.setProperty("playerX", Double.toString(playerX));
         props.setProperty("playerY", Double.toString(playerY));
         props.setProperty("playerZ", Double.toString(playerZ));

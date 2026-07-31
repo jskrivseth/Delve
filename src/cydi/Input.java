@@ -146,10 +146,15 @@ public class Input {
             Game.TITLE.updateHover(mx.get(0), my.get(0));
 
             boolean left = glfwGetMouseButton(window.handle(), GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+            boolean right = glfwGetMouseButton(window.handle(), GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
             if (left && !leftMouseWasDown) {
-                Game.TITLE.click(mx.get(0), my.get(0));
+                Game.TITLE.click(mx.get(0), my.get(0), false);
+            }
+            if (right && !rightMouseWasDown) {
+                Game.TITLE.click(mx.get(0), my.get(0), true);
             }
             leftMouseWasDown = left;
+            rightMouseWasDown = right;
         }
 
         if (wasPressed(GLFW_KEY_ESCAPE)) {
@@ -216,7 +221,7 @@ public class Input {
             Game.GAME_CAMERA.fallDown(step * 2.0f);
             if (Game.GAME_CAMERA.onGround) {
                 Game.GAME_FLYMODE = false;
-                Game.PLAYER_MOVEMENT_SPEED = 2.85f;
+                Game.PLAYER_MOVEMENT_SPEED = Game.PLAYER_BASE_MOVEMENT_SPEED;
             }
         }
         if (isDown(GLFW_KEY_SPACE) && Game.GAME_FLYMODE) {
@@ -239,7 +244,10 @@ public class Input {
             } else {
                 doubleTapWindowEnd = now + 300;
                 if (!Game.GAME_FLYMODE) {
-                    Game.GAME_CAMERA.velocity.y += Game.PLAYER_JUMP_FORCE;
+                    float cap = WorldPreset.maxJumpVelocity(World.WORLD_PRESET);
+                    Game.GAME_CAMERA.velocity.y = Math.min(
+                            Game.GAME_CAMERA.velocity.y + Game.PLAYER_JUMP_FORCE,
+                            cap);
                 }
             }
         }
@@ -255,7 +263,7 @@ public class Input {
             return;
         }
         Game.GAME_FLYMODE = enabled;
-        Game.PLAYER_MOVEMENT_SPEED += enabled ? 2 : -2;
+        Game.PLAYER_MOVEMENT_SPEED += enabled ? Game.PLAYER_FLY_SPEED_BONUS : -Game.PLAYER_FLY_SPEED_BONUS;
         Game.consoleMsg("Fly mode " + (enabled ? "ON" : "OFF"));
         System.out.println("Fly mode " + (enabled ? "ON" : "OFF"));
     }

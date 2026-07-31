@@ -69,10 +69,20 @@ public class Renderer {
     /** Sky and sun state for the current time of day. */
     private static float skyR = 0.52f, skyG = 0.80f, skyB = 0.92f;
     private static float fogR = 0.70f, fogG = 0.82f, fogB = 0.95f;
+    private static float fogDensity = 0.015f;
+    private static float fogHeightFalloff = 0.040f;
+    private static float fogBaseHeight = 30.0f;
+    private static float fogNoiseScale = 0.018f;
+    private static float fogTimeScale = 0.045f;
+    private static float fogValleyStrength = 0.26f;
+    private static float fogValleyTop = 30.0f;
     private static float sunDirX = -0.35f, sunDirY = -1.0f, sunDirZ = -0.45f;
     private static float sunR = 0.68f, sunG = 0.64f, sunB = 0.55f;
     private static float sunDiscR = 1.0f, sunDiscG = 0.95f, sunDiscB = 0.82f;
     private static float moonDirX = 0.35f, moonDirY = 1.0f, moonDirZ = 0.45f;
+    private static float marsMoonADirX = 0.15f, marsMoonADirY = 1.0f, marsMoonADirZ = 0.25f;
+    private static float marsMoonBDirX = -0.25f, marsMoonBDirY = 1.0f, marsMoonBDirZ = -0.35f;
+    private static float neptuneDirX = 0.40f, neptuneDirY = 1.0f, neptuneDirZ = -0.55f;
     private static float moonR = 0f, moonG = 0f, moonB = 0f;
     private static float ambR = 0.40f, ambG = 0.45f, ambB = 0.55f;
     private static float groundR = 0.22f, groundG = 0.20f, groundB = 0.17f;
@@ -84,6 +94,15 @@ public class Renderer {
     private static float dayFactor = 1f;
     private static float duskFactor = 0f;
     private static float moonGlowFactor = 0f;
+    private static boolean cloudsEnabled = true;
+    private static float cloudCoverage = 0.52f;
+    private static float cloudSharpness = 0.11f;
+    private static float cloudOpacity = 0.55f;
+    private static float cloudShadowStrength = 0.42f;
+    private static float cloudBaseHeight = 92.0f;
+    private static float cloudLayerDepth = 34.0f;
+    private static float cloudSpeed = 0.55f;
+    private static float sunCloudOcclusion = 1.0f;
 
     /** Names for the eight moon phases, indexed by {@link #getMoonPhase()}. */
     public static final String[] MOON_PHASES = {
@@ -315,6 +334,25 @@ public class Renderer {
         skyGradientShader.setFloat("dayFactor", dayFactor);
         skyGradientShader.setFloat("duskFactor", duskFactor);
         skyGradientShader.setFloat("moonGlow", moonGlowFactor);
+        skyGradientShader.setInt("atmospherePreset", WorldPreset.clamp(World.WORLD_PRESET));
+        float camX = 0.0f;
+        float camY = 64.0f;
+        float camZ = 0.0f;
+        if (Game.GAME_CAMERA != null && Game.GAME_CAMERA.position != null) {
+            camX = (float) Game.GAME_CAMERA.position.x;
+            camY = (float) Game.GAME_CAMERA.position.y;
+            camZ = (float) Game.GAME_CAMERA.position.z;
+        }
+        skyGradientShader.setVector3f("cameraWorldPos", camX, camY, camZ);
+        skyGradientShader.setBoolean("cloudsEnabled", cloudsEnabled && Game.OPT_FOG);
+        skyGradientShader.setFloat("cloudCoverage", cloudCoverage);
+        skyGradientShader.setFloat("cloudSharpness", cloudSharpness);
+        skyGradientShader.setFloat("cloudOpacity", cloudOpacity);
+        skyGradientShader.setFloat("cloudBaseHeight", cloudBaseHeight);
+        skyGradientShader.setFloat("cloudLayerDepth", cloudLayerDepth);
+        skyGradientShader.setFloat("cloudTime", (float) org.lwjgl.glfw.GLFW.glfwGetTime());
+        skyGradientShader.setFloat("cloudSpeed", cloudSpeed);
+        skyGradientShader.setFloat("cloudDayTime", Game.DAY_COUNT + Game.TIME_OF_DAY);
 
         glBindVertexArray(fullscreenVao);
         glDrawArrays(GL_TRIANGLES, 0, 3);
@@ -434,6 +472,29 @@ public class Renderer {
         godRayShader.setFloat("intensity", strength);
         godRayShader.setFloat("decay", 0.972f);
         godRayShader.setFloat("density", 0.85f);
+        projection.mul(view, invViewProjection);
+        invViewProjection.invert();
+        godRayShader.setMatrix4f("invViewProjection", invViewProjection);
+        float camX = 0.0f;
+        float camY = 64.0f;
+        float camZ = 0.0f;
+        if (Game.GAME_CAMERA != null && Game.GAME_CAMERA.position != null) {
+            camX = (float) Game.GAME_CAMERA.position.x;
+            camY = (float) Game.GAME_CAMERA.position.y;
+            camZ = (float) Game.GAME_CAMERA.position.z;
+        }
+        int preset = WorldPreset.clamp(World.WORLD_PRESET);
+        godRayShader.setVector3f("cameraWorldPos", camX, camY, camZ);
+        godRayShader.setBoolean("cloudsEnabled", cloudsEnabled && useSun);
+        godRayShader.setFloat("cloudCoverage", cloudCoverage);
+        godRayShader.setFloat("cloudSharpness", cloudSharpness);
+        godRayShader.setFloat("cloudOpacity", cloudOpacity);
+        godRayShader.setFloat("cloudBaseHeight", cloudBaseHeight);
+        godRayShader.setFloat("cloudLayerDepth", cloudLayerDepth);
+        godRayShader.setFloat("cloudTime", (float) org.lwjgl.glfw.GLFW.glfwGetTime());
+        godRayShader.setFloat("cloudSpeed", cloudSpeed);
+        godRayShader.setFloat("cloudDayTime", Game.DAY_COUNT + Game.TIME_OF_DAY);
+        godRayShader.setInt("atmospherePreset", preset);
         if (useSun) {
             godRayShader.setVector3f("lightColor", sunDiscR, sunDiscG * 0.92f, sunDiscB * 0.80f);
         } else {
@@ -506,6 +567,15 @@ public class Renderer {
      * @param dayCount  whole days elapsed, which drives the moon phase
      */
     public static void updateSky(float timeOfDay, int dayCount) {
+        int preset = WorldPreset.clamp(World.WORLD_PRESET);
+        cloudsEnabled = WorldPreset.hasClouds(preset);
+        cloudCoverage = WorldPreset.cloudCoverage(preset);
+        cloudSharpness = WorldPreset.cloudSharpness(preset);
+        cloudOpacity = WorldPreset.cloudOpacity(preset);
+        cloudShadowStrength = WorldPreset.cloudShadowStrength(preset);
+        cloudBaseHeight = WorldPreset.cloudBaseHeight(preset);
+        cloudLayerDepth = WorldPreset.cloudLayerDepth(preset);
+        cloudSpeed = WorldPreset.cloudSpeed(preset);
         double angle = (timeOfDay - 0.25) * 2.0 * Math.PI;
         float elevation = (float) Math.sin(angle);
         float azimuth = (float) Math.cos(angle);
@@ -533,6 +603,41 @@ public class Renderer {
         moonDirY = -moonElev / moonLen;
         moonDirZ = -moonTilt / moonLen;
         moonElevation = moonElev;
+
+        // Mars moon orbits (Phobos-like and Deimos-like): separate arcs and rates.
+        double marsMoonAOrbit = (dayCount + timeOfDay) / 0.36;
+        double marsMoonBOrbit = (dayCount + timeOfDay) / 1.25 + 0.22;
+        double marsMoonAAngle = (marsMoonAOrbit - 0.25) * 2.0 * Math.PI;
+        double marsMoonBAngle = (marsMoonBOrbit - 0.25) * 2.0 * Math.PI;
+        float marsMoonAElev = 0.08f + 0.46f * (float) Math.sin(marsMoonAAngle);
+        float marsMoonAAzim = (float) Math.cos(marsMoonAAngle);
+        float marsMoonATilt = 0.22f;
+        float marsMoonALen = (float) Math.sqrt(marsMoonAAzim * marsMoonAAzim
+                + marsMoonAElev * marsMoonAElev + marsMoonATilt * marsMoonATilt);
+        marsMoonADirX = -marsMoonAAzim / marsMoonALen;
+        marsMoonADirY = -marsMoonAElev / marsMoonALen;
+        marsMoonADirZ = -marsMoonATilt / marsMoonALen;
+
+        float marsMoonBElev = -0.12f + 0.36f * (float) Math.sin(marsMoonBAngle);
+        float marsMoonBAzim = (float) Math.cos(marsMoonBAngle);
+        float marsMoonBTilt = -0.54f;
+        float marsMoonBLen = (float) Math.sqrt(marsMoonBAzim * marsMoonBAzim
+                + marsMoonBElev * marsMoonBElev + marsMoonBTilt * marsMoonBTilt);
+        marsMoonBDirX = -marsMoonBAzim / marsMoonBLen;
+        marsMoonBDirY = -marsMoonBElev / marsMoonBLen;
+        marsMoonBDirZ = -marsMoonBTilt / marsMoonBLen;
+
+        // Neptune as seen from Triton: slow drift, always high in the sky.
+        double neptuneOrbit = (dayCount + timeOfDay) / 22.0 + 0.38;
+        double neptuneAngle = (neptuneOrbit - 0.25) * 2.0 * Math.PI;
+        float neptuneElev = 0.34f + 0.10f * (float) Math.sin(neptuneAngle * 0.7);
+        float neptuneAzim = (float) Math.cos(neptuneAngle);
+        float neptuneTilt = -0.62f;
+        float neptuneLen = (float) Math.sqrt(neptuneAzim * neptuneAzim
+                + neptuneElev * neptuneElev + neptuneTilt * neptuneTilt);
+        neptuneDirX = -neptuneAzim / neptuneLen;
+        neptuneDirY = -neptuneElev / neptuneLen;
+        neptuneDirZ = -neptuneTilt / neptuneLen;
 
         // Phase comes from the signed orbital separation. Taking acos of the two
         // direction vectors instead discards the sign, which capped the cycle at
@@ -598,6 +703,16 @@ public class Renderer {
         fogR = lerp(fogR, 0.80f, warmth);
         fogG = lerp(fogG, 0.60f, warmth);
         fogB = lerp(fogB, 0.55f, warmth);
+        // Dynamic fog parameters: clearer at midday, thicker around dusk and
+        // night, with height falloff so valleys hold mist and high ground stays
+        // cleaner.
+        fogDensity = lerp(0.014f, 0.010f, day);
+        fogDensity = lerp(fogDensity, fogDensity * 1.22f, dusk);
+        fogHeightFalloff = lerp(0.050f, 0.034f, day);
+        fogBaseHeight = lerp(28.0f, 34.0f, day);
+        fogValleyTop = fogBaseHeight + lerp(1.0f, 3.0f, dusk);
+        fogValleyStrength = lerp(0.30f, 0.18f, day);
+        fogValleyStrength = lerp(fogValleyStrength, fogValleyStrength * 1.15f, dusk);
 
         // Cool, dim moonlight so nights read as lit rather than merely dark.
         moonR = 0.30f * moonVisibleStrength;
@@ -618,6 +733,111 @@ public class Renderer {
         groundG = lerp(0.08f, 0.20f, day);
         groundB = lerp(0.13f, 0.17f, day);
 
+        if (preset == WorldPreset.MARS) {
+            moonDirX = marsMoonADirX;
+            moonDirY = marsMoonADirY;
+            moonDirZ = marsMoonADirZ;
+            // Thin CO2 atmosphere: rusty daytime with blue twilight.
+            skyR = lerp(0.035f, 0.66f, day) - dusk * 0.08f;
+            skyG = lerp(0.030f, 0.44f, day) - dusk * 0.02f;
+            skyB = lerp(0.080f, 0.30f, day) + dusk * 0.28f;
+
+            fogR = lerp(0.07f, 0.64f, day);
+            fogG = lerp(0.06f, 0.46f, day);
+            fogB = lerp(0.10f, 0.32f, day);
+            fogR = lerp(fogR, 0.42f, dusk * 0.55f);
+            fogG = lerp(fogG, 0.53f, dusk * 0.55f);
+            fogB = lerp(fogB, 0.74f, dusk * 0.55f);
+            fogDensity = lerp(0.010f, 0.0075f, day);
+            fogHeightFalloff = lerp(0.040f, 0.028f, day);
+            fogBaseHeight = lerp(24.0f, 30.0f, day);
+            fogValleyTop = fogBaseHeight + 2.0f;
+            fogValleyStrength = lerp(0.18f, 0.10f, day);
+
+            float marsNightAmbient = 0.12f + 0.09f * moonStrength;
+            ambR = lerp(marsNightAmbient * 0.90f, 0.34f, day);
+            ambG = lerp(marsNightAmbient * 0.85f, 0.31f, day);
+            ambB = lerp(marsNightAmbient * 0.90f, 0.33f, day);
+            groundR = lerp(0.08f, 0.24f, day);
+            groundG = lerp(0.07f, 0.17f, day);
+            groundB = lerp(0.09f, 0.13f, day);
+        } else if (preset == WorldPreset.VENUS) {
+            // Thick sulfur haze: yellow atmosphere and strong volumetric fog.
+            duskFactor *= 0.55f;
+            skyR = lerp(0.14f, 0.82f, day) + duskFactor * 0.10f;
+            skyG = lerp(0.12f, 0.72f, day) + duskFactor * 0.05f;
+            skyB = lerp(0.08f, 0.30f, day) - duskFactor * 0.08f;
+
+            fogR = lerp(0.26f, 0.93f, day);
+            fogG = lerp(0.20f, 0.80f, day);
+            fogB = lerp(0.12f, 0.40f, day);
+            fogDensity = lerp(0.050f, 0.032f, day);
+            fogHeightFalloff = lerp(0.020f, 0.014f, day);
+            fogBaseHeight = lerp(34.0f, 42.0f, day);
+            fogValleyTop = fogBaseHeight + 5.0f;
+            fogValleyStrength = lerp(0.22f, 0.16f, day);
+
+            sunR = 0.98f * day;
+            sunG = 0.88f * day;
+            sunB = 0.60f * day;
+            sunDiscR = 1.00f;
+            sunDiscG = lerp(0.92f, 0.70f, duskFactor);
+            sunDiscB = lerp(0.62f, 0.36f, duskFactor);
+
+            moonR = 0.0f;
+            moonG = 0.0f;
+            moonB = 0.0f;
+            moonGlowFactor = 0.0f;
+
+            ambR = lerp(0.17f, 0.52f, day);
+            ambG = lerp(0.14f, 0.44f, day);
+            ambB = lerp(0.10f, 0.26f, day);
+            groundR = lerp(0.10f, 0.26f, day);
+            groundG = lerp(0.08f, 0.18f, day);
+            groundB = lerp(0.06f, 0.11f, day);
+        } else if (preset == WorldPreset.TRITON) {
+            // Far from the sun: almost airless, very dark sky and weak sunlight.
+            duskFactor *= 0.15f;
+            skyR = lerp(0.008f, 0.060f, day);
+            skyG = lerp(0.010f, 0.080f, day);
+            skyB = lerp(0.020f, 0.140f, day);
+
+            fogR = lerp(0.010f, 0.070f, day);
+            fogG = lerp(0.012f, 0.080f, day);
+            fogB = lerp(0.018f, 0.120f, day);
+            fogDensity = lerp(0.0018f, 0.0010f, day);
+            fogHeightFalloff = lerp(0.070f, 0.050f, day);
+            fogBaseHeight = lerp(22.0f, 28.0f, day);
+            fogValleyTop = fogBaseHeight + 1.0f;
+            fogValleyStrength = 0.03f;
+
+            float solarScale = WorldPreset.solarIntensity(preset);
+            sunR *= solarScale;
+            sunG *= solarScale;
+            sunB *= solarScale;
+            sunDiscR *= solarScale;
+            sunDiscG *= solarScale;
+            sunDiscB *= solarScale;
+
+            moonR = 0.0f;
+            moonG = 0.0f;
+            moonB = 0.0f;
+            moonGlowFactor = 0.0f;
+
+            ambR = lerp(0.05f, 0.20f, day);
+            ambG = lerp(0.06f, 0.22f, day);
+            ambB = lerp(0.09f, 0.28f, day);
+            groundR = lerp(0.03f, 0.12f, day);
+            groundG = lerp(0.04f, 0.13f, day);
+            groundB = lerp(0.06f, 0.18f, day);
+        } else {
+            // Earth baseline intensity.
+            sunR *= 1.00f;
+            sunG *= 1.00f;
+            sunB *= 1.00f;
+        }
+        sunCloudOcclusion = computeSunCloudOcclusion(preset);
+
         glClearColor(skyR, skyG, skyB, 1.0f);
     }
 
@@ -636,11 +856,154 @@ public class Renderer {
         return t * t * (3f - 2f * t);
     }
 
+    private static float computeSunCloudOcclusion(int preset) {
+        if (!cloudsEnabled || Game.GAME_CAMERA == null || Game.GAME_CAMERA.position == null) {
+            return 1.0f;
+        }
+        float toSunX = -sunDirX;
+        float toSunY = -sunDirY;
+        float toSunZ = -sunDirZ;
+        if (toSunY <= 0.02f) {
+            return 1.0f;
+        }
+        float camX = (float) Game.GAME_CAMERA.position.x;
+        float camY = (float) Game.GAME_CAMERA.position.y;
+        float camZ = (float) Game.GAME_CAMERA.position.z;
+
+        float slabTop = cloudBaseHeight + cloudLayerDepth;
+        float tEnter = (cloudBaseHeight - camY) / toSunY;
+        float tExit = (slabTop - camY) / toSunY;
+        float t0 = Math.max(Math.min(tEnter, tExit), 0.0f);
+        float t1 = Math.min(Math.max(tEnter, tExit), t0 + cloudLayerDepth * 10.0f);
+        if (t1 <= t0) {
+            return 1.0f;
+        }
+
+        float time = (float) org.lwjgl.glfw.GLFW.glfwGetTime();
+        float dayClock = Game.DAY_COUNT + Game.TIME_OF_DAY;
+        float wx = time * cloudSpeed * 6.0f;
+        float wz = -time * cloudSpeed * 2.5f;
+        float ex = (float) Math.sin(dayClock * 2.324 + time * 0.017) * 96.0f;
+        float ez = (float) Math.cos(dayClock * 1.447 - time * 0.013) * 96.0f;
+
+        float midT = (t0 + t1) * 0.5f;
+        float regime = fbm((camX + toSunX * midT + ex * 0.35f + wx * 0.08f) * 0.00075f,
+                (camZ + toSunZ * midT + ez * 0.35f + wz * 0.08f) * 0.00075f);
+
+        final int steps = 5;
+        float dt = (t1 - t0) / steps;
+        float depth = 0.0f;
+        for (int i = 0; i < steps; i++) {
+            float t = t0 + dt * (i + 0.5f);
+            depth += cloudDensityCoarseAt(camX + toSunX * t, camY + toSunY * t, camZ + toSunZ * t,
+                    wx, wz, ex, ez, regime, preset) * dt;
+        }
+
+        float sigma = lerp(0.055f, 0.140f, cloudOpacity);
+        if (preset == WorldPreset.VENUS) {
+            sigma *= 1.8f;
+        }
+        return clamp01((float) Math.exp(-depth * sigma));
+    }
+
+    /** CPU mirror of cloudDensityCoarse in skygradient.frag. */
+    private static float cloudDensityCoarseAt(float x, float y, float z,
+            float wx, float wz, float ex, float ez, float regime, int preset) {
+        float hN = (y - cloudBaseHeight) / Math.max(cloudLayerDepth, 1.0f);
+        if (hN < 0.0f || hN > 1.0f) {
+            return 0.0f;
+        }
+        float profile = preset == WorldPreset.VENUS
+                ? smoothstep(0.0f, 0.10f, hN) * (1.0f - smoothstep(0.72f, 1.0f, hN))
+                : smoothstep(0.0f, 0.13f, hN) * (1.0f - smoothstep(0.42f, 1.0f, hN));
+        if (profile <= 0.002f) {
+            return 0.0f;
+        }
+        float sx = x + hN * 34.0f;
+        float sz = z - hN * 22.0f;
+        return cloudMaskAt(sx, sz, wx, wz, ex, ez, regime, preset) * profile;
+    }
+
+    /** CPU mirror of cloudMaskAt in skygradient.frag. */
+    private static float cloudMaskAt(float sx, float sz,
+            float wx, float wz, float ex, float ez, float regime, int preset) {
+        float n0 = fbm3((sx + wx + ex) * 0.0022f, (sz + wz + ez) * 0.0022f);
+        float n1 = fbm3((sx - wx * 0.65f + ez * 0.7f) * 0.0041f,
+                (sz - wz * 0.65f + ex * 0.7f) * 0.0041f);
+        float n = lerp(n0, n1, 0.40f);
+
+        if (preset == WorldPreset.VENUS) {
+            float deck = smoothstep(cloudCoverage - 0.18f, cloudCoverage + cloudSharpness * 2.8f, lerp(n0, n1, 0.25f));
+            float billow = smoothstep(cloudCoverage - 0.06f, cloudCoverage + cloudSharpness * 1.6f, n0);
+            return clamp01(lerp(deck, billow, 0.35f));
+        }
+
+        float cumulusBase = smoothstep(cloudCoverage - cloudSharpness, cloudCoverage + cloudSharpness, n);
+        float cumulusCrisp = smoothstep(cloudCoverage - cloudSharpness * 0.30f,
+                cloudCoverage + cloudSharpness * 0.20f,
+                n + (n1 - 0.5f) * 0.14f);
+        float cumulus = lerp(cumulusBase, cumulusCrisp, 0.55f) * (1.0f - smoothstep(0.55f, 0.88f, regime));
+        float stratus = smoothstep(cloudCoverage - 0.12f, cloudCoverage + 0.18f, n0)
+                * smoothstep(0.42f, 0.95f, regime);
+        float cirrus = smoothstep(cloudCoverage - 0.30f, cloudCoverage - 0.08f, n1)
+                * (1.0f - smoothstep(0.28f, 0.70f, regime)) * 0.35f;
+        return clamp01(Math.max(cumulus, stratus * 0.92f) + cirrus);
+    }
+
+    private static float hash12(float x, float z) {
+        int xi = (int) Math.floor(x);
+        int zi = (int) Math.floor(z);
+        long n = (long) xi * 374761393L + (long) zi * 668265263L;
+        n = (n ^ (n >> 13)) * 1274126177L;
+        n = n ^ (n >> 16);
+        return (n & 0x7FFFFFFFL) / (float) 0x7FFFFFFF;
+    }
+
+    private static float valueNoise(float x, float z) {
+        float ix = (float) Math.floor(x);
+        float iz = (float) Math.floor(z);
+        float fx = x - ix;
+        float fz = z - iz;
+        float ux = fx * fx * (3.0f - 2.0f * fx);
+        float uz = fz * fz * (3.0f - 2.0f * fz);
+        float a = hash12(ix, iz);
+        float b = hash12(ix + 1.0f, iz);
+        float c = hash12(ix, iz + 1.0f);
+        float d = hash12(ix + 1.0f, iz + 1.0f);
+        return lerp(lerp(a, b, ux), lerp(c, d, ux), uz);
+    }
+
+    private static float fbm(float x, float z) {
+        float f = 0.0f;
+        float amp = 0.55f;
+        float freq = 1.0f;
+        for (int i = 0; i < 4; i++) {
+            f += amp * valueNoise(x * freq, z * freq);
+            freq *= 2.0f;
+            amp *= 0.55f;
+        }
+        return f;
+    }
+
+    /** CPU mirror of fbm3 in the cloud shaders. */
+    private static float fbm3(float x, float z) {
+        float f = 0.0f;
+        float amp = 0.58f;
+        float freq = 1.0f;
+        for (int i = 0; i < 3; i++) {
+            f += amp * valueNoise(x * freq, z * freq);
+            freq *= 2.0f;
+            amp *= 0.55f;
+        }
+        return f;
+    }
+
     /**
      * Draws the sun and moon on the far plane, before any terrain, so the world
      * occludes them naturally.
      */
     public static void drawCelestialBodies() {
+        int preset = WorldPreset.clamp(World.WORLD_PRESET);
         // Strip the translation so the bodies stay fixed on the sky.
         viewRotationScratch.set(view);
         viewRotationScratch.m30(0f);
@@ -670,7 +1033,7 @@ public class Renderer {
             skyShader.setFloat("quadSize", 0.30f);
             skyShader.setFloat("discHalf", 0.30f);
             skyShader.setVector3f("bodyColor", sunDiscR, sunDiscG, sunDiscB);
-            skyShader.setFloat("bodyAlpha", sunVisible);
+            skyShader.setFloat("bodyAlpha", sunVisible * sunCloudOcclusion);
             skyShader.setBoolean("showRays", true);
             skyShader.setBoolean("roundBody", false);
             skyShader.setFloat("rayTime", (float) org.lwjgl.glfw.GLFW.glfwGetTime());
@@ -679,28 +1042,46 @@ public class Renderer {
             glDrawArrays(GL_TRIANGLES, 0, 6);
         }
 
-        // Moon: shown whenever it is above the horizon. The two orbits differ,
-        // so a daylit moon is expected rather than something to suppress.
-        float moonVisible = clamp01((-moonDirY + 0.01f) * 22.0f);
-        if (moonVisible > 0.001f) {
-            // Fade it back in daylight so it reads as a pale daytime moon.
+        if (WorldPreset.hasEarthMoon(preset)) {
+            // Moon: shown whenever it is above the horizon.
+            float moonVisible = clamp01((-moonDirY + 0.01f) * 22.0f);
+            if (moonVisible > 0.001f) {
+                float daylight = smoothstep(-0.05f, 0.30f, sunElevation);
+                float alpha = moonVisible * (1.0f - daylight * 0.62f);
+                float u = (moonPhase % 4) * 0.25f;
+                float v = (moonPhase / 4) * 0.5f;
+                drawRoundBody(-moonDirX, -moonDirY, -moonDirZ,
+                        0.150f, 0.52f, 0.94f, 0.95f, 1.0f,
+                        alpha, 0.30f, moonTexture, u, v, 0.25f, 0.5f);
+            }
+        } else if (WorldPreset.hasDualMarsMoons(preset)) {
+            // Two small moons on different arcs and schedules.
             float daylight = smoothstep(-0.05f, 0.30f, sunElevation);
-            float alpha = moonVisible * (1.0f - daylight * 0.62f);
 
-            skyShader.setVector3f("bodyDirection", -moonDirX, -moonDirY, -moonDirZ);
-            // A wider quad relative to the disc leaves room for the halo.
-            skyShader.setFloat("quadSize", 0.150f);
-            skyShader.setFloat("discHalf", 0.52f);
-            skyShader.setVector3f("bodyColor", 0.94f, 0.95f, 1.0f);
-            skyShader.setFloat("bodyAlpha", alpha);
-            skyShader.setBoolean("showRays", false);
-            skyShader.setBoolean("roundBody", true);
-            skyShader.setFloat("glowStrength", 0.30f);
-            // moon_phases.png is a 4x2 grid; select the current phase cell.
-            float u = (moonPhase % 4) * 0.25f;
-            float v = (moonPhase / 4) * 0.5f;
-            bindBodyTexture(moonTexture, u, v, 0.25f, 0.5f);
-            glDrawArrays(GL_TRIANGLES, 0, 6);
+            float moonAVisible = clamp01((-marsMoonADirY + 0.01f) * 20.0f);
+            if (moonAVisible > 0.001f) {
+                float alphaA = moonAVisible * (1.0f - daylight * 0.70f);
+                drawRoundBody(-marsMoonADirX, -marsMoonADirY, -marsMoonADirZ,
+                        0.090f, 0.52f, 0.92f, 0.90f, 0.86f,
+                        alphaA, 0.20f, null, 0f, 0f, 1f, 1f);
+            }
+
+            float moonBVisible = clamp01((-marsMoonBDirY + 0.01f) * 20.0f);
+            if (moonBVisible > 0.001f) {
+                float alphaB = moonBVisible * (1.0f - daylight * 0.76f);
+                drawRoundBody(-marsMoonBDirX, -marsMoonBDirY, -marsMoonBDirZ,
+                        0.062f, 0.52f, 0.84f, 0.80f, 0.74f,
+                        alphaB, 0.16f, null, 0f, 0f, 1f, 1f);
+            }
+        } else if (WorldPreset.hasNeptuneSkyBody(preset)) {
+            // Triton has no moon in this preset; Neptune dominates the sky.
+            float neptuneVisible = clamp01((-neptuneDirY + 0.01f) * 16.0f);
+            if (neptuneVisible > 0.001f) {
+                float alpha = neptuneVisible * 0.95f;
+                drawRoundBody(-neptuneDirX, -neptuneDirY, -neptuneDirZ,
+                        0.320f, 0.54f, 0.45f, 0.60f, 0.95f,
+                        alpha, 0.34f, null, 0f, 0f, 1f, 1f);
+            }
         }
 
         glBindVertexArray(0);
@@ -711,6 +1092,24 @@ public class Renderer {
             glEnable(GL_DEPTH_TEST);
         }
         ShaderProgram.unbind();
+    }
+
+    private static void drawRoundBody(float dirX, float dirY, float dirZ,
+                                      float quadSize, float discHalf,
+                                      float r, float g, float b,
+                                      float alpha, float glow,
+                                      Texture texture,
+                                      float u, float v, float du, float dv) {
+        skyShader.setVector3f("bodyDirection", dirX, dirY, dirZ);
+        skyShader.setFloat("quadSize", quadSize);
+        skyShader.setFloat("discHalf", discHalf);
+        skyShader.setVector3f("bodyColor", r, g, b);
+        skyShader.setFloat("bodyAlpha", alpha);
+        skyShader.setBoolean("showRays", false);
+        skyShader.setBoolean("roundBody", true);
+        skyShader.setFloat("glowStrength", glow);
+        bindBodyTexture(texture, u, v, du, dv);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
     }
 
     private static void bindBodyTexture(Texture texture, float u, float v, float du, float dv) {
@@ -768,11 +1167,37 @@ public class Renderer {
 
         chunkShader.setBoolean("fogEnabled", Game.OPT_FOG);
         chunkShader.setVector3f("fogColor", fogR, fogG, fogB);
-        // Fog must finish inside the draw distance so chunk pop-in is hidden,
-        // but starting it too near makes mid-range terrain read as solid haze.
+        // Keep most fog behavior in world-space units so changing draw
+        // distance does not erase the atmosphere. Draw distance only caps the
+        // far blend used to hide horizon pop.
         float fogRange = Game.OPT_DRAW_DISTANCE * (float) WorldChunk.sizeX;
-        chunkShader.setFloat("fogStart", fogRange * 0.72f);
-        chunkShader.setFloat("fogEnd", fogRange * 0.98f);
+        float baseStart = lerp(150.0f, 125.0f, duskFactor);
+        float baseEnd = lerp(380.0f, 330.0f, duskFactor);
+        float fogEnd = Math.min(baseEnd, fogRange * 0.985f);
+        float fogStart = Math.min(baseStart, fogEnd - 40.0f);
+        chunkShader.setFloat("fogStart", fogStart);
+        chunkShader.setFloat("fogEnd", fogEnd);
+        chunkShader.setFloat("fogDensity", fogDensity * Game.OPT_FOG_DENSITY);
+        chunkShader.setFloat("fogHeightFalloff", fogHeightFalloff);
+        chunkShader.setFloat("fogBaseHeight", fogBaseHeight);
+        chunkShader.setFloat("fogNoiseScale", fogNoiseScale);
+        chunkShader.setFloat("fogTime", Game.DAY_COUNT + Game.TIME_OF_DAY);
+        chunkShader.setFloat("fogTimeScale", fogTimeScale);
+        chunkShader.setFloat("fogDayFactor", dayFactor);
+        chunkShader.setFloat("fogDuskFactor", duskFactor);
+        chunkShader.setFloat("fogValleyStrength", fogValleyStrength * Game.OPT_FOG_PERSISTENCE);
+        chunkShader.setFloat("fogValleyTop", fogValleyTop);
+
+        chunkShader.setBoolean("cloudsEnabled", cloudsEnabled);
+        chunkShader.setFloat("cloudCoverage", cloudCoverage);
+        chunkShader.setFloat("cloudSharpness", cloudSharpness);
+        chunkShader.setFloat("cloudShadowStrength", cloudShadowStrength);
+        chunkShader.setFloat("cloudBaseHeight", cloudBaseHeight);
+        chunkShader.setFloat("cloudLayerDepth", cloudLayerDepth);
+        chunkShader.setFloat("cloudTime", (float) org.lwjgl.glfw.GLFW.glfwGetTime());
+        chunkShader.setFloat("cloudSpeed", cloudSpeed);
+        chunkShader.setFloat("cloudDayTime", Game.DAY_COUNT + Game.TIME_OF_DAY);
+        chunkShader.setInt("atmospherePreset", WorldPreset.clamp(World.WORLD_PRESET));
     }
 
     public static void renderChunkMesh(WorldChunk chunk) {

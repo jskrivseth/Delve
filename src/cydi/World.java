@@ -35,6 +35,7 @@ public class World {
      * Properties
      */
     public static long WORLD_SEED;
+    public static int WORLD_PRESET = WorldPreset.EARTH;
     public FirstPersonCamera camera;
     public static int sizeX = 4096;
     public static int sizeY = 4096;
@@ -85,6 +86,10 @@ public class World {
      * session, and seeds terrain generation.
      */
     public static void reset(long seed) {
+        reset(seed, WorldPreset.EARTH);
+    }
+
+    public static void reset(long seed, int worldPreset) {
         shutdown();
         chunkIndex.clear();
         chunks.clear();
@@ -97,6 +102,7 @@ public class World {
         BREAK_BLOCK_REQUESTED = false;
         PLACE_BLOCK_REQUESTED = false;
         WORLD_SEED = seed;
+        WORLD_PRESET = WorldPreset.clamp(worldPreset);
         // Reseeding the noise generator is what actually makes a seed mean
         // something. Offsetting the sample coordinates instead cannot work,
         // because the generator's permutation table is itself the field being
@@ -482,7 +488,7 @@ public class World {
             return false;   // never trap the player inside unloaded terrain
         }
         int type = chunk.blocks[Math.floorMod(worldX, WorldChunk.sizeX)][worldY][Math.floorMod(worldZ, WorldChunk.sizeZ)];
-        return type != Block.AIR && type != Block.WATER;
+        return Block.isCollidable(type);
     }
 
     /**

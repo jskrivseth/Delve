@@ -75,6 +75,16 @@ public class Menu {
                 () -> Game.OPT_FOG ? "On" : "Off",
                 () -> Game.OPT_FOG = !Game.OPT_FOG, null));
 
+        rows.add(new Row("Fog Density",
+                () -> String.format("%.0f%%", Game.OPT_FOG_DENSITY * 100f),
+                () -> Game.OPT_FOG_DENSITY = clamp(Game.OPT_FOG_DENSITY + 0.10f, 0.30f, 2.50f),
+                () -> Game.OPT_FOG_DENSITY = clamp(Game.OPT_FOG_DENSITY - 0.10f, 0.30f, 2.50f)));
+
+        rows.add(new Row("Fog Persistence",
+                () -> String.format("%.0f%%", Game.OPT_FOG_PERSISTENCE * 100f),
+                () -> Game.OPT_FOG_PERSISTENCE = clamp(Game.OPT_FOG_PERSISTENCE + 0.10f, 0.00f, 2.50f),
+                () -> Game.OPT_FOG_PERSISTENCE = clamp(Game.OPT_FOG_PERSISTENCE - 0.10f, 0.00f, 2.50f)));
+
         rows.add(new Row("Textures",
                 () -> Game.OPT_USE_TEXTURES && Game.OPT_DRAW_TEXTURES ? "On" : "Off",
                 () -> {
@@ -142,6 +152,10 @@ public class Menu {
             Game.OPT_DRAW_DISTANCE = clamped;
             Game.INSTANCE.setupPerspective();
         }
+    }
+
+    private static float clamp(float v, float lo, float hi) {
+        return Math.max(lo, Math.min(hi, v));
     }
 
     /** Updates the hovered row from the cursor position, in pixels. */
