@@ -363,10 +363,10 @@ public class Renderer {
         chunkShader.setFloat("alphaOverride", 1.0f);
 
         chunkShader.setBoolean("flashlightOn", Game.OPT_FLASHLIGHT);
-        chunkShader.setVector3f("flashlightColor", 1.05f, 1.00f, 0.85f);
-        chunkShader.setFloat("flashlightRange", 34.0f);
-        chunkShader.setFloat("flashlightInner", 0.965f);
-        chunkShader.setFloat("flashlightOuter", 0.90f);
+        chunkShader.setVector3f("flashlightColor", 1.35f, 1.28f, 1.10f);
+        chunkShader.setFloat("flashlightRange", 40.0f);
+        chunkShader.setFloat("flashlightInner", 0.94f);
+        chunkShader.setFloat("flashlightOuter", 0.82f);
 
         boolean textured = Game.OPT_USE_TEXTURES && Game.OPT_DRAW_TEXTURES && terrainTexture != null;
         chunkShader.setBoolean("useTexture", textured);

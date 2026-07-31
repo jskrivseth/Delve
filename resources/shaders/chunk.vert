@@ -16,6 +16,7 @@ out vec2 fragTexCoord;
 out float fragViewDistance;
 out float fragSkyLight;
 out vec3 fragViewPos;
+out vec3 fragViewNormal;
 
 void main() {
     vec4 worldPos = model * vec4(inPosition, 1.0);
@@ -24,6 +25,8 @@ void main() {
     // Normals are only ever rotated/translated here, so the model matrix upper
     // 3x3 is orthonormal and a full normal matrix is unnecessary.
     fragNormal = mat3(model) * inNormal;
+    // The flashlight is evaluated in view space, so it needs a matching normal.
+    fragViewNormal = mat3(view) * fragNormal;
     fragColor = inColor;
     fragTexCoord = inTexCoord;
     fragSkyLight = inSkyLight;

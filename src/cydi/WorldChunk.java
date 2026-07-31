@@ -63,6 +63,16 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     private volatile byte[] skyLight;
     /** Scratch BFS queue, reused across rebuilds to avoid per-pass allocation. */
     private transient int[] lightQueue;
+    private transient int queueHead;
+    private transient int queueTail;
+    /**
+     * Light values along the four chunk borders as of the last computation.
+     *
+     * Lighting is seeded from neighbours, so when this chunk's border values
+     * change the neighbours' copies are stale and must be recomputed. Comparing
+     * against this snapshot drives that, and stops once values settle.
+     */
+    private transient byte[] borderSnapshot;
     private boolean modelsSnappedToGround = false;
     /*
      * State
@@ -308,10 +318,10 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             java.util.Arrays.fill(light, (byte) 0);
         }
         if (lightQueue == null) {
-            lightQueue = new int[sizeX * sizeY * sizeZ];
+            lightQueue = new int[1 << 16];
         }
-
-        int head = 0, tail = 0;
+        queueHead = 0;
+        queueTail = 0;
 
         // Seed straight down from open sky.
         for (int x = 0; x < sizeX; x++) {
@@ -321,7 +331,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                         break;
                     }
                     light[lightIndex(x, y, z)] = (byte) MAX_LIGHT;
-                    lightQueue[tail++] = (x << 11) | (y << 4) | z;
+                    push(x, y, z);
                 }
             }
         }
@@ -329,17 +339,17 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         // Seed the four borders from neighbouring chunks that are already lit.
         for (int y = 0; y < sizeY; y++) {
             for (int x = 0; x < sizeX; x++) {
-                tail = seedBorder(light, tail, x, y, 0, worldPosX + x, y, worldPosY - 1);
-                tail = seedBorder(light, tail, x, y, sizeZ - 1, worldPosX + x, y, worldPosY + sizeZ);
+                seedBorder(light, x, y, 0, worldPosX + x, y, worldPosY - 1);
+                seedBorder(light, x, y, sizeZ - 1, worldPosX + x, y, worldPosY + sizeZ);
             }
             for (int z = 0; z < sizeZ; z++) {
-                tail = seedBorder(light, tail, 0, y, z, worldPosX - 1, y, worldPosY + z);
-                tail = seedBorder(light, tail, sizeX - 1, y, z, worldPosX + sizeX, y, worldPosY + z);
+                seedBorder(light, 0, y, z, worldPosX - 1, y, worldPosY + z);
+                seedBorder(light, sizeX - 1, y, z, worldPosX + sizeX, y, worldPosY + z);
             }
         }
 
-        while (head < tail) {
-            int packed = lightQueue[head++];
+        while (queueHead < queueTail) {
+            int packed = lightQueue[queueHead++];
             int x = (packed >> 11) & 0x1F;
             int y = (packed >> 4) & 0x7F;
             int z = packed & 0xF;
@@ -347,50 +357,138 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             if (level <= 1) {
                 continue;
             }
-            tail = spread(light, tail, x + 1, y, z, level);
-            tail = spread(light, tail, x - 1, y, z, level);
-            tail = spread(light, tail, x, y + 1, z, level);
-            tail = spread(light, tail, x, y - 1, z, level);
-            tail = spread(light, tail, x, y, z + 1, level);
-            tail = spread(light, tail, x, y, z - 1, level);
+            spread(light, x + 1, y, z, level);
+            spread(light, x - 1, y, z, level);
+            spread(light, x, y + 1, z, level);
+            spread(light, x, y - 1, z, level);
+            spread(light, x, y, z + 1, level);
+            spread(light, x, y, z - 1, level);
+        }
 
-            if (tail >= lightQueue.length - 8) {
-                break;  // saturated; remaining spread would be negligible
+        publishBorderChanges(light);
+    }
+
+    /**
+     * Appends to the BFS queue, growing it as needed.
+     *
+     * A cell is enqueued each time its level improves, so the queue holds far
+     * more entries than there are voxels. The previous fixed-size queue silently
+     * abandoned propagation once full, leaving unlit patches.
+     */
+    private void push(int x, int y, int z) {
+        if (queueTail == lightQueue.length) {
+            if (queueHead > 0) {
+                System.arraycopy(lightQueue, queueHead, lightQueue, 0, queueTail - queueHead);
+                queueTail -= queueHead;
+                queueHead = 0;
+            } else {
+                lightQueue = java.util.Arrays.copyOf(lightQueue, lightQueue.length * 2);
             }
+        }
+        lightQueue[queueTail++] = (x << 11) | (y << 4) | z;
+    }
+
+    private static final int BORDER_STRIDE = sizeY * sizeZ;
+
+    /**
+     * Flags neighbours whose seeded border light is now out of date.
+     *
+     * Without this, digging a tunnel up to a chunk edge lights only the chunk
+     * that changed; the neighbour keeps the light it computed before the tunnel
+     * existed, leaving a hard dark seam until something else forces it to
+     * rebuild.
+     */
+    private void publishBorderChanges(byte[] light) {
+        boolean first = borderSnapshot == null;
+        if (first) {
+            borderSnapshot = new byte[4 * BORDER_STRIDE];
+        }
+
+        boolean changedXLow = first, changedXHigh = first;
+        boolean changedZLow = first, changedZHigh = first;
+
+        for (int y = 0; y < sizeY; y++) {
+            for (int z = 0; z < sizeZ; z++) {
+                int slot = y * sizeZ + z;
+                byte low = light[lightIndex(0, y, z)];
+                if (borderSnapshot[slot] != low) {
+                    borderSnapshot[slot] = low;
+                    changedXLow = true;
+                }
+                byte high = light[lightIndex(sizeX - 1, y, z)];
+                if (borderSnapshot[BORDER_STRIDE + slot] != high) {
+                    borderSnapshot[BORDER_STRIDE + slot] = high;
+                    changedXHigh = true;
+                }
+            }
+            for (int x = 0; x < sizeX; x++) {
+                int slot = y * sizeX + x;
+                byte low = light[lightIndex(x, y, 0)];
+                if (borderSnapshot[2 * BORDER_STRIDE + slot] != low) {
+                    borderSnapshot[2 * BORDER_STRIDE + slot] = low;
+                    changedZLow = true;
+                }
+                byte high = light[lightIndex(x, y, sizeZ - 1)];
+                if (borderSnapshot[3 * BORDER_STRIDE + slot] != high) {
+                    borderSnapshot[3 * BORDER_STRIDE + slot] = high;
+                    changedZHigh = true;
+                }
+            }
+        }
+
+        if (changedXLow) {
+            markNeighborStale(posX - 1, posY);
+        }
+        if (changedXHigh) {
+            markNeighborStale(posX + 1, posY);
+        }
+        if (changedZLow) {
+            markNeighborStale(posX, posY - 1);
+        }
+        if (changedZHigh) {
+            markNeighborStale(posX, posY + 1);
         }
     }
 
-    private int seedBorder(byte[] light, int tail, int x, int y, int z,
-                           int worldX, int worldY, int worldZ) {
-        if (!Block.transmitsLight(blocks[x][y][z])) {
-            return tail;
+    /**
+     * Only chunks that have already been lit are flagged. A chunk with no light
+     * yet will seed from this one when it first builds, so flagging it would just
+     * duplicate work during world generation.
+     */
+    private void markNeighborStale(int chunkX, int chunkZ) {
+        WorldChunk neighbor = World.getChunk(chunkX, chunkZ);
+        if (neighbor != null && neighbor.isGenerated && neighbor.skyLight != null) {
+            neighbor.meshIsStale = true;
         }
-        int neighbor = World.skyLightGlobal(worldX, worldY, worldZ);
-        int level = neighbor - 1;
+    }
+
+    private void seedBorder(byte[] light, int x, int y, int z,
+                            int worldX, int worldY, int worldZ) {
+        if (!Block.transmitsLight(blocks[x][y][z])) {
+            return;
+        }
+        int level = World.skyLightGlobal(worldX, worldY, worldZ) - 1;
         int idx = lightIndex(x, y, z);
         if (level > light[idx]) {
             light[idx] = (byte) level;
-            lightQueue[tail++] = (x << 11) | (y << 4) | z;
+            push(x, y, z);
         }
-        return tail;
     }
 
-    private int spread(byte[] light, int tail, int x, int y, int z, int level) {
+    private void spread(byte[] light, int x, int y, int z, int level) {
         if (x < 0 || x >= sizeX || y < 0 || y >= sizeY || z < 0 || z >= sizeZ) {
-            return tail;
+            return;
         }
-        if (!Block.transmitsLight(blocks[x][y][z])) {
-            return tail;
+        int type = blocks[x][y][z];
+        if (!Block.transmitsLight(type)) {
+            return;
         }
         int idx = lightIndex(x, y, z);
-        int next = level - Block.lightCost(blocks[x][y][z]);
+        int next = level - Block.lightCost(type);
         if (next > light[idx]) {
             light[idx] = (byte) next;
-            if (tail < lightQueue.length) {
-                lightQueue[tail++] = (x << 11) | (y << 4) | z;
-            }
+            push(x, y, z);
         }
-        return tail;
     }
 
     public boolean isReady() {

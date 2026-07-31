@@ -6,6 +6,7 @@ in vec2 fragTexCoord;
 in float fragViewDistance;
 in float fragSkyLight;
 in vec3 fragViewPos;
+in vec3 fragViewNormal;
 
 uniform sampler2D textureSampler;
 uniform bool useTexture;
@@ -78,13 +79,23 @@ void main() {
 
     if (flashlightOn) {
         // In view space the camera sits at the origin looking down -Z, so the
-        // spotlight needs no extra uniforms for position or orientation.
+        // spotlight needs no extra uniforms for position or orientation. The
+        // normal must be taken in view space too, or the facing term compares
+        // vectors from two different spaces and the beam breaks into patches.
         vec3 toFrag = normalize(fragViewPos);
+        vec3 viewNormal = normalize(fragViewNormal);
+
         float cosAngle = dot(toFrag, vec3(0.0, 0.0, -1.0));
         float cone = smoothstep(flashlightOuter, flashlightInner, cosAngle);
         float falloff = clamp(1.0 - fragViewDistance / flashlightRange, 0.0, 1.0);
-        float facing = max(dot(normal, -toFrag), 0.0);
-        lit += albedo * flashlightColor * cone * falloff * falloff * facing * ao;
+        float facing = max(dot(viewNormal, -toFrag), 0.0);
+
+        // Ambient occlusion describes how much sky light reaches a corner, so
+        // applying it at full strength to a handheld light cancels the beam in
+        // the very crevices it is meant to reveal.
+        float directAo = mix(1.0, ao, 0.3);
+
+        lit += albedo * flashlightColor * cone * falloff * falloff * facing * directAo;
     }
 
     if (fogEnabled) {
