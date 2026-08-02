@@ -76,6 +76,15 @@ public final class WorldPreset {
         if (preset == WorldPreset.EARTH && Game.DAYS_WITH_WEATHER_CYCLES) {
             return Math.min(Math.max(Weather.cloudCoverage, 0.12f), 0.88f);
         }
+        if (preset == WorldPreset.VENUS && Game.DAYS_WITH_WEATHER_CYCLES) {
+            float heavy = 0.56f - (1.0f - Weather.cloudCoverage) * 0.30f;
+            return Math.min(Math.max(heavy, 0.16f), 0.64f);
+        }
+        if (preset == WorldPreset.MARS && Game.DAYS_WITH_WEATHER_CYCLES) {
+            // Keep Mars mostly clear with only occasional wispy decks.
+            float clear = 0.82f + Weather.cloudCoverage * 0.12f;
+            return Math.min(Math.max(clear, 0.74f), 0.96f);
+        }
         return profile.cloudCoverage;
     }
 
@@ -101,5 +110,9 @@ public final class WorldPreset {
 
     public static float cloudSpeed(int preset) {
         return PlanetProfiles.get(preset).cloudSpeed;
+    }
+
+    public static int cloudLayerCount(int preset) {
+        return PlanetProfiles.get(preset).cloudLayerCount;
     }
 }

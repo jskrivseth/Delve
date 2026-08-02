@@ -15,13 +15,27 @@ in vec3 fragViewRay;
 uniform vec3 sunDirection;
 uniform vec3 moonDirection;
 uniform float cloudShadowStrength;
-// Continuous storm intensity [0,1], derived from Weather's coverage noise --
-// 0 across every normal condition (sunny through overcast), ramping up only
-// within the dedicated STORM band. Gates how dark L1 is allowed to get: that
-// layer's own extra self-darkening otherwise made every heavy-cloud day look
-// like a storm was rolling in, even when the weather was merely overcast.
-uniform float stormFactor;
 uniform int cloudMarchSteps;
+uniform int cloudLayerCount;
+// Dev-tuning knobs (F9 menu). Both default to 1.0, matching the previously
+// fixed baseline exactly, so normal play is unaffected until adjusted.
+// cloudLayerSpacing scales the vertical gaps between the 3 cloud decks --
+// higher hoists L1 and L2 further apart (and further from L0) instead of
+// them sitting close enough together to read as one blurred mass.
+// cloudInterLayerShadow scales how much a deck above dims the sunlight
+// reaching the one(s) below it (L2->L1->L0); 0 disables that dimming
+// entirely, 1 is the original strength, and values above 1 exaggerate it.
+uniform float cloudLayerSpacing;
+uniform float cloudInterLayerShadow;
+// Per-layer strength for the ground-bounced underglow fill (0 disables it
+// per layer, 1 is the original baseline) and a shared density-based
+// translucency contrast (0 flattens thick/thin shading to a single value,
+// 1 is the original baseline). Independent per layer since L0 (nearest the
+// ground) should read a very different amount of bounce light than L1/L2.
+uniform float cloudUnderglowScaleL0;
+uniform float cloudUnderglowScaleL1;
+uniform float cloudUnderglowScaleL2;
+uniform float cloudTranslucencyContrast;
 
 // Distance along the ray, in world units, over which the visible march fades
 // out its 3D erosion detail (see cloudDensity's lodFade). Chosen so a cloud
@@ -58,8 +72,13 @@ void marchLayer(vec3 dir, vec3 toSun, float baseH, float layerD,
                 float phase, float sunPower, vec3 sunTint, vec3 skyTint,
                 vec3 underglowDayTint, vec3 underglowDuskTint,
                 float duskStrength, float horizonFade, float layerDetail,
+                float underglowScale,
                 inout float transmittance, inout vec3 scattered) {
-    if (dir.y <= 0.015 || transmittance < 0.02) return;
+    // abs() so downward-facing rays (camera above the deck, looking down)
+    // also march it, not just upward-facing ones -- the entry/exit math
+    // below (t0 = min, t1 = max of tEnter/tExit) is already direction-
+    // agnostic, it was only this gate assuming upward-only.
+    if (abs(dir.y) <= 0.015 || transmittance < 0.02) return;
 
     // The drape is a function of XZ only, so probe it along this ray rather
     // than assuming the worst case. Two probes -- at the nominal-altitude
@@ -115,6 +134,12 @@ void marchLayer(vec3 dir, vec3 toSun, float baseH, float layerD,
     if (atmospherePreset == 2) sigma *= 1.8;
     float lightStep = max(slabSpan, layerD) * 0.30;
     bool  doShadow  = sigmaScale >= 0.5 && !ablated(AB_LIGHT);
+    // Grazing/oblique views see more of a cloud's side than its self-shadowed
+    // underside, and pick up more ambient sky light scattering in from
+    // around it -- 0 looking straight up/down at it (where the sun-facing
+    // self-shadow term should dominate and read darkest), ramping toward 1
+    // as the view angle flattens toward the horizon.
+    float grazing = 1.0 - clamp(abs(dir.y) / 0.6, 0.0, 1.0);
 
     for (int i = 0; i < nSteps; i++) {
         if (t >= t1) break;
@@ -174,8 +199,10 @@ void marchLayer(vec3 dir, vec3 toSun, float baseH, float layerD,
             // A thin, translucent sample lets more of that ambient/sun light
             // pass through it than a dense, optically thick one does -- the
             // cloud's 3D volume should read as a darker core with brighter,
-            // more translucent edges, not the reverse.
-            luminance *= mix(1.18, 0.78, translucency);
+            // more translucent edges, not the reverse. The floor was too
+            // aggressive though (0.78), crushing dense cores to near-black
+            // instead of a shaded grey; eased to 0.90.
+            luminance *= mix(1.0, mix(1.15, 0.90, translucency), cloudTranslucencyContrast);
             // Ground-bounced ambient light still reaches a little way up into
             // a cloud's underside even where the sun above is fully blocked --
             // a pure self-shadow term left the whole underside crushed toward
@@ -200,7 +227,15 @@ void marchLayer(vec3 dir, vec3 toSun, float baseH, float layerD,
             float hUnit = clamp((pos.y - baseH) / max(layerD, 1.0), 0.0, 1.0);
             float underglow = pow(1.0 - hUnit, 2.0) * mix(0.14, 0.72, duskStrength);
             vec3 underglowTint = mix(underglowDayTint, underglowDuskTint, duskStrength);
-            luminance += underglowTint * underglow;
+            luminance += underglowTint * underglow * underglowScale;
+            // Grazing ambient: scattered skylight reaching a cloud's side
+            // from around it, not through its own sun-facing shadow term, so
+            // it's added independent of lightTrans/translucency the same way
+            // underglow is. Straight-up/down views (grazing == 0) are
+            // unaffected and keep their full self-shadowed depth; oblique
+            // views brighten as this takes over, instead of reading darker
+            // the way an under-stepped march used to make them look.
+            luminance += skyTint * grazing * 0.35;
             // Cauliflower creases -- the pockets billow erosion just carved
             // out of the lobe -- read as grey in real clouds, not the same
             // white as the lobes around them. Darken toward the sample's own
@@ -209,7 +244,15 @@ void marchLayer(vec3 dir, vec3 toSun, float baseH, float layerD,
             // than only the coarse silhouette lighting above.
             float billowGrey = dot(luminance, vec3(0.299, 0.587, 0.114));
             luminance = mix(luminance, vec3(billowGrey) * 0.65, billowAO * 0.75);
-            float stepTrans = exp(-d * sigma * dt);
+            // Cap how much optical depth a single step can charge: with big
+            // geometric-growth steps (long oblique marches especially), one
+            // step could otherwise swing transmittance from ~1 to ~0 in one
+            // jump, "stamping" a hard dark edge instead of the cloud reading
+            // as a smooth, continuous gradient of density. This bounds a
+            // single step's contribution so darkening always accumulates
+            // gradually across several samples, however coarse the march.
+            float stepOpticalDepth = min(d * sigma * dt, 2.5);
+            float stepTrans = exp(-stepOpticalDepth);
             scattered   += transmittance * (1.0 - stepTrans) * luminance;
             transmittance *= stepTrans;
             if (transmittance < 0.02) return;
@@ -343,7 +386,11 @@ void main() {
     // the occlusion this march already resolved.
     float cloudAlpha = 0.0;
 
-    float horizonFade = smoothstep(0.015, 0.24, dir.y);
+    // abs() so this also fades in for downward-facing rays (e.g. flying
+    // above the cloud deck and looking down at it) instead of only ever
+    // rendering clouds when looking up -- it stays a fade-out right at the
+    // true horizon either way, for the same numerical-stability reasons.
+    float horizonFade = smoothstep(0.015, 0.24, abs(dir.y));
     if (cloudsEnabled && horizonFade > 0.01) {
         vec2 windDir  = vec2(cos(cloudWindAngle), sin(cloudWindAngle));
         vec2 baseWind = windDir * (cloudDayTime * cloudSpeed * cloudWindSpeed * 3200.0);
@@ -352,13 +399,19 @@ void main() {
         float turb = cloudTurbulence;
 
         // L0 and L1 use opposite-sign fundamentals so one rises while the other falls.
+        // L0 stays anchored at cloudBaseHeight's original offset; L1 and L2 are
+        // hoisted further away from it (and each other) as cloudLayerSpacing
+        // grows past 1.0, since sitting close together read as one blurred
+        // mass instead of 3 distinct decks.
+        float gapL0L1 = 320.0 * cloudLayerSpacing;
+        float gapL1L2 = 540.0 * cloudLayerSpacing;
         float baseL0 = cloudBaseHeight - 320.0
                      + sin(ct * 1.618)  * (85.0 + 130.0 * turb)
                      - sin(ct * 2.414 + 1.8) * 50.0 * turb;
-        float baseL1 = cloudBaseHeight
+        float baseL1 = (cloudBaseHeight - 320.0 + gapL0L1)
                      - sin(ct * 1.414)  * (90.0 + 150.0 * turb)
                      + sin(ct * 0.618 + 0.7) * 45.0 * turb;
-        float baseL2 = cloudBaseHeight + 540.0
+        float baseL2 = (cloudBaseHeight - 320.0 + gapL0L1 + gapL1L2)
                      + sin(ct * 0.943 + 2.3) * (65.0 + 100.0 * turb)
                      - sin(ct * 1.732 + 0.5) * 38.0 * turb;
 
@@ -373,6 +426,7 @@ void main() {
         vec2 evolL0 = layerEvolve(317.4);
         vec2 evolL1 = layerEvolve(0.0);
         vec2 evolL2 = layerEvolve(183.7);
+        int activeLayers = max(cloudLayerCount, 1);
 
         float cosTheta = dot(dir, toSun);
         float g  = 0.42;
@@ -425,16 +479,27 @@ void main() {
         // way real light does.
         float sigmaBase = mix(0.055, 0.140, cloudOpacity);
         if (atmospherePreset == 2) sigmaBase *= 1.8;
-        float rayDirY = max(dir.y, 0.05);
-        vec3 approxL0Entry = cameraWorldPos + dir * clamp((baseL0 - cameraWorldPos.y) / rayDirY, 0.0, 6000.0);
-        vec3 approxL1Entry = cameraWorldPos + dir * clamp((baseL1 - cameraWorldPos.y) / rayDirY, 0.0, 6000.0);
+        // Preserve sign so this still projects "forward along the ray" for
+        // downward-facing rays too, instead of forcing a positive divisor
+        // that would silently clamp the projection to the camera's own spot.
+        float rayDirY = dir.y >= 0.0 ? max(dir.y, 0.05) : min(dir.y, -0.05);
+        float projDistL0 = clamp((baseL0 - cameraWorldPos.y) / rayDirY, 0.0, 6000.0);
+        float projDistL1 = clamp((baseL1 - cameraWorldPos.y) / rayDirY, 0.0, 6000.0);
+        vec3 approxL0Entry = cameraWorldPos + dir * projDistL0;
+        vec3 approxL1Entry = cameraWorldPos + dir * projDistL1;
         float regimeOverhead = fbm((approxL1Entry.xz + evolL1 * 0.35 + windL1 * 0.08) * 0.00075);
         float ecL2 = cloudCoverageAt(approxL1Entry.xz, windL2, evolL2);
         float ecL1 = cloudCoverageAt(approxL0Entry.xz, windL1, evolL1);
-        float shadowFromL2 = overheadShadow(approxL1Entry, toSun, baseL2, depthL2,
-                windL2, evolL2, regimeOverhead, ecL2, sigmaBase * 0.30);
-        float shadowFromL1 = overheadShadow(approxL0Entry, toSun, baseL1, depthL1,
-                windL1, evolL1, regimeOverhead, ecL1, sigmaBase);
+        float shadowFromL2 = 1.0;
+        float shadowFromL1 = 1.0;
+        if (activeLayers >= 3) {
+            shadowFromL2 = overheadShadow(approxL1Entry, toSun, baseL2, depthL2,
+                    windL2, evolL2, regimeOverhead, ecL2, sigmaBase * 0.30);
+        }
+        if (activeLayers >= 2) {
+            shadowFromL1 = overheadShadow(approxL0Entry, toSun, baseL1, depthL1,
+                    windL1, evolL1, regimeOverhead, ecL1, sigmaBase);
+        }
         // Near the horizon, toSun.y shrinks toward zero and the overhead-shadow
         // ray (which divides by it) becomes very sensitive to small changes in
         // sun angle -- the shadow position sweeps rapidly across the deck below,
@@ -444,32 +509,57 @@ void main() {
         // underglow added below fills in the brightness this leaves behind.
         shadowFromL2 = mix(shadowFromL2, 1.0, duskStrength);
         shadowFromL1 = mix(shadowFromL1, 1.0, duskStrength);
+        // This shadow is a single coarse sample per screen pixel, projected
+        // out along the ray to whichever layer it's shadowing -- for a
+        // shallow, near-horizon ray that projection point can land thousands
+        // of blocks away, sampling a noise cell that has little to do with
+        // the actual (LOD-reduced, distant) cloud being rendered along the
+        // rest of that ray. The result was blotchy, exaggerated dark patches
+        // specifically in far/horizon-band clouds -- worse the higher
+        // cloudInterLayerShadow is turned up -- that faded back to normal the
+        // moment the camera got close enough to shorten the projection.
+        // Fading the effect out over the same projection distance keeps it
+        // fully strong for nearby decks (where the sample point is close to
+        // what's actually on screen) while disarming it before it can land on
+        // a mismatched, far-away sample.
+        float shadowDistFade = smoothstep(2200.0, 5000.0, max(projDistL0, projDistL1));
+        shadowFromL2 = mix(shadowFromL2, 1.0, shadowDistFade);
+        shadowFromL1 = mix(shadowFromL1, 1.0, shadowDistFade);
+        // Scale how much darkening actually reaches the lower deck(s), not
+        // the raw shadow value itself, so 0 cleanly disables the effect
+        // (shadow -> 1.0) and >1 can exaggerate it past the original strength.
+        shadowFromL2 = clamp(1.0 - (1.0 - shadowFromL2) * cloudInterLayerShadow, 0.0, 1.0);
+        shadowFromL1 = clamp(1.0 - (1.0 - shadowFromL1) * cloudInterLayerShadow, 0.0, 1.0);
 
         // Ground-bounced ambient light: only L0 sits close enough to the
         // ground to pick that up "quite a bit"; L1 and L2 are progressively
         // farther from it (and partly screened by L0 itself), so their share
-        // of it should be much smaller, not equal. L1 also keeps its own
-        // dedicated extra darkening on top of its overhead shadow so it reads
-        // as the darkest band in an overcast stack.
+        // of it should be much smaller, not equal.
         // L0 sits under both decks, but should only take a fraction of that
         // combined shadow rather than the full product -- some sun still
         // scatters in sideways past the edges of whatever's overhead, plus
         // L0's own ground-bounce (boosted above) fills back in some of what
         // direct shadow removes.
-        float shadowL0 = mix(shadowFromL2 * shadowFromL1, 1.0, 0.62);
-        // L1 gets the same partial-shadow treatment as L0 -- straight
-        // shadowFromL2 was reading as too dark on its own, before even adding
-        // the dedicated extra darkening below. That extra darkening used to
-        // be a flat 0.78 regardless of weather, which made L1 look like an
-        // approaching storm on any heavily overcast day. It's now gated by
-        // stormFactor: normal weather barely darkens L1 further (0.90), and
-        // only genuine storm conditions unlock the much darker (0.55) look.
-        float l1ExtraDark = mix(0.90, 0.55, stormFactor);
-        float shadowL1 = mix(shadowFromL2, 1.0, 0.5) * l1ExtraDark;
+        float shadowL0 = activeLayers >= 2 ? mix(shadowFromL2 * shadowFromL1, 1.0, 0.62) : 1.0;
+        // L1 gets the same partial-shadow treatment as L0 -- no extra,
+        // layer-specific darkening on top of it. It used to also get a
+        // dedicated multiplier (flat 0.78, later gated to 0.90/storm-only
+        // 0.55) meant to make it read as the darkest band in an overcast
+        // stack, but that singled L1 out from the other two layers for no
+        // reason tied to the actual physics here, so it's gone.
+        float shadowL1 = activeLayers >= 3 ? mix(shadowFromL2, 1.0, 0.5) : 1.0;
         vec3 skyTintL0 = min(skyTint * 1.20, vec3(1.0));
-        vec3 underglowDayTintL0 = min(underglowDayTint * 1.30, vec3(1.0));
-        vec3 underglowDayTintL1 = underglowDayTint * 0.65;
-        vec3 underglowDayTintL2 = underglowDayTint * 0.15;
+        // The per-layer OPT_CLOUD_UNDERGLOW_SCALE_L0/L1/L2 dev-menu knobs now
+        // own the L0-gets-more/L1-and-L2-get-less differentiation directly --
+        // baking an additional fixed multiplier into the tint here on top of
+        // that was redundant, and for L1 specifically it silently capped how
+        // far its knob could actually push things (400% on top of a hidden
+        // *0.65 only ever reached ~260% of the full tint, well short of what
+        // the knob's own number implied). Tints now pass through unscaled;
+        // the knobs are the single source of truth for magnitude.
+        vec3 underglowDayTintL0 = underglowDayTint;
+        vec3 underglowDayTintL1 = underglowDayTint;
+        vec3 underglowDayTintL2 = underglowDayTint;
 
         float transmittance = 1.0;
         vec3  scattered     = vec3(0.0);
@@ -489,14 +579,19 @@ void main() {
         marchLayer(dir, toSun, baseL0, depthL0, windL0, evolL0, 1.00, max(6, (cloudMarchSteps * 3) / 2),
                    phase, sunPower * shadowL0, sunTint, skyTintL0,
                    underglowDayTintL0, underglowDuskTint, duskStrength, horizonFade, LAYER_DETAIL_L0,
-                   transmittance, scattered);
-        marchLayer(dir, toSun, baseL1, depthL1, windL1, evolL1, 1.00, max(4, cloudMarchSteps),
-                   phase, sunPower * shadowL1, sunTint, skyTint,
-                   underglowDayTintL1, underglowDuskTint, duskStrength, horizonFade, LAYER_DETAIL_L1,
-                   transmittance, scattered);
-        marchLayer(dir, toSun, baseL2, depthL2, windL2, evolL2, 0.30, max(3, cloudMarchSteps * 3 / 5),
-                   phase, sunPower, sunTint, skyTint, underglowDayTintL2, underglowDuskTint,
-                   duskStrength, horizonFade, LAYER_DETAIL_L2, transmittance, scattered);
+                   cloudUnderglowScaleL0, transmittance, scattered);
+        if (activeLayers >= 2) {
+            marchLayer(dir, toSun, baseL1, depthL1, windL1, evolL1, 1.00, max(4, cloudMarchSteps),
+                       phase, sunPower * shadowL1, sunTint, skyTint,
+                       underglowDayTintL1, underglowDuskTint, duskStrength, horizonFade, LAYER_DETAIL_L1,
+                       cloudUnderglowScaleL1, transmittance, scattered);
+        }
+        if (activeLayers >= 3) {
+            marchLayer(dir, toSun, baseL2, depthL2, windL2, evolL2, 0.30, max(3, cloudMarchSteps * 3 / 5),
+                       phase, sunPower, sunTint, skyTint, underglowDayTintL2, underglowDuskTint,
+                       duskStrength, horizonFade, LAYER_DETAIL_L2, cloudUnderglowScaleL2,
+                       transmittance, scattered);
+        }
 
         color = mix(color, color * transmittance + scattered, horizonFade);
         cloudAlpha = clamp((1.0 - transmittance)

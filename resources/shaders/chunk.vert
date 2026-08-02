@@ -10,6 +10,7 @@ layout (location = 5) in float inTint;
 uniform mat4 projection;
 uniform mat4 view;
 uniform mat4 model;
+uniform vec3 cameraWorldPos;
 
 out vec3 fragNormal;
 out vec4 fragColor;
@@ -34,7 +35,9 @@ void main() {
     fragTexCoord = inTexCoord;
     fragSkyLight = inSkyLight;
     fragViewPos = viewPos.xyz;
-    fragWorldPos = worldPos.xyz;
+    // model is camera-relative for precision; add the camera back so world-
+    // space effects (cloud shadows, fog noise) stay fixed to terrain.
+    fragWorldPos = worldPos.xyz + cameraWorldPos;
     fragViewDistance = length(viewPos.xyz);
 
     // Biome tint arrives as three 8-bit channels packed into one float, each

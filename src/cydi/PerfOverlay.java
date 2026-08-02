@@ -200,6 +200,7 @@ public final class PerfOverlay {
         lines.add(row("cloud shadow", String.format("%.0f%%", Game.OPT_CLOUD_SHADOW_SCALE * 100f)));
         lines.add(row("cloud march steps", String.valueOf(Game.OPT_CLOUD_VOL_STEPS)));
         lines.add(row("god rays", Game.QUALITY_LABELS[Game.OPT_GOD_RAYS_QUALITY]));
+        lines.add(row("god rays offscreen", Game.OFFSCREEN_QUALITY_LABELS[Game.OPT_GOD_RAYS_OFFSCREEN_QUALITY]));
         lines.add(row("draw distance", String.valueOf(Game.OPT_DRAW_DISTANCE)));
         lines.add(row("vsync / AA", onOff(Game.OPT_VSYNC) + " / " + onOff(Game.OPT_ANTIALIASING)));
     }

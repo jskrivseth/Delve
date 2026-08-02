@@ -133,7 +133,9 @@ void main() {
         // Only the two substantial decks cast shadow. The high cirrus layer is
         // thin enough that its contribution is not worth a third of the cost.
         SHADOW_LAYER(bL0, dL0, windL0, evolL0)
-        SHADOW_LAYER(bL1, dL1, windL1, evolL1)
+        if (atmospherePreset != 1) {
+            SHADOW_LAYER(bL1, dL1, windL1, evolL1)
+        }
 
         #undef SHADOW_LAYER
 
@@ -231,7 +233,13 @@ void main() {
                 * (1.0 - clamp(persistentValleyFog, 0.0, 1.0))
                 * (1.0 - clamp(edgeFog, 0.0, 1.0));
         fogAmount = clamp(fogAmount, 0.0, 1.0);
-        lit = mix(lit, fogColor, fogAmount);
+        vec3 fogTarget = fogColor;
+        if (atmospherePreset == 0) {
+            // Keep long-range Earth terrain from flattening to solid white/gray.
+            float preserve = smoothstep(0.55, 0.95, fogAmount) * fogDayFactor;
+            fogTarget = mix(fogColor, lit * 0.90 + fogColor * 0.10, preserve * 0.35);
+        }
+        lit = mix(lit, fogTarget, fogAmount);
     }
 
     outColor = vec4(lit, alphaOverride);

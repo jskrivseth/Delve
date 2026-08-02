@@ -92,14 +92,41 @@ public class Game {
     public static boolean OPT_FLASHLIGHT = false;
     /** God ray quality preset: 0 off, 1 low, 2 med, 3 high. */
     public static int OPT_GOD_RAYS_QUALITY = 3;
+    /** Off-screen shaft rendering: 0 off, 1 low, 2 high. */
+    public static int OPT_GOD_RAYS_OFFSCREEN_QUALITY = 0;
     public static boolean OPT_GOD_RAYS = true;
     /** Sun disc size multiplier. */
     public static float OPT_SUN_SIZE_SCALE = 0.80f;
-    /** Sun glow multiplier. */
-    public static float OPT_SUN_GLOW_SCALE = 0.45f;
+    /** Sun glow multiplier. Tuned down via the F9 dev menu. */
+    public static float OPT_SUN_GLOW_SCALE = 0.30f;
     /** God ray intensity multiplier. */
     public static float OPT_GOD_RAYS_INTENSITY_SCALE = 1.00f;
-    /** Cloud quality preset: 0 off, 1 low, 2 med, 3 high. */
+    /** Vertical spacing multiplier between the 3 cloud layers (1.0 = original
+     *  baseline gaps; higher hoists L1 and L2 further apart/up). Tuned via
+     *  the F9 dev menu -- 3.0 gives each deck clearly separated air. */
+    public static float OPT_CLOUD_LAYER_SPACING = 3.00f;
+    /** Strength multiplier for the inter-layer shadow chain (L2 dims L1,
+     *  both dim L0); 1.0 = original baseline, 0 disables it entirely. Tuned
+     *  down slightly via the F9 dev menu. */
+    public static float OPT_CLOUD_INTERLAYER_SHADOW = 0.80f;
+    /** Per-layer strength multiplier for the ground-bounced "underglow" fill
+     *  light on cloud undersides; 1.0 = original baseline, 0 disables it
+     *  entirely. Independent per layer since L0 (closest to the ground)
+     *  should read a very different amount of bounce light than L1/L2.
+     *  Tuned via the F9 dev menu. */
+    public static float OPT_CLOUD_UNDERGLOW_SCALE_L0 = 2.80f;
+    public static float OPT_CLOUD_UNDERGLOW_SCALE_L1 = 4.20f;
+    public static float OPT_CLOUD_UNDERGLOW_SCALE_L2 = 1.20f;
+    /** How strongly a sample's local density (translucency) darkens dense
+     *  cores / brightens thin edges; 1.0 = original baseline, 0 = flat (no
+     *  density-based contrast at all). Tuned via the F9 dev menu to soften
+     *  dense-core darkening.*/
+    public static float OPT_CLOUD_TRANSLUCENCY_CONTRAST = 0.80f;
+    /** Cloud quality preset: 0 off, 1 low, 2 med, 3 high. Set indirectly via
+     *  {@link #OPT_CLOUD_DETAIL} / {@link #applyCloudDetail()} -- kept as its
+     *  own field since the shader, profiling overlay and log all read it
+     *  directly, and profiling launches override it independently via
+     *  -Ddelve.cloudquality. */
     public static int OPT_CLOUD_QUALITY = 3;
     /** Cloud volumetric rendering steps (8-32) - derived from cloud quality. */
     public static int OPT_CLOUD_VOL_STEPS = 32;
@@ -113,12 +140,36 @@ public class Game {
      * Divisor for the resolution the sky and volumetric clouds are marched at.
      * The march is the most expensive per-pixel work in the renderer and the sky
      * is low frequency, so halving resolution quarters the cost for little
-     * visible loss. 1 = full, 2 = half, 4 = quarter.
+     * visible loss. 1 = full, 2 = half, 4 = quarter. Set indirectly via
+     * {@link #OPT_CLOUD_DETAIL} (see {@link #applyCloudDetail()}) -- kept as
+     * its own field for the same reasons as OPT_CLOUD_QUALITY above.
      */
     public static int OPT_SKY_RESOLUTION_DIV = 1;
     public static final int[] SKY_RESOLUTION_DIVS = { 1, 2, 4 };
     public static final String[] SKY_RESOLUTION_LABELS = { "Full", "Half", "Quarter" };
     public static final String[] QUALITY_LABELS = { "Off", "Low", "Med", "High" };
+    public static final String[] OFFSCREEN_QUALITY_LABELS = { "Off", "Low", "High" };
+    /**
+     * Single player-facing cloud setting replacing the old separate "Cloud
+     * Quality" and "Cloud Resolution" menu rows -- those let you pick
+     * combinations that never made sense together (e.g. Off quality at Full
+     * resolution, or High quality at Quarter resolution). 0 Off, 1 Low
+     * (half res), 2 Med (half res), 3 High (full res).
+     */
+    public static int OPT_CLOUD_DETAIL = 3;
+    public static final String[] CLOUD_DETAIL_LABELS = { "Off", "Low", "Med", "High" };
+    private static final int[] CLOUD_DETAIL_QUALITY = { 0, 1, 2, 3 };
+    private static final int[] CLOUD_DETAIL_RES_DIV = { 1, 2, 2, 1 };
+
+    /** Applies {@link #OPT_CLOUD_DETAIL} to the underlying quality/resolution/
+     *  step fields every consumer (shader uniforms, chunk shadows, the perf
+     *  overlay/log) already reads, so nothing downstream needed to change. */
+    public static void applyCloudDetail() {
+        OPT_CLOUD_QUALITY = CLOUD_DETAIL_QUALITY[OPT_CLOUD_DETAIL];
+        OPT_SKY_RESOLUTION_DIV = CLOUD_DETAIL_RES_DIV[OPT_CLOUD_DETAIL];
+        OPT_CLOUDS = OPT_CLOUD_QUALITY > 0;
+        OPT_CLOUD_VOL_STEPS = new int[] { 0, 10, 18, 32 }[OPT_CLOUD_QUALITY];
+    }
     /**
      * Performance overlay level: 0 off, 1 frame timings, 2 adds per-shader GPU
      * times and ablation-based per-function cost. Level 2 deliberately toggles
@@ -273,6 +324,11 @@ public class Game {
                 && flag("delve.fullscreen") != WINDOW.isFullscreen()) {
             WINDOW.toggleFullscreen();
         }
+        // Establishes OPT_CLOUD_QUALITY/OPT_SKY_RESOLUTION_DIV/OPT_CLOUD_VOL_STEPS
+        // from the single player-facing OPT_CLOUD_DETAIL setting; the explicit
+        // -Ddelve.skydiv/-Ddelve.cloudquality overrides below still take
+        // precedence for repeatable profiling runs.
+        applyCloudDetail();
         String skyDiv = System.getProperty("delve.skydiv");
         if (skyDiv != null) {
             try {
@@ -282,6 +338,14 @@ public class Game {
             }
         }
         OPT_GOD_RAYS_QUALITY = quality("delve.godrays", OPT_GOD_RAYS_QUALITY);
+        String offscreenRays = System.getProperty("delve.godrays.offscreen");
+        if (offscreenRays != null) {
+            try {
+                OPT_GOD_RAYS_OFFSCREEN_QUALITY = Math.max(0, Math.min(2, Integer.parseInt(offscreenRays.trim())));
+            } catch (NumberFormatException e) {
+                System.err.println("Ignoring bad delve.godrays.offscreen value: " + offscreenRays);
+            }
+        }
         OPT_CLOUD_QUALITY = quality("delve.cloudquality", OPT_CLOUD_QUALITY);
         OPT_GOD_RAYS = OPT_GOD_RAYS_QUALITY > 0;
         OPT_CLOUDS = OPT_CLOUD_QUALITY > 0;

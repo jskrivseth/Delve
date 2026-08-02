@@ -113,6 +113,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
      */
     public transient int BLOCK_COUNT = 0;
     public transient int FACE_COUNT = 0;
+    public transient float renderAlpha = 1.0f;
     private transient boolean wireframe = Game.OPT_DRAW_WIRES;
     private transient boolean[] EXPOSED_FACES = new boolean[6];
     ;
@@ -126,14 +127,6 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         worldPosY = (int) posY * sizeZ;
         //models = new ArrayList<GLModel>();
         //this.loadModels();
-    }
-
-    public int getBlockType(Block block) {        //Game.consoleMsg("Looking for a block in " + block.x + "," + block.y + "," + block.z + " = " + blocks[block.x][block.y][block.z]);
-        return blocks[block.x][block.y][block.z];
-    }
-
-    public int getBlockType(int x, int y, int z) {            //Game.consoleMsg("Looking for a block in " + block.x + "," + block.y + "," + block.z + " = " + blocks[block.x][block.y][block.z]);
-        return blocks[x][y][z];
     }
 
     public static WorldChunk getCurrentChunk() {
@@ -654,7 +647,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             if (dunes > 0.62f && ruggedness < 0.56f) {
                 return Block.RED_SAND;
             }
-            return Block.THOLIN;
+            return Block.RED_SANDSTONE;
         }
         if (preset == WorldPreset.VENUS) {
             float sulfurPatch = sample01(worldX, worldZ, 155.0, -317, 503);
@@ -683,7 +676,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             if (surface == Block.RED_SAND) {
                 return depth >= 3 ? Block.RED_SANDSTONE : Block.RED_SAND;
             }
-            return depth >= 3 ? Block.BASALT : Block.THOLIN;
+            return depth >= 3 ? Block.BASALT : Block.RED_SANDSTONE;
         }
         if (preset == WorldPreset.VENUS) {
             if (surface == Block.SULFUR_STONE) {
@@ -710,7 +703,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                 return Block.BASALT;
             }
             if (a > -0.12f) {
-                return Block.THOLIN;
+                return Block.RED_SANDSTONE;
             }
             return Block.DEEPSLATE;
         }
@@ -775,7 +768,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     private static int boulderBlockForPreset(int preset, int worldX, int worldZ, int variant) {
         int h = hash(worldX, worldZ, preset, 311 + variant * 17) % 100;
         if (preset == WorldPreset.MARS) {
-            return h < 82 ? Block.BASALT_BOULDER : Block.SULFUR_BOULDER;
+            return h < 72 ? Block.BASALT_BOULDER : Block.RED_SANDSTONE;
         }
         if (preset == WorldPreset.VENUS) {
             return h < 72 ? Block.SULFUR_BOULDER : Block.BASALT_BOULDER;
@@ -2043,15 +2036,6 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
 
     private String saveName() {
         return this.posX + "-" + this.posY + ".chunk";
-    }
-
-    protected void finalize() throws Throwable {
-        if (this.vboVertexHandle != 0 || this.vaoHandle != 0) {
-            String error = "Attempt to run garbage collection on a chunk with an active VBO - the memory will leak!!";
-            System.out.println(error);
-            Game.consoleMsg(error);
-        }
-        this.vbuffer = null;
     }
 
     public String toString() {

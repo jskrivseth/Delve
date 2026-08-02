@@ -108,14 +108,17 @@ public class Renderer {
     private static float cloudShadowStrength = 0.42f;
     private static float cloudBaseHeight = 92.0f;
     private static float cloudLayerDepth = 34.0f;
+    private static int cloudLayerCount = 3;
     private static float cloudSpeed = 0.55f;
     private static float cloudWindAngle   = 0.3f;
     private static float cloudWindSpeed   = 0.85f;
     private static float cloudTurbulence  = 0.15f;
-    private static float cloudStorm       = 0.0f;
     private static float sunCloudOcclusion = 1.0f;
+    private static float moonCloudOcclusion = 1.0f;
     private static final int[] GOD_RAY_SAMPLES = { 0, 20, 34, 48 };
     private static final float[] GOD_RAY_DENSITY = { 0.0f, 0.72f, 0.85f, 0.95f };
+    private static final float[] GOD_RAY_OFFSCREEN_EDGE_STRENGTH = { 0.0f, 0.35f, 0.55f };
+    private static final float[] GOD_RAY_OFFSCREEN_SAMPLE_SCALE = { 0.0f, 0.70f, 0.90f };
     private static boolean godRaysDrawnThisFrame;
 
     /** Names for the eight moon phases, indexed by {@link #getMoonPhase()}. */
@@ -411,12 +414,18 @@ public class Renderer {
         skyGradientShader.setFloat("cloudWindAngle",  cloudWindAngle);
         skyGradientShader.setFloat("cloudWindSpeed",  cloudWindSpeed);
         skyGradientShader.setFloat("cloudTurbulence", cloudTurbulence);
-        skyGradientShader.setFloat("stormFactor", cloudStorm);
         skyGradientShader.setInt("cloudMarchSteps", Game.OPT_CLOUD_VOL_STEPS);
         skyGradientShader.setInt("cloudDetailLevel", Game.OPT_CLOUD_QUALITY);
+        skyGradientShader.setInt("cloudLayerCount", cloudLayerCount);
         skyGradientShader.setInt("profileAblate", ShaderProfiler.activeMask());
         skyGradientShader.setFloat("cloudDayTime", Game.DAY_COUNT + Game.TIME_OF_DAY);
         skyGradientShader.setFloat("cloudShadowStrength", cloudShadowStrength);
+        skyGradientShader.setFloat("cloudLayerSpacing", Game.OPT_CLOUD_LAYER_SPACING);
+        skyGradientShader.setFloat("cloudInterLayerShadow", Game.OPT_CLOUD_INTERLAYER_SHADOW);
+        skyGradientShader.setFloat("cloudUnderglowScaleL0", Game.OPT_CLOUD_UNDERGLOW_SCALE_L0);
+        skyGradientShader.setFloat("cloudUnderglowScaleL1", Game.OPT_CLOUD_UNDERGLOW_SCALE_L1);
+        skyGradientShader.setFloat("cloudUnderglowScaleL2", Game.OPT_CLOUD_UNDERGLOW_SCALE_L2);
+        skyGradientShader.setFloat("cloudTranslucencyContrast", Game.OPT_CLOUD_TRANSLUCENCY_CONTRAST);
 
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, CloudNoise.texture2D());
@@ -522,17 +531,37 @@ public class Renderer {
         viewRotationScratch.transform(screenPosScratch);
         projection.transform(screenPosScratch);
 
+        float sx;
+        float sy;
+        boolean offscreenFallback = false;
         if (screenPosScratch.w <= 0.0f) {
-            return false;   // behind the camera
+            if (Game.OPT_GOD_RAYS_OFFSCREEN_QUALITY <= 0) {
+                return false;
+            }
+            float vx = screenPosScratch.x;
+            float vy = screenPosScratch.y;
+            float len2 = vx * vx + vy * vy;
+            if (len2 < 1e-6f) {
+                return false;
+            }
+            float invLen = (float) (1.0 / Math.sqrt(len2));
+            float edge = 0.58f;
+            sx = 0.5f + vx * invLen * edge;
+            sy = 0.5f + vy * invLen * edge;
+            offscreenFallback = true;
+        } else {
+            sx = (screenPosScratch.x / screenPosScratch.w) * 0.5f + 0.5f;
+            sy = (screenPosScratch.y / screenPosScratch.w) * 0.5f + 0.5f;
         }
-        float sx = (screenPosScratch.x / screenPosScratch.w) * 0.5f + 0.5f;
-        float sy = (screenPosScratch.y / screenPosScratch.w) * 0.5f + 0.5f;
 
         // Fade the effect out as the light leaves the view, so shafts do not pop.
         float offCentre = Math.max(Math.abs(sx - 0.5f), Math.abs(sy - 0.5f));
         float edgeFade = clamp01(1.6f - offCentre * 2.2f);
-        if (edgeFade <= 0.01f) {
+        if (edgeFade <= 0.01f && !offscreenFallback) {
             return false;
+        }
+        if (offscreenFallback) {
+            edgeFade = GOD_RAY_OFFSCREEN_EDGE_STRENGTH[Game.OPT_GOD_RAYS_OFFSCREEN_QUALITY];
         }
 
         float strength = useSun
@@ -569,7 +598,11 @@ public class Renderer {
         godRayShader.setVector4f("lightScreenPos", sx, sy, 0f, 0f);
         godRayShader.setFloat("intensity", strength * Game.OPT_GOD_RAYS_INTENSITY_SCALE);
         godRayShader.setFloat("decay", useSun ? 0.978f : 0.962f);
-        godRayShader.setInt("raySamples", GOD_RAY_SAMPLES[Game.OPT_GOD_RAYS_QUALITY]);
+        int samples = GOD_RAY_SAMPLES[Game.OPT_GOD_RAYS_QUALITY];
+        if (offscreenFallback) {
+            samples = Math.max(12, Math.round(samples * GOD_RAY_OFFSCREEN_SAMPLE_SCALE[Game.OPT_GOD_RAYS_OFFSCREEN_QUALITY]));
+        }
+        godRayShader.setInt("raySamples", samples);
         godRayShader.setFloat("density", GOD_RAY_DENSITY[Game.OPT_GOD_RAYS_QUALITY] + (useSun ? 0.10f : 0.0f));
         godRayShader.setBoolean("cloudsEnabled", cloudsEnabled && useSun);
         if (useSun) {
@@ -656,12 +689,12 @@ public class Renderer {
                 Math.min(1.0f, WorldPreset.cloudShadowStrength(preset) * Game.OPT_CLOUD_SHADOW_SCALE));
         cloudBaseHeight = WorldPreset.cloudBaseHeight(preset);
         cloudLayerDepth = WorldPreset.cloudLayerDepth(preset);
+        cloudLayerCount = WorldPreset.cloudLayerCount(preset);
         cloudSpeed = WorldPreset.cloudSpeed(preset);
         if (Game.SCREEN == Game.Screen.PLAYING) {
             cloudWindAngle  = Weather.windAngle;
             cloudWindSpeed  = Weather.windSpeed;
             cloudTurbulence = Weather.turbulence;
-            cloudStorm      = Weather.stormFactor;
         }
         double angle = (timeOfDay - 0.25) * 2.0 * Math.PI;
         float elevation = (float) Math.sin(angle);
@@ -923,7 +956,8 @@ public class Renderer {
             sunG *= 1.00f;
             sunB *= 1.00f;
         }
-        sunCloudOcclusion = computeSunCloudOcclusion(preset);
+        sunCloudOcclusion = computeCloudOcclusion(-sunDirX, -sunDirY, -sunDirZ);
+        moonCloudOcclusion = computeCloudOcclusion(-moonDirX, -moonDirY, -moonDirZ);
 
         glClearColor(skyR, skyG, skyB, 1.0f);
     }
@@ -943,16 +977,14 @@ public class Renderer {
         return t * t * (3f - 2f * t);
     }
 
-    private static float computeSunCloudOcclusion(int preset) {
+    private static float computeCloudOcclusion(float toSunX, float toSunY, float toSunZ) {
         if (!cloudsEnabled || Game.GAME_CAMERA == null || Game.GAME_CAMERA.position == null) {
             return 1.0f;
         }
-        float toSunX = -sunDirX;
-        float toSunY = -sunDirY;
-        float toSunZ = -sunDirZ;
         if (toSunY <= 0.02f) {
             return 1.0f;
         }
+        int preset = WorldPreset.clamp(World.WORLD_PRESET);
         float camX = (float) Game.GAME_CAMERA.position.x;
         float camY = (float) Game.GAME_CAMERA.position.y;
         float camZ = (float) Game.GAME_CAMERA.position.z;
@@ -1140,12 +1172,12 @@ public class Renderer {
             float moonVisible = clamp01((-moonDirY + 0.01f) * 22.0f);
             if (moonVisible > 0.001f) {
                 float daylight = smoothstep(-0.05f, 0.30f, sunElevation);
-                float alpha = moonVisible * (1.0f - daylight * 0.62f);
+                float alpha = moonVisible * (1.0f - daylight * 0.62f) * (moonCloudOcclusion * moonCloudOcclusion);
                 float u = (moonPhase % 4) * 0.25f;
                 float v = (moonPhase / 4) * 0.5f;
                 drawRoundBody(-moonDirX, -moonDirY, -moonDirZ,
-                        0.150f, 0.52f, 0.94f, 0.95f, 1.0f,
-                        alpha, 0.30f, moonTexture, u, v, 0.25f, 0.5f);
+                        0.105f, 0.52f, 0.94f, 0.95f, 1.0f,
+                        alpha, 0.21f, moonTexture, u, v, 0.25f, 0.5f);
             }
         } else if (WorldPreset.hasDualMarsMoons(preset)) {
             // Two small moons on different arcs and schedules.
@@ -1230,6 +1262,10 @@ public class Renderer {
         activePass = chunkShader;
         chunkShader.setMatrix4f("projection", projection);
         chunkShader.setMatrix4f("view", view);
+        chunkShader.setVector3f("cameraWorldPos",
+                (float) Game.GAME_CAMERA.position.x,
+                (float) Game.GAME_CAMERA.position.y,
+                (float) Game.GAME_CAMERA.position.z);
 
         chunkShader.setVector3f("sunDirection", sunDirX, sunDirY, sunDirZ);
         chunkShader.setVector3f("sunColor", sunR, sunG, sunB);
@@ -1280,6 +1316,15 @@ public class Renderer {
                 ? Math.min(baseEnd, fogRange * 0.985f)
                 : Math.min(Math.max(baseEnd, fogRange * 0.80f), fogRange * 0.985f);
         float fogStart = Math.min(baseStart, fogEnd - 40.0f);
+        int preset = WorldPreset.clamp(World.WORLD_PRESET);
+        if (preset == WorldPreset.VENUS) {
+            fogStart = Math.min(28.0f, fogRange * 0.30f);
+            fogEnd = Math.min(120.0f, fogRange * 0.56f);
+        } else if (preset == WorldPreset.EARTH && Game.OPT_DRAW_DISTANCE >= 16) {
+            // Keep far terrain from flattening into a uniform white-gray wall.
+            fogEnd = Math.min(fogRange * 0.99f, fogEnd + fogRange * 0.10f);
+            fogStart = Math.min(fogStart, fogEnd - 60.0f);
+        }
         chunkShader.setFloat("fogStart", fogStart);
         chunkShader.setFloat("fogEnd", fogEnd);
         chunkShader.setFloat("fogDensity", fogDensity * Game.OPT_FOG_DENSITY);
@@ -1326,9 +1371,11 @@ public class Renderer {
         int opaque = Math.min(chunk.opaqueVerts, chunk.numVerts);
         if (opaque > 0) {
             setChunkModel(chunk);
+            chunkShader.setFloat("alphaOverride", chunk.renderAlpha);
             glBindVertexArray(chunk.vaoHandle);
             glDrawArrays(GL_TRIANGLES, 0, opaque);
             glBindVertexArray(0);
+            chunkShader.setFloat("alphaOverride", 1.0f);
         }
 
         if (chunk.numVerts > opaque) {
@@ -1369,8 +1416,6 @@ public class Renderer {
         glEnable(GL_BLEND);
         glDepthMask(false);
         glDisable(GL_CULL_FACE);
-        chunkShader.setFloat("alphaOverride", 0.62f);
-
         for (int i = translucentQueue.size() - 1; i >= 0; i--) {
             WorldChunk chunk = translucentQueue.get(i);
             if (chunk.vaoHandle == 0) {
@@ -1378,6 +1423,7 @@ public class Renderer {
             }
             int opaque = Math.min(chunk.opaqueVerts, chunk.numVerts);
             setChunkModel(chunk);
+            chunkShader.setFloat("alphaOverride", 0.62f * chunk.renderAlpha);
             glBindVertexArray(chunk.vaoHandle);
             glDrawArrays(GL_TRIANGLES, opaque, chunk.numVerts - opaque);
             glBindVertexArray(0);

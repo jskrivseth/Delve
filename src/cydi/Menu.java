@@ -75,15 +75,10 @@ public class Menu {
                 () -> Game.OPT_FOG ? "On" : "Off",
                 () -> Game.OPT_FOG = !Game.OPT_FOG, null));
 
-        rows.add(new Row("Cloud Quality",
-                () -> Game.QUALITY_LABELS[Game.OPT_CLOUD_QUALITY],
-                () -> cycleCloudQuality(1),
-                () -> cycleCloudQuality(-1)));
-
-        rows.add(new Row("Cloud Resolution",
-                () -> Game.SKY_RESOLUTION_LABELS[skyResIndex()],
-                () -> setSkyRes(skyResIndex() + 1),
-                () -> setSkyRes(skyResIndex() - 1)));
+        rows.add(new Row("Cloud Detail",
+                () -> Game.CLOUD_DETAIL_LABELS[Game.OPT_CLOUD_DETAIL],
+                () -> cycleCloudDetail(1),
+                () -> cycleCloudDetail(-1)));
 
         rows.add(new Row("Perf Overlay (F6)",
                 () -> PERF_OVERLAY_LABELS[Game.OPT_PERF_OVERLAY],
@@ -120,6 +115,11 @@ public class Menu {
                 () -> Game.OPT_GOD_RAYS_INTENSITY_SCALE =
                         clamp(Game.OPT_GOD_RAYS_INTENSITY_SCALE - 0.10f, 0.50f, 2.00f)));
 
+        rows.add(new Row("God Rays Offscreen",
+                () -> Game.OFFSCREEN_QUALITY_LABELS[Game.OPT_GOD_RAYS_OFFSCREEN_QUALITY],
+                () -> cycleGodRaysOffscreenQuality(1),
+                () -> cycleGodRaysOffscreenQuality(-1)));
+
         rows.add(new Row("Time Speed",
                 () -> String.format("%.1fx", Game.TIME_SPEED),
                 null, null));
@@ -130,30 +130,19 @@ public class Menu {
 
     private static final String[] PERF_OVERLAY_LABELS = { "Off", "Frame times", "Shader profile" };
 
-    private static int skyResIndex() {
-        for (int i = 0; i < Game.SKY_RESOLUTION_DIVS.length; i++) {
-            if (Game.SKY_RESOLUTION_DIVS[i] == Game.OPT_SKY_RESOLUTION_DIV) {
-                return i;
-            }
-        }
-        return 1;
-    }
-
-    private static void setSkyRes(int index) {
-        int n = Game.SKY_RESOLUTION_DIVS.length;
-        Game.OPT_SKY_RESOLUTION_DIV = Game.SKY_RESOLUTION_DIVS[Math.floorMod(index, n)];
-    }
-
-    private static void cycleCloudQuality(int delta) {
-        Game.OPT_CLOUD_QUALITY = Math.floorMod(Game.OPT_CLOUD_QUALITY + delta, 4);
-        Game.OPT_CLOUDS = Game.OPT_CLOUD_QUALITY > 0;
-        Game.OPT_CLOUD_VOL_STEPS = new int[] { 0, 10, 18, 32 }[Game.OPT_CLOUD_QUALITY];
+    private static void cycleCloudDetail(int delta) {
+        Game.OPT_CLOUD_DETAIL = Math.floorMod(Game.OPT_CLOUD_DETAIL + delta, 4);
+        Game.applyCloudDetail();
         Game.OPT_CLOUD_OPACITY_SCALE = 1.0f;
     }
 
     private static void cycleGodRaysQuality(int delta) {
         Game.OPT_GOD_RAYS_QUALITY = Math.floorMod(Game.OPT_GOD_RAYS_QUALITY + delta, 4);
         Game.OPT_GOD_RAYS = Game.OPT_GOD_RAYS_QUALITY > 0;
+    }
+
+    private static void cycleGodRaysOffscreenQuality(int delta) {
+        Game.OPT_GOD_RAYS_OFFSCREEN_QUALITY = Math.floorMod(Game.OPT_GOD_RAYS_OFFSCREEN_QUALITY + delta, 3);
     }
 
     private static float clamp(float v, float lo, float hi) {

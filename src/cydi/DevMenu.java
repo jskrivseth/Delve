@@ -13,6 +13,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 /**
@@ -61,24 +62,58 @@ public class DevMenu {
         persisted.put(fieldName, literal);
     }
 
-    private void build() {
-        addKnob("OPT_SUN_SIZE_SCALE", "Sun Size",
-                () -> Game.OPT_SUN_SIZE_SCALE + "f",
-                () -> String.format("%.0f%%", Game.OPT_SUN_SIZE_SCALE * 100f),
-                () -> Game.OPT_SUN_SIZE_SCALE = clamp(Game.OPT_SUN_SIZE_SCALE + 0.05f, 0.30f, 2.00f),
-                () -> Game.OPT_SUN_SIZE_SCALE = clamp(Game.OPT_SUN_SIZE_SCALE - 0.05f, 0.30f, 2.00f));
+    /**
+     * A knob whose displayed percentage and step size are relative to a
+     * {@code baseline} rather than an absolute value*100 reading. Every
+     * knob here started that way (100% == the value the code shipped with),
+     * but repeated in-session tuning drifted several of them far from that
+     * (e.g. 420%), which stopped meaningfully communicating "how far from
+     * normal" a value was. Rebasing so the *current* tuned default reads as
+     * 100% keeps that reading meaningful going forward -- absolute min/max
+     * are still enforced so a knob can't be pushed to a nonsensical value,
+     * they just no longer double as the percentage scale's 0%/100%.
+     */
+    private void addRelativeKnob(String fieldName, String label, float baseline,
+                                  float minAbs, float maxAbs,
+                                  Supplier<Float> get, Consumer<Float> set) {
+        float step = baseline * 0.05f;
+        rows.add(new Row(label,
+                () -> String.format("%.0f%%", (get.get() / baseline) * 100f),
+                () -> set.accept(clamp(get.get() + step, minAbs, maxAbs)),
+                () -> set.accept(clamp(get.get() - step, minAbs, maxAbs))));
+        persisted.put(fieldName, () -> get.get() + "f");
+    }
 
-        addKnob("OPT_SUN_GLOW_SCALE", "Sun Glow",
-                () -> Game.OPT_SUN_GLOW_SCALE + "f",
-                () -> String.format("%.0f%%", Game.OPT_SUN_GLOW_SCALE * 100f),
-                () -> Game.OPT_SUN_GLOW_SCALE = clamp(Game.OPT_SUN_GLOW_SCALE + 0.05f, 0.10f, 2.00f),
-                () -> Game.OPT_SUN_GLOW_SCALE = clamp(Game.OPT_SUN_GLOW_SCALE - 0.05f, 0.10f, 2.00f));
+    private void build() {
+        addRelativeKnob("OPT_SUN_SIZE_SCALE", "Sun Size", 0.80f, 0.30f, 2.00f,
+                () -> Game.OPT_SUN_SIZE_SCALE, v -> Game.OPT_SUN_SIZE_SCALE = v);
+
+        addRelativeKnob("OPT_SUN_GLOW_SCALE", "Sun Glow", 0.30f, 0.10f, 2.00f,
+                () -> Game.OPT_SUN_GLOW_SCALE, v -> Game.OPT_SUN_GLOW_SCALE = v);
 
         addKnob("OPT_CAVE_MINIMUM_LIGHT", "Cave Darkness",
                 () -> Game.OPT_CAVE_MINIMUM_LIGHT + "f",
                 () -> String.format("%.0f%%", (1.0f - Game.OPT_CAVE_MINIMUM_LIGHT / 0.30f) * 100f),
                 () -> Game.OPT_CAVE_MINIMUM_LIGHT = clamp(Game.OPT_CAVE_MINIMUM_LIGHT - 0.03f, 0.0f, 0.30f),
                 () -> Game.OPT_CAVE_MINIMUM_LIGHT = clamp(Game.OPT_CAVE_MINIMUM_LIGHT + 0.03f, 0.0f, 0.30f));
+
+        addRelativeKnob("OPT_CLOUD_LAYER_SPACING", "Cloud Layer Spacing", 3.00f, 0.60f, 9.00f,
+                () -> Game.OPT_CLOUD_LAYER_SPACING, v -> Game.OPT_CLOUD_LAYER_SPACING = v);
+
+        addRelativeKnob("OPT_CLOUD_INTERLAYER_SHADOW", "Cloud Inter-Layer Shadow", 0.80f, 0.00f, 2.40f,
+                () -> Game.OPT_CLOUD_INTERLAYER_SHADOW, v -> Game.OPT_CLOUD_INTERLAYER_SHADOW = v);
+
+        addRelativeKnob("OPT_CLOUD_UNDERGLOW_SCALE_L0", "Cloud Underglow L0", 2.80f, 0.00f, 8.40f,
+                () -> Game.OPT_CLOUD_UNDERGLOW_SCALE_L0, v -> Game.OPT_CLOUD_UNDERGLOW_SCALE_L0 = v);
+
+        addRelativeKnob("OPT_CLOUD_UNDERGLOW_SCALE_L1", "Cloud Underglow L1", 4.20f, 0.00f, 12.60f,
+                () -> Game.OPT_CLOUD_UNDERGLOW_SCALE_L1, v -> Game.OPT_CLOUD_UNDERGLOW_SCALE_L1 = v);
+
+        addRelativeKnob("OPT_CLOUD_UNDERGLOW_SCALE_L2", "Cloud Underglow L2", 1.20f, 0.00f, 3.60f,
+                () -> Game.OPT_CLOUD_UNDERGLOW_SCALE_L2, v -> Game.OPT_CLOUD_UNDERGLOW_SCALE_L2 = v);
+
+        addRelativeKnob("OPT_CLOUD_TRANSLUCENCY_CONTRAST", "Cloud Translucency Contrast", 0.80f, 0.00f, 2.40f,
+                () -> Game.OPT_CLOUD_TRANSLUCENCY_CONTRAST, v -> Game.OPT_CLOUD_TRANSLUCENCY_CONTRAST = v);
 
         rows.add(new Row("Save to dev-tuning.properties", () -> saveStatus, this::save, null));
         rows.add(new Row("Close (F9)", () -> "", () -> Game.setDevMenuOpen(false), null));

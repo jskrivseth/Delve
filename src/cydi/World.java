@@ -425,6 +425,12 @@ public class World {
                 // off-screen never builds and so never becomes drawable.
                 boolean cullable = Game.OPT_CULL_CHUNKS && innerRadius > 1;
                 if (!cullable || thisChunk.isVisible()) {
+                    float edgeFade = 1.0f;
+                    if (outerRadius > 2) {
+                        float t = (outerRadius - innerRadius) / 2.0f;
+                        edgeFade = Math.max(0.0f, Math.min(1.0f, t));
+                    }
+                    thisChunk.renderAlpha = edgeFade;
                     if (!thisChunk.vboIsStale) {
                         thisChunk.render();
                     } else if (VBO_CHUNKS < World.MAX_CHUNKS_TO_VBO) {
