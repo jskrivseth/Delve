@@ -82,10 +82,14 @@ public class Framebuffer {
         return depthTexture;
     }
 
+    /** Raw handle, needed for framebuffer-to-framebuffer blits. */
+    public int getFbo() {
+        return fbo;
+    }
+
     public int getWidth() {
         return width;
     }
-
     public int getHeight() {
         return height;
     }

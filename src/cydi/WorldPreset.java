@@ -72,7 +72,11 @@ public final class WorldPreset {
     }
 
     public static float cloudCoverage(int preset) {
-        return PlanetProfiles.get(preset).cloudCoverage;
+        PlanetProfile profile = PlanetProfiles.get(preset);
+        if (preset == WorldPreset.EARTH && Game.DAYS_WITH_WEATHER_CYCLES) {
+            return Math.min(Math.max(Weather.cloudCoverage, 0.12f), 0.88f);
+        }
+        return profile.cloudCoverage;
     }
 
     public static float cloudSharpness(int preset) {

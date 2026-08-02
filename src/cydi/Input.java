@@ -26,7 +26,7 @@ public class Input {
     private static final int[] TRACKED_KEYS = {
         GLFW_KEY_SPACE, GLFW_KEY_G, GLFW_KEY_ESCAPE, GLFW_KEY_F, GLFW_KEY_C,
         GLFW_KEY_B, GLFW_KEY_R, GLFW_KEY_T, GLFW_KEY_F3, GLFW_KEY_F4,
-        GLFW_KEY_F5, GLFW_KEY_F7, GLFW_KEY_F8, GLFW_KEY_F11,
+        GLFW_KEY_F5, GLFW_KEY_F6, GLFW_KEY_F7, GLFW_KEY_F8, GLFW_KEY_F9, GLFW_KEY_F11,
         GLFW_KEY_L, GLFW_KEY_P,
     };
 
@@ -117,6 +117,16 @@ public class Input {
 
         float dt = gameTime / 1000.0f;
 
+        if (Game.DEV_MENU_OPEN) {
+            updateDevMenu();
+            // Discard look deltas so the camera does not spin while the cursor is
+            // free, and skip all world interaction.
+            cursorDeltaX = 0;
+            cursorDeltaY = 0;
+            handleDevMenuToggle();
+            return;
+        }
+
         if (Game.MENU_OPEN) {
             updateMenu();
             // Discard look deltas so the camera does not spin while the cursor is
@@ -198,6 +208,33 @@ public class Input {
     private void handleMenuToggle() {
         if (wasPressed(GLFW_KEY_ESCAPE)) {
             Game.setMenuOpen(false);
+            firstCursorSample = true;   // resync so the view does not jump
+        }
+    }
+
+    private void updateDevMenu() {
+        try (org.lwjgl.system.MemoryStack stack = org.lwjgl.system.MemoryStack.stackPush()) {
+            java.nio.DoubleBuffer mx = stack.mallocDouble(1);
+            java.nio.DoubleBuffer my = stack.mallocDouble(1);
+            glfwGetCursorPos(window.handle(), mx, my);
+            Game.DEV_MENU.updateHover(mx.get(0), my.get(0));
+
+            boolean left = glfwGetMouseButton(window.handle(), GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+            boolean right = glfwGetMouseButton(window.handle(), GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+            if (left && !leftMouseWasDown) {
+                Game.DEV_MENU.click(mx.get(0), my.get(0), false);
+            }
+            if (right && !rightMouseWasDown) {
+                Game.DEV_MENU.click(mx.get(0), my.get(0), true);
+            }
+            leftMouseWasDown = left;
+            rightMouseWasDown = right;
+        }
+    }
+
+    private void handleDevMenuToggle() {
+        if (wasPressed(GLFW_KEY_ESCAPE) || wasPressed(GLFW_KEY_F9)) {
+            Game.setDevMenuOpen(false);
             firstCursorSample = true;   // resync so the view does not jump
         }
     }
@@ -288,6 +325,7 @@ public class Input {
         }
         if (wasPressed(GLFW_KEY_F)) {
             Game.OPT_FOG = !Game.OPT_FOG;
+            // Fog and clouds are completely independent now
         }
         if (wasPressed(GLFW_KEY_C)) {
             Game.OPT_BLOCK_COLLISION = !Game.OPT_BLOCK_COLLISION;
@@ -320,8 +358,14 @@ public class Input {
             Game.OPT_DRAW_DISTANCE += 1;
             game.setupPerspective();
         }
+        if (wasPressed(GLFW_KEY_F6)) {
+            PerfOverlay.cycle();
+        }
         if (wasPressed(GLFW_KEY_F7)) {
             Game.FRUSTUM_CULLING = !Game.FRUSTUM_CULLING;
+        }
+        if (wasPressed(GLFW_KEY_F9)) {
+            Game.setDevMenuOpen(true);
         }
         if (wasPressed(GLFW_KEY_L)) {
             Game.OPT_FLASHLIGHT = !Game.OPT_FLASHLIGHT;
@@ -329,11 +373,23 @@ public class Input {
         if (wasPressed(GLFW_KEY_P)) {
             Game.TIME_PAUSED = !Game.TIME_PAUSED;
         }
-        if (isDown(GLFW_KEY_LEFT_BRACKET)) {
+        if (wasPressed(GLFW_KEY_LEFT_BRACKET)) {
+            // Check if we'll cross midnight before updating time
+            boolean willCrossMidnight = Game.TIME_OF_DAY + 0.995f >= 1.0f;
             Game.TIME_OF_DAY = (Game.TIME_OF_DAY + 0.995f) % 1.0f;
+            if (willCrossMidnight) {
+                Game.DAY_COUNT++;
+            }
         }
-        if (isDown(GLFW_KEY_RIGHT_BRACKET)) {
+        if (wasPressed(GLFW_KEY_RIGHT_BRACKET)) {
             Game.TIME_OF_DAY = (Game.TIME_OF_DAY + 0.005f) % 1.0f;
+        }
+        // Time speed controls: F1 speeds up, F2 slows down time
+        if (wasPressed(GLFW_KEY_F1)) {
+            Game.TIME_SPEED *= 2.0f;
+        }
+        if (wasPressed(GLFW_KEY_F2)) {
+            Game.TIME_SPEED = Math.max(Game.TIME_SPEED / 2.0f, 0.1f);
         }
         if (wasPressed(GLFW_KEY_F8)) {
             Game.OPT_VSYNC = !Game.OPT_VSYNC;

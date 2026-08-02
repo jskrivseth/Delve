@@ -281,7 +281,13 @@ public class World {
                     if (deadChunk != null) {
                         deadChunk.serialize();
                         deadChunk.deleteVBO();
-                        chunks.remove(deadChunk);
+                        // chunks is also iterated unsynchronized by the sweeper
+                        // background thread below; without this lock, that
+                        // read-only scan can race a remove() happening here on
+                        // the main thread mid-iteration.
+                        synchronized (World.chunks) {
+                            chunks.remove(deadChunk);
+                        }
                         unregisterChunk(deadChunk);
                         SWEPT_CHUNKS++;
                     } else {
@@ -292,8 +298,8 @@ public class World {
 
             Game.STAT_SWEPT_CHUNKS += SWEPT_CHUNKS;
             int chunkRadius = Game.OPT_DRAW_DISTANCE; //The number of chunks around the player to render
-            int currentChunkX = (int) Math.floor(camera.position.x) / WorldChunk.sizeX;
-            int currentChunkY = (int) Math.floor(camera.position.z) / WorldChunk.sizeZ;
+            int currentChunkX = (int) Math.floor(camera.position.x / WorldChunk.sizeX);
+            int currentChunkY = (int) Math.floor(camera.position.z / WorldChunk.sizeZ);
 
             Runnable chunkSweeper = new WorldInactiveChunkSweeperThread(chunks, currentChunkX, currentChunkY, chunkRadius);
             threadPool.execute(chunkSweeper);
@@ -308,52 +314,52 @@ public class World {
         }
 
         int chunkRadius = Game.OPT_DRAW_DISTANCE; //The number of chunks around the player to render
-        int currentChunkX = (int) Math.floor(camera.position.x) / WorldChunk.sizeX;
-        int currentChunkY = (int) Math.floor(camera.position.z) / WorldChunk.sizeZ;
+        int currentChunkX = (int) Math.floor(camera.position.x / WorldChunk.sizeX);
+        int currentChunkY = (int) Math.floor(camera.position.z / WorldChunk.sizeZ);
         
-        World.CURRENT_BOUND_XL = Math.max(currentChunkX - chunkRadius, 0);         //Lower X
-        World.CURRENT_BOUND_XU = Math.min(currentChunkX + chunkRadius, sizeX);  //Upper X
-        World.CURRENT_BOUND_YL = Math.max(currentChunkY - chunkRadius, 0); // Lower Y
-        World.CURRENT_BOUND_YU = Math.min(currentChunkY + chunkRadius, sizeY);  //Upper Y
+        World.CURRENT_BOUND_XL = currentChunkX - chunkRadius;         //Lower X
+        World.CURRENT_BOUND_XU = currentChunkX + chunkRadius;  //Upper X
+        World.CURRENT_BOUND_YL = currentChunkY - chunkRadius; // Lower Y
+        World.CURRENT_BOUND_YU = currentChunkY + chunkRadius;  //Upper Y
         
-        int midX = Math.abs(CURRENT_BOUND_XU - chunkRadius);
-        int midY = Math.abs(CURRENT_BOUND_YU - chunkRadius);
-
+        int midX = currentChunkX;
+        int midY = currentChunkY;
+        
         Renderer.beginChunkPass();
         
         for (int radius = 0; radius <= chunkRadius; radius++) {
-            int xRadiusLower = Math.max(midX - radius, CURRENT_BOUND_XL);
-            int yRadiusLower = Math.max(midY - radius, CURRENT_BOUND_YL);
-            int xRadiusUpper = Math.min(midX + radius, CURRENT_BOUND_XU - 1);
-            int yRadiusUpper = Math.min(midY + radius, CURRENT_BOUND_YU - 1);
+            int xRadiusLower = Math.max(midX - radius, World.CURRENT_BOUND_XL);
+            int yRadiusLower = Math.max(midY - radius, World.CURRENT_BOUND_YL);
+            int xRadiusUpper = Math.min(midX + radius, World.CURRENT_BOUND_XU);
+            int yRadiusUpper = Math.min(midY + radius, World.CURRENT_BOUND_YU);
             
             if (radius == 0) {
-                renderChunk(xRadiusLower, yRadiusLower, currentChunkX, currentChunkY, radius, chunkRadius);
+                renderChunk(xRadiusLower, yRadiusLower, midX, midY, radius, chunkRadius);
                 continue;
             }
             
             //do all x+
             for (int i = xRadiusLower; i < xRadiusUpper; i++) {
-                renderChunk(i, yRadiusLower, currentChunkX, currentChunkY, radius, chunkRadius);
+                renderChunk(i, yRadiusLower, midX, midY, radius, chunkRadius);
             }
             
             //do all y+
             for (int i = yRadiusLower; i < yRadiusUpper; i++) {
-                renderChunk(xRadiusUpper, i, currentChunkX, currentChunkY, radius, chunkRadius);
+                renderChunk(xRadiusUpper, i, midX, midY, radius, chunkRadius);
             }
             
             //do all x-
             for (int i = xRadiusUpper; i > xRadiusLower; i--) {
-                renderChunk(i, yRadiusUpper, currentChunkX, currentChunkY, radius, chunkRadius);
+                renderChunk(i, yRadiusUpper, midX, midY, radius, chunkRadius);
             }
             
             //do all y-
             for (int i = yRadiusUpper; i > yRadiusLower; i--) {
-                renderChunk(xRadiusLower, i, currentChunkX, currentChunkY, radius, chunkRadius);
+                renderChunk(xRadiusLower, i, midX, midY, radius, chunkRadius);
             }
         }
         Game.STAT_BUILT_CHUNKS += BUILT_CHUNKS;
-
+        
         Renderer.endChunkPass();
     }
 
@@ -377,7 +383,9 @@ public class World {
         WorldChunk thisChunk = World.getChunk(i, j);
         if (thisChunk == null && !Game.MEMORY_BOUND && World.GEN_CHUNKS < World.MAX_CHUNKS_TO_GEN) {
             thisChunk = new WorldChunk(i, j);
-            chunks.add(thisChunk);
+            synchronized (World.chunks) {
+                chunks.add(thisChunk);
+            }
             registerChunk(thisChunk);
             //continue;
         }
@@ -433,7 +441,7 @@ public class World {
         WorldChunk[] neighbors = new WorldChunk[4];
         boolean[] generated = new boolean[]{false, false, false, false};
 
-        if (chunk.posX > 0 && chunk.posX > World.CURRENT_BOUND_XL) {
+        if (chunk.posX > World.CURRENT_BOUND_XL) {
             neighbors[1] = World.getChunk(chunk.posX - 1, chunk.posY);
             if (neighbors[1] != null) {
                 generated[1] = neighbors[1].isGenerated;
@@ -441,7 +449,7 @@ public class World {
         } else {
             generated[1] = true;
         }
-        if (chunk.posY > 0 && chunk.posY > World.CURRENT_BOUND_YL) {
+        if (chunk.posY > World.CURRENT_BOUND_YL) {
             neighbors[3] = World.getChunk(chunk.posX, chunk.posY - 1);
             if (neighbors[3] != null) {
                 generated[3] = neighbors[3].isGenerated;
@@ -450,7 +458,7 @@ public class World {
             generated[3] = true;
 
         }
-        if (chunk.posX < sizeX - 1 && chunk.posX < World.CURRENT_BOUND_XU) {
+        if (chunk.posX < World.CURRENT_BOUND_XU) {
             neighbors[0] = World.getChunk(chunk.posX + 1, chunk.posY);
             if (neighbors[0] != null) {
                 generated[0] = neighbors[0].isGenerated;
@@ -459,7 +467,7 @@ public class World {
             generated[0] = true;
         }
 
-        if (chunk.posY < sizeY - 1 && chunk.posY < World.CURRENT_BOUND_YU) {
+        if (chunk.posY < World.CURRENT_BOUND_YU) {
             neighbors[2] = World.getChunk(chunk.posX, chunk.posY + 1);
             if (neighbors[2] != null) {
                 generated[2] = neighbors[2].isGenerated;
@@ -544,7 +552,7 @@ public class World {
         switch (direction) {
             case 1: //Up  
                 //TODO: Block until the chunk is done
-                if (chunkX < sizeX - 1 && chunkY >= 0 && chunkY < sizeY) {
+                if (chunkX < sizeX - 1 && chunkY < sizeY) {
                     chunk = World.getChunk(chunkX + 1, chunkY);
                     if (chunk != null && chunk.isGenerated) {
                         return chunk.blocks[0][y][z];
@@ -553,7 +561,7 @@ public class World {
                 break;
             case 2: //Down
                 //TODO: Block until the chunk is done
-                if (chunkX > 0 && chunkY >= 0 && chunkY < sizeY) {
+                if (chunkX > 0 && chunkY < sizeY) {
                     chunk = World.getChunk(chunkX - 1, chunkY);
                     if (chunk != null && chunk.isGenerated) {
                         return chunk.blocks[WorldChunk.sizeX - 1][y][z];
@@ -562,7 +570,7 @@ public class World {
                 break;
             case 3: //Left
                 //TODO: Block until the chunk is done
-                if (chunkY > 0 && chunkX >= 0 && chunkX < sizeX) {
+                if (chunkY > 0 && chunkX < sizeX) {
                     chunk = World.getChunk(chunkX, chunkY - 1);
                     if (chunk != null && chunk.isGenerated) {
                         return chunk.blocks[x][y][WorldChunk.sizeZ - 1];
@@ -571,7 +579,7 @@ public class World {
                 break;
             case 4: //Right
                 //TODO: Block until the chunk is done
-                if (chunkY < sizeY - 1 && chunkX >= 0 && chunkX < sizeX) {
+                if (chunkY < sizeY - 1 && chunkX < sizeX) {
                     chunk = World.getChunk(chunkX, chunkY + 1);
                     if (chunk != null && chunk.isGenerated) {
                         return chunk.blocks[x][y][0];

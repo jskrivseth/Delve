@@ -67,8 +67,8 @@ final class EarthProfile extends PlanetProfile {
                 0.005f, 1.075f,
                 1.0f,
                 true, 0.48f, 0.075f,
-                0.56f, 0.32f,
-                92.0f, 34.0f, 0.12f);
+                0.56f, 0.75f,
+                1024.0f, 64.0f, 0.12f);
     }
 
     @Override

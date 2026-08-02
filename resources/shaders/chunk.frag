@@ -1,34 +1,15 @@
 #version 330 core
 
-in vec3 fragNormal;
-in vec4 fragColor;
-in vec2 fragTexCoord;
-in float fragViewDistance;
-in float fragSkyLight;
-in vec3 fragViewPos;
-in vec3 fragViewNormal;
-in vec3 fragWorldPos;
+#include "/shaders/lib/clouds.glsl"
 
-uniform sampler2D textureSampler;
-uniform bool useTexture;
-uniform bool useVertexColor;
-uniform float aoStrength;
+out vec4 outColor;
 
-uniform vec3 sunDirection;
-uniform vec3 sunColor;
-uniform vec3 moonDirection;
-uniform vec3 moonColor;
-uniform vec3 skyAmbient;
-uniform vec3 groundAmbient;
-/** Floor so enclosed spaces stay readable rather than going pure black. */
 uniform float caveMinimum;
-
 uniform bool flashlightOn;
 uniform vec3 flashlightColor;
 uniform float flashlightRange;
 uniform float flashlightInner;
 uniform float flashlightOuter;
-
 uniform bool fogEnabled;
 uniform vec3 fogColor;
 uniform float fogStart;
@@ -45,97 +26,29 @@ uniform float fogValleyStrength;
 uniform float fogValleyTop;
 uniform float alphaOverride;
 uniform bool cloudsEnabled;
-uniform float cloudCoverage;
-uniform float cloudSharpness;
 uniform float cloudShadowStrength;
-uniform float cloudBaseHeight;
-uniform float cloudLayerDepth;
-uniform float cloudTime;
-uniform float cloudSpeed;
-uniform float cloudDayTime;
-uniform int atmospherePreset;
 
-out vec4 outColor;
+in vec3 fragNormal;
+in vec4 fragColor;
+in vec2 fragTexCoord;
+in float fragViewDistance;
+in float fragSkyLight;
+in vec3 fragViewPos;
+in vec3 fragViewNormal;
+in vec3 fragWorldPos;
+in vec3 fragTint;
 
-float hash12(vec2 p) {
-    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
-    p3 += dot(p3, p3.yzx + 33.33);
-    return fract((p3.x + p3.y) * p3.z);
-}
+uniform sampler2D textureSampler;
+uniform bool useTexture;
+uniform bool useVertexColor;
+uniform float aoStrength;
 
-float valueNoise(vec2 p) {
-    vec2 i = floor(p);
-    vec2 f = fract(p);
-    vec2 u = f * f * (3.0 - 2.0 * f);
-    float a = hash12(i + vec2(0.0, 0.0));
-    float b = hash12(i + vec2(1.0, 0.0));
-    float c = hash12(i + vec2(0.0, 1.0));
-    float d = hash12(i + vec2(1.0, 1.0));
-    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
-}
-
-float fbm(vec2 p) {
-    float f = 0.0;
-    float a = 0.55;
-    float freq = 1.0;
-    for (int i = 0; i < 4; i++) {
-        f += a * valueNoise(p * freq);
-        freq *= 2.0;
-        a *= 0.55;
-    }
-    return f;
-}
-
-/** Cheaper three octave variant used inside the cloud volume lookups. */
-float fbm3(vec2 p) {
-    float f = 0.0;
-    float a = 0.58;
-    float freq = 1.0;
-    for (int i = 0; i < 3; i++) {
-        f += a * valueNoise(p * freq);
-        freq *= 2.0;
-        a *= 0.55;
-    }
-    return f;
-}
-
-/** Must mirror skygradient.frag so shadows land under the clouds that cast them. */
-float cloudMaskAt(vec2 cloudXZ, vec2 windWorld, vec2 evolve, float regime) {
-    float n0 = fbm3((cloudXZ + windWorld + evolve) * 0.0022);
-    float n1 = fbm3((cloudXZ - windWorld * 0.65 + evolve.yx * 0.7) * 0.0041);
-    float n = mix(n0, n1, 0.40);
-    if (atmospherePreset == 2) {
-        float deck = smoothstep(cloudCoverage - 0.18, cloudCoverage + cloudSharpness * 2.8, mix(n0, n1, 0.25));
-        float billow = smoothstep(cloudCoverage - 0.06, cloudCoverage + cloudSharpness * 1.6, n0);
-        return clamp(mix(deck, billow, 0.35), 0.0, 1.0);
-    }
-
-    float cumulusBase = smoothstep(cloudCoverage - cloudSharpness, cloudCoverage + cloudSharpness, n);
-    float cumulusCrisp = smoothstep(cloudCoverage - cloudSharpness * 0.30,
-            cloudCoverage + cloudSharpness * 0.20,
-            n + (n1 - 0.5) * 0.14);
-    float cumulus = mix(cumulusBase, cumulusCrisp, 0.55) * (1.0 - smoothstep(0.55, 0.88, regime));
-    float stratus = smoothstep(cloudCoverage - 0.12, cloudCoverage + 0.18, n0)
-            * smoothstep(0.42, 0.95, regime);
-    float cirrus = smoothstep(cloudCoverage - 0.30, cloudCoverage - 0.08, n1)
-            * (1.0 - smoothstep(0.28, 0.70, regime)) * 0.35;
-    return clamp(max(cumulus, stratus * 0.92) + cirrus, 0.0, 1.0);
-}
-
-float cloudDensityCoarse(vec3 p, vec2 windWorld, vec2 evolve, float regime) {
-    float hN = (p.y - cloudBaseHeight) / max(cloudLayerDepth, 1.0);
-    if (hN < 0.0 || hN > 1.0) {
-        return 0.0;
-    }
-    float profile = atmospherePreset == 2
-            ? smoothstep(0.0, 0.10, hN) * (1.0 - smoothstep(0.72, 1.0, hN))
-            : smoothstep(0.0, 0.13, hN) * (1.0 - smoothstep(0.42, 1.0, hN));
-    if (profile <= 0.002) {
-        return 0.0;
-    }
-    vec2 shear = vec2(hN * 34.0, -hN * 22.0);
-    return cloudMaskAt(p.xz + shear, windWorld, evolve, regime) * profile;
-}
+uniform vec3 sunDirection;
+uniform vec3 sunColor;
+uniform vec3 moonDirection;
+uniform vec3 moonColor;
+uniform vec3 skyAmbient;
+uniform vec3 groundAmbient;
 
 void main() {
     // The vertex color's alpha channel carries ambient occlusion, not opacity.
@@ -151,6 +64,10 @@ void main() {
         }
         albedo *= texel.rgb;
     }
+
+    // Biome tint is a separate channel from the palette colour so it survives
+    // the vertex-colour toggle and multiplies the texture rather than replacing it.
+    albedo *= fragTint;
 
     vec3 normal = normalize(fragNormal);
 
@@ -170,33 +87,59 @@ void main() {
     float ndlSun = dot(normal, toSun);
     float sunWrap = max((ndlSun + 0.3) / 1.3, 0.0);
     float sunCloudAttenuation = 1.0;
-    if (cloudsEnabled && cloudShadowStrength > 0.001 && toSun.y > 0.001) {
-        float slabTop = cloudBaseHeight + cloudLayerDepth;
-        float tEnter = (cloudBaseHeight - fragWorldPos.y) / toSun.y;
-        float tExit = (slabTop - fragWorldPos.y) / toSun.y;
-        float t0 = max(min(tEnter, tExit), 0.0);
-        float t1 = min(max(tEnter, tExit), t0 + cloudLayerDepth * 10.0);
-        if (t1 > t0) {
-            vec2 windWorld = vec2(cloudTime * cloudSpeed * 6.0, -cloudTime * cloudSpeed * 2.5);
-            vec2 evolve = vec2(
-                    sin(cloudDayTime * 2.324 + cloudTime * 0.017),
-                    cos(cloudDayTime * 1.447 - cloudTime * 0.013)) * 96.0;
-            vec3 mid = fragWorldPos + toSun * mix(t0, t1, 0.5);
-            float regime = fbm((mid.xz + evolve * 0.35 + windWorld * 0.08) * 0.00075);
+    // A cloud shadow is only ever visible on a surface that receives direct sun.
+    // Faces angled away, and anything underground where skylight is occluded,
+    // cannot show one -- and this shader uses discard for cutout foliage, which
+    // disables early-Z, so hidden fragments would otherwise pay for the march too.
+    float sunLitAmount = mix(max(ndlSun, 0.0), sunWrap, 0.5) * exposure;
+    if (cloudsEnabled && cloudShadowStrength > 0.001 && toSun.y > 0.001
+            && sunLitAmount > 0.015 && !ablated(AB_SHADOWS)) {
+        vec2 windDir  = vec2(cos(cloudWindAngle), sin(cloudWindAngle));
+        vec2 baseWind = windDir * (cloudDayTime * cloudSpeed * cloudWindSpeed * 3200.0);
+        vec2 windL0   = windRotate(baseWind * 0.78,  0.11);
+        vec2 windL1   = baseWind;
+        vec2 evolL0   = layerEvolve(317.4);
+        vec2 evolL1   = layerEvolve(0.0);
 
-            // Four steps through the slab: enough to tell a thin wisp from a
-            // solid tower without paying for a full march on every lit pixel.
-            const int SHADOW_STEPS = 4;
-            float dt = (t1 - t0) / float(SHADOW_STEPS);
-            float depth = 0.0;
-            for (int i = 0; i < SHADOW_STEPS; i++) {
-                vec3 sp = fragWorldPos + toSun * (t0 + dt * (float(i) + 0.5));
-                depth += cloudDensityCoarse(sp, windWorld, evolve, regime) * dt;
-            }
-            float thickness = 1.0 - exp(-depth * 0.020);
-            sunCloudAttenuation = 1.0 - thickness * cloudShadowStrength;
-            sunCloudAttenuation = clamp(sunCloudAttenuation, 0.12, 1.0);
+        float ct   = cloudDayTime;
+        float turb = cloudTurbulence;
+        float bL0  = cloudBaseHeight - 320.0 + sin(ct * 1.618) * (85.0 + 130.0 * turb) - sin(ct * 2.414 + 1.8) * 50.0 * turb;
+        float bL1  = cloudBaseHeight          - sin(ct * 1.414) * (90.0 + 150.0 * turb) + sin(ct * 0.618 + 0.7) * 45.0 * turb;
+        float dL0  = cloudLayerDepth * 0.80;
+        float dL1  = cloudLayerDepth;
+
+        float depth = 0.0;
+
+        // Helper macro: march through one layer toward the sun
+        #define SHADOW_LAYER(BH, LD, WW, EV) { \
+            float sBot_ = cloudSlabBottom(BH); \
+            float sTop_ = BH + LD; \
+            float tE_   = (sBot_ - fragWorldPos.y) / toSun.y; \
+            float tX_   = (sTop_ - fragWorldPos.y) / toSun.y; \
+            float t0_   = max(min(tE_, tX_), 0.0); \
+            float t1_   = min(max(tE_, tX_), t0_ + LD * 10.0); \
+            if (t1_ > t0_) { \
+                vec3 mid_ = fragWorldPos + toSun * mix(t0_, t1_, 0.5); \
+                float reg_ = fbm((mid_.xz + EV * 0.35 + WW * 0.08) * 0.00075); \
+                float ec_  = cloudCoverageAt(mid_.xz, WW, EV); \
+                float dt_  = (t1_ - t0_) / 3.0; \
+                for (int si = 0; si < 3; si++) { \
+                    vec3 sp_ = fragWorldPos + toSun * (t0_ + dt_ * (float(si) + 0.5)); \
+                    depth += cloudDensityCoarse(sp_, WW, EV, reg_, BH, LD, ec_) * dt_; \
+                } \
+            } \
         }
+
+        // Only the two substantial decks cast shadow. The high cirrus layer is
+        // thin enough that its contribution is not worth a third of the cost.
+        SHADOW_LAYER(bL0, dL0, windL0, evolL0)
+        SHADOW_LAYER(bL1, dL1, windL1, evolL1)
+
+        #undef SHADOW_LAYER
+
+        float thickness = 1.0 - exp(-depth * 0.038);
+        sunCloudAttenuation = 1.0 - thickness * cloudShadowStrength;
+        sunCloudAttenuation = clamp(sunCloudAttenuation, 0.04, 1.0);
     }
     vec3 direct = sunColor * mix(max(ndlSun, 0.0), sunWrap, 0.5) * exposure * sunCloudAttenuation;
 
@@ -260,6 +203,13 @@ void main() {
         // Exponential-squared reads more atmospheric than a hard linear ramp.
         float opticalDepth = max(fragViewDistance - fogStart, 0.0) * density;
         float distanceFog = 1.0 - exp(-pow(max(opticalDepth, 0.0), 1.18));
+        // Capped short of fully opaque: this term is the ambient haze that
+        // should read as atmosphere, not a wall. Only edgeFog below, anchored
+        // to the actual draw-distance boundary, is allowed to reach fully
+        // opaque -- otherwise the haze alone whited out well inside the
+        // visible range on long draw distances, before terrain ever reached
+        // the real edge.
+        distanceFog = min(distanceFog, 0.82);
 
         // Valley cloud bank: local fog that can stay present even at short range
         // when the fragment sits below the inversion layer.

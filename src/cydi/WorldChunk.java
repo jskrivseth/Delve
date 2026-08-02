@@ -53,7 +53,6 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     private volatile int maxHeight = sizeY;
 
     /** Full daylight level; light falls by one per block spread. */
-    public static final int MAX_LIGHT = 15;
     /**
      * Sky light per voxel, flattened as (x * sizeY + y) * sizeZ + z.
      *
@@ -73,6 +72,9 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
      * against this snapshot drives that, and stops once values settle.
      */
     private transient byte[] borderSnapshot;
+    /** Packed biome tint at each block corner, rebuilt with the mesh. */
+    private transient float[] tintGrid;
+    private transient float[] groundTintGrid;
     private boolean modelsSnappedToGround = false;
     /*
      * State
@@ -135,8 +137,8 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     }
 
     public static WorldChunk getCurrentChunk() {
-        int x = (int) Math.floor(Game.GAME_CAMERA.position.x) / WorldChunk.sizeX;
-        int y = (int) Math.floor(Game.GAME_CAMERA.position.z) / WorldChunk.sizeZ;
+        int x = (int) Math.floor(Game.GAME_CAMERA.position.x / WorldChunk.sizeX);
+        int y = (int) Math.floor(Game.GAME_CAMERA.position.z / WorldChunk.sizeZ);
         return World.getChunk(x, y);
     }
 
@@ -172,6 +174,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         int[][] heightMap = new int[sizeX][sizeZ];
         int[][] surfaceMap = new int[sizeX][sizeZ];
         int[][] biomeTypeMap = new int[sizeX][sizeZ];
+        float[][] biomeBorderMap = new float[sizeX][sizeZ];
         float[][] tundraWeightMap = new float[sizeX][sizeZ];
         float[][] desertWeightMap = new float[sizeX][sizeZ];
         float[][] forestWeightMap = new float[sizeX][sizeZ];
@@ -201,6 +204,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                 float macro = sample01(wx, wz, 1800.0, 73, -511);
                 float mountainRegion = sample01(wx, wz, 1350.0, -733, 419);
                 BiomeBlend biome = blendBiomes(temperature, moisture, wx, wz);
+                BiomeBlend ditheredBiome = biome.dithered(sample01(wx, wz, 42.0, 177, -233));
 
                 // Macro zones: lowlands and highlands modulate base and relief
                 // smoothly so large regions share a broad topography.
@@ -216,10 +220,10 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                 float ridgeNoise = (float) PerlinNoiseGenerator.getNoise(wx / 190.0, wz / 190.0);
                 float ridge = 1.0f - Math.abs(ridgeNoise);
 
-                float desertW = biome.weight(BiomeDefinition.DESERT);
-                float tundraW = biome.weight(BiomeDefinition.TUNDRA);
-                float forestW = biome.weight(BiomeDefinition.FOREST);
-                float grassyW = biome.weight(BiomeDefinition.GRASSY);
+                float desertW = ditheredBiome.weight(BiomeDefinition.DESERT);
+                float tundraW = ditheredBiome.weight(BiomeDefinition.TUNDRA);
+                float forestW = ditheredBiome.weight(BiomeDefinition.FOREST);
+                float grassyW = ditheredBiome.weight(BiomeDefinition.GRASSY);
                 float biomeDrama = desertW * BiomeDefinition.ALL[BiomeDefinition.DESERT].dramaBias
                         + tundraW * BiomeDefinition.ALL[BiomeDefinition.TUNDRA].dramaBias
                         + forestW * BiomeDefinition.ALL[BiomeDefinition.FOREST].dramaBias
@@ -243,11 +247,26 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                 relief *= clumpFactor;
                 relief *= lerp(1.0f, 2.35f, mountainMask);
 
+                // Fine-grained biome character, mixed by climate weight so an
+                // alpine ridge eases into forest instead of ending at a wall.
+                float earthRelief = 1.0f;
+                float earthBase = 0.0f;
+                if (worldPreset == WorldPreset.EARTH) {
+                    float[] climate = earthClimateWeights(temperature, moisture, ruggedness,
+                            highlands, lowlands, mountainMask, 3.0f);
+                    earthRelief = 0.0f;
+                    for (int i = 0; i < climate.length; i++) {
+                        earthRelief += climate[i] * EarthBiome.RELIEF_SCALE[i];
+                        earthBase += climate[i] * EarthBiome.BASE_BIAS[i];
+                    }
+                }
+                relief *= earthRelief;
+
                 float biomeBase = desertW * BiomeDefinition.ALL[BiomeDefinition.DESERT].baseBias
                         + tundraW * BiomeDefinition.ALL[BiomeDefinition.TUNDRA].baseBias
                         + forestW * BiomeDefinition.ALL[BiomeDefinition.FOREST].baseBias
                         + grassyW * BiomeDefinition.ALL[BiomeDefinition.GRASSY].baseBias;
-                float base = 0.22f + continent * 0.30f + biomeBase
+                float base = 0.22f + continent * 0.30f + biomeBase + earthBase
                         + highlands * 0.08f - lowlands * 0.06f; // continental scale + macro zones
                 base += mountainMask * 0.09f;
                 float clumpN = clamp01((clumpFactor - 0.78f) / (2.05f - 0.78f));
@@ -274,19 +293,29 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                         * clamp01(1.0f - ruggedness * 1.1f)
                         * lowlands;
 
-                int biomeType = worldPreset == WorldPreset.EARTH
-                        ? classifyEarthBiome(temperature, moisture, ruggedness, height, wetland, biome)
-                        : -1;
+                int biomeType = -1;
+                float biomeBorder = 0f;
+                if (worldPreset == WorldPreset.EARTH) {
+                    float[] scores = earthBiomeScores(temperature, moisture, ruggedness, height, wetland, ditheredBiome);
+                    int primary = bestIndex(scores);
+                    int secondary = runnerUpIndex(scores, primary);
+                    biomeBorder = borderStrength(scores, primary, secondary);
+                    // One dithered decision per column drives the surface block,
+                    // the filler beneath it, the trees and the ground cover, so a
+                    // spilled-over patch is consistent all the way down.
+                    biomeType = ditherBiome(primary, secondary, biomeBorder, worldX, worldZ);
+                }
                 int surface = worldPreset == WorldPreset.EARTH
-                        ? surfaceTypeFor(height, biome, ruggedness, temperature, highlands, wetland, worldX, worldZ, biomeType)
+                        ? surfaceTypeFor(height, ditheredBiome, ruggedness, temperature, highlands, wetland, worldX, worldZ, biomeType)
                         : surfaceTypeForPlanet(worldPreset, height, ruggedness, temperature, moisture, worldX, worldZ, highlands, lowlands);
                 heightMap[x][z] = height;
                 surfaceMap[x][z] = surface;
                 biomeTypeMap[x][z] = biomeType;
-                tundraWeightMap[x][z] = biome.weight(BiomeDefinition.TUNDRA);
-                desertWeightMap[x][z] = biome.weight(BiomeDefinition.DESERT);
-                forestWeightMap[x][z] = biome.weight(BiomeDefinition.FOREST);
-                grassyWeightMap[x][z] = biome.weight(BiomeDefinition.GRASSY);
+                biomeBorderMap[x][z] = biomeBorder;
+                tundraWeightMap[x][z] = ditheredBiome.weight(BiomeDefinition.TUNDRA);
+                desertWeightMap[x][z] = ditheredBiome.weight(BiomeDefinition.DESERT);
+                forestWeightMap[x][z] = ditheredBiome.weight(BiomeDefinition.FOREST);
+                grassyWeightMap[x][z] = ditheredBiome.weight(BiomeDefinition.GRASSY);
                 ruggednessMap[x][z] = ruggedness;
                 wetlandMap[x][z] = wetland;
                 for (int y = 0; y <= height; y++) {
@@ -297,7 +326,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                         type = surface;
                     } else if (y >= height - 3) {
                         type = worldPreset == WorldPreset.EARTH
-                                ? fillerTypeFor(surface, biome, y, height, worldX, worldZ, wetland)
+                                ? fillerTypeFor(surface, ditheredBiome, y, height, worldX, worldZ, wetland)
                                 : fillerTypeForPlanet(worldPreset, surface, y, height);
                     } else {
                         type = worldPreset == WorldPreset.EARTH
@@ -334,8 +363,8 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         }
 
         if (worldPreset == WorldPreset.EARTH) {
-            highest = plantTrees(data, heightMap, surfaceMap, biomeTypeMap, tundraWeightMap, desertWeightMap, forestWeightMap, grassyWeightMap, ruggednessMap, wetlandMap, highest);
-            highest = plantVegetation(data, heightMap, surfaceMap, biomeTypeMap, tundraWeightMap, desertWeightMap, forestWeightMap, grassyWeightMap, wetlandMap, highest);
+            highest = plantTrees(data, heightMap, surfaceMap, biomeTypeMap, biomeBorderMap, tundraWeightMap, desertWeightMap, forestWeightMap, grassyWeightMap, ruggednessMap, wetlandMap, highest);
+            highest = plantVegetation(data, heightMap, surfaceMap, biomeTypeMap, biomeBorderMap, tundraWeightMap, desertWeightMap, forestWeightMap, grassyWeightMap, wetlandMap, highest);
         } else {
             highest = placePlanetBoulders(data, heightMap, surfaceMap, ruggednessMap, worldPreset, highest);
         }
@@ -348,6 +377,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     }
 
     /** Sea level; columns below this are flooded with water. */
+    public static final int MAX_LIGHT = 15;
     public static final int SEA_LEVEL = 32;
 
     private static float lerp(float a, float b, float t) {
@@ -450,6 +480,11 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
 
     private static int classifyEarthBiome(float temperature, float moisture, float ruggedness,
                                           int height, float wetland, BiomeBlend biome) {
+        return bestIndex(earthBiomeScores(temperature, moisture, ruggedness, height, wetland, biome));
+    }
+
+    private static float[] earthBiomeScores(float temperature, float moisture, float ruggedness,
+                                            int height, float wetland, BiomeBlend biome) {
         float hot = smoothstep(0.60f, 0.84f, temperature);
         float cold = 1.0f - smoothstep(0.24f, 0.44f, temperature);
         float wet = smoothstep(0.52f, 0.82f, moisture);
@@ -457,7 +492,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         float alpineFactor = smoothstep(80.0f, 102.0f, height) * smoothstep(0.46f, 0.78f, ruggedness);
         float lowlandFactor = 1.0f - smoothstep(58.0f, 84.0f, height);
 
-        float[] scores = new float[10];
+        float[] scores = new float[EarthBiome.COUNT];
         scores[EarthBiome.ALPINE] = alpineFactor;
         scores[EarthBiome.WETLAND] = wetland * lowlandFactor * 1.2f;
         scores[EarthBiome.HOT_DESERT] = hot * dry;
@@ -474,16 +509,110 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         scores[EarthBiome.TUNDRA] += biome.weight(BiomeDefinition.TUNDRA) * 0.34f;
         scores[EarthBiome.TEMPERATE_FOREST] += biome.weight(BiomeDefinition.FOREST) * 0.28f;
         scores[EarthBiome.TEMPERATE_GRASSLAND] += biome.weight(BiomeDefinition.GRASSY) * 0.24f;
+        return scores;
+    }
 
+    /**
+     * Biome weights driven purely by climate and noise fields.
+     *
+     * Terrain height is blended from these rather than from the classified biome,
+     * because the classifier reads the finished height: feeding its result back
+     * into elevation would make the biome and the terrain define each other.
+     */
+    private static float[] earthClimateWeights(float temperature, float moisture, float ruggedness,
+                                               float highlands, float lowlands, float mountainMask,
+                                               float sharpen) {
+        float hot = smoothstep(0.60f, 0.84f, temperature);
+        float cold = 1.0f - smoothstep(0.24f, 0.44f, temperature);
+        float wet = smoothstep(0.52f, 0.82f, moisture);
+        float dry = 1.0f - smoothstep(0.30f, 0.56f, moisture);
+        float alpineProxy = mountainMask * smoothstep(0.46f, 0.78f, ruggedness);
+        float wetProxy = clamp01((moisture - 0.58f) * 2.4f) * lowlands * clamp01(1.0f - ruggedness * 1.1f);
+        
+        float[] w = new float[EarthBiome.COUNT];
+        w[EarthBiome.ALPINE] = alpineProxy;
+        w[EarthBiome.WETLAND] = wetProxy * 1.2f;
+        w[EarthBiome.HOT_DESERT] = hot * dry;
+        w[EarthBiome.SAVANNA] = hot * (1.0f - dry) * (1.0f - wet) * 0.95f;
+        w[EarthBiome.TROPICAL_RAINFOREST] = hot * wet * 1.1f;
+        w[EarthBiome.TUNDRA] = cold * (0.35f + highlands * 0.65f) * 1.05f;
+        w[EarthBiome.BOREAL_FOREST] = cold * wet * (1.0f - alpineProxy) * 0.98f;
+        w[EarthBiome.TEMPERATE_GRASSLAND] = (1.0f - hot) * (1.0f - cold) * dry;
+        w[EarthBiome.SHRUBLAND] = (1.0f - cold) * (1.0f - wet) * (1.0f - dry) * 0.92f;
+        w[EarthBiome.TEMPERATE_FOREST] = (1.0f - hot * 0.5f) * wet * 0.96f;
+        
+        // Sharpen before normalising, otherwise averaging ten biomes everywhere
+        // flattens the whole world to the same middling terrain.
+        float sum = 0f;
+        for (int i = 0; i < w.length; i++) {
+            float v = (float) Math.pow(Math.max(w[i], 0f), sharpen);
+            w[i] = v;
+            sum += v;
+        }
+        if (sum <= 1e-6f) {
+            java.util.Arrays.fill(w, 1.0f / w.length);
+            return w;
+        }
+        for (int i = 0; i < w.length; i++) {
+            w[i] /= sum;
+        }
+        return w;
+    }
+
+    private static int bestIndex(float[] scores) {
         int best = 0;
-        float bestScore = scores[0];
         for (int i = 1; i < scores.length; i++) {
-            if (scores[i] > bestScore) {
-                bestScore = scores[i];
+            if (scores[i] > scores[best]) {
                 best = i;
             }
         }
         return best;
+    }
+
+    private static int runnerUpIndex(float[] scores, int best) {
+        int second = -1;
+        for (int i = 0; i < scores.length; i++) {
+            if (i == best) {
+                continue;
+            }
+            if (second < 0 || scores[i] > scores[second]) {
+                second = i;
+            }
+        }
+        return second < 0 ? best : second;
+    }
+
+    /**
+     * How contested a column is, as the runner-up's share of the winning score.
+     *
+     * Zero well inside a biome and one where two biomes score equally, so the
+     * width of a transition follows how gradually the climate actually changes.
+     */
+    private static float borderStrength(float[] scores, int best, int second) {
+        float top = Math.max(scores[best], 0f);
+        if (top <= 1e-5f) {
+            return 0f;
+        }
+        float ratio = clamp01(Math.max(scores[second], 0f) / top);
+        return smoothstep(0.52f, 0.97f, ratio);
+    }
+
+    /**
+     * Picks between a column's two strongest biomes.
+     *
+     * A coherent patch field modulates the threshold so the seam interlocks in
+     * fingers instead of dissolving into uniform speckle, while a per-column roll
+     * frays the very edge. The chance of taking the neighbour peaks at an even
+     * split and falls off to nothing as one biome takes over.
+     */
+    private static int ditherBiome(int primary, int secondary, float border, int worldX, int worldZ) {
+        if (primary == secondary || border <= 0.02f) {
+            return primary;
+        }
+        float patch = sample01(worldX, worldZ, 13.0, 617, -431);
+        float roll = (hash(worldX, worldZ, 0, 733) & 0xFFFF) / 65535.0f;
+        float mix = border * 0.5f;
+        return roll < mix * (0.35f + patch * 1.30f) ? secondary : primary;
     }
 
     private static float remapHeightForPreset(int preset, float normalizedHeight, float ruggedness,
@@ -722,12 +851,6 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         if (biomeType == EarthBiome.ALPINE) {
             return ruggedness > 0.66f ? Block.STONE : Block.SNOW;
         }
-        if (desertDominant) {
-            if (height >= 92 && ruggedness > 0.78f) {
-                return Block.STONE;
-            }
-            return temperature > 0.72f ? Block.RED_SAND : Block.SAND;
-        }
         if (wetland > 0.65f && height <= SEA_LEVEL + 8) {
             return Block.CLAY;
         }
@@ -735,6 +858,44 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         // correlated instead of touching warm low-altitude surfaces.
         float snowline = lerp(108.0f, 74.0f, clamp01(1.0f - temperature));
         snowline -= highlands * 10.0f;
+        // The classified biome is resolved before the surrounding climate
+        // weights get a say. A column that dithered into a wooded neighbour
+        // would otherwise be overridden back to sand or snow by the region it
+        // sits in, which is what produced hard borders.
+        if (biomeType == EarthBiome.SAVANNA) {
+            return ruggedness > 0.68f ? Block.STONE : Block.DIRT;
+        }
+        if (biomeType == EarthBiome.SHRUBLAND) {
+            return ruggedness > 0.58f ? Block.STONE : Block.DIRT;
+        }
+        if (biomeType == EarthBiome.TEMPERATE_GRASSLAND) {
+            return Block.GRASS;
+        }
+        if (biomeType == EarthBiome.TEMPERATE_FOREST) {
+            return wetland > 0.54f ? Block.MUD : Block.GRASS;
+        }
+        if (biomeType == EarthBiome.BOREAL_FOREST) {
+            return height >= snowline - 1.0f ? Block.SNOW : Block.DIRT;
+        }
+        if (biomeType == EarthBiome.TROPICAL_RAINFOREST) {
+            return wetland > 0.58f ? Block.MUD : Block.GRASS;
+        }
+        if (biomeType == EarthBiome.TUNDRA) {
+            float thaw = sample01(worldX, worldZ, 95.0, 211, -67);
+            if (height >= snowline + 5.0f || (height >= snowline && ruggedness > 0.62f)) {
+                return Block.SNOW;
+            }
+            if (wetland > 0.50f && height <= SEA_LEVEL + 14) {
+                return Block.SLUSH;
+            }
+            return thaw > 0.60f ? Block.MUD : Block.DIRT;
+        }
+        if (desertDominant) {
+            if (height >= 92 && ruggedness > 0.78f) {
+                return Block.STONE;
+            }
+            return temperature > 0.72f ? Block.RED_SAND : Block.SAND;
+        }
         if (tundraDominant) {
             float thaw = sample01(worldX, worldZ, 95.0, 211, -67);
             if (height >= snowline + 5.0f || (height >= snowline && ruggedness > 0.62f)) {
@@ -753,24 +914,6 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         }
         if (tundraW > 0.48f) {
             return height >= snowline - 2.0f ? Block.SNOW : Block.DIRT;
-        }
-        if (biomeType == EarthBiome.SAVANNA) {
-            return ruggedness > 0.68f ? Block.STONE : Block.DIRT;
-        }
-        if (biomeType == EarthBiome.SHRUBLAND) {
-            return ruggedness > 0.58f ? Block.STONE : Block.DIRT;
-        }
-        if (biomeType == EarthBiome.TEMPERATE_GRASSLAND) {
-            return Block.GRASS;
-        }
-        if (biomeType == EarthBiome.TEMPERATE_FOREST) {
-            return wetland > 0.54f ? Block.MUD : Block.GRASS;
-        }
-        if (biomeType == EarthBiome.BOREAL_FOREST) {
-            return height >= snowline - 1.0f ? Block.SNOW : Block.DIRT;
-        }
-        if (biomeType == EarthBiome.TROPICAL_RAINFOREST) {
-            return wetland > 0.58f ? Block.MUD : Block.GRASS;
         }
         if (desertW > 0.52f) {
             return Block.RED_SAND;
@@ -849,6 +992,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                                 int[][] heightMap,
                                 int[][] surfaceMap,
                                 int[][] biomeTypeMap,
+                                float[][] biomeBorderMap,
                                 float[][] tundraWeightMap,
                                 float[][] desertWeightMap,
                                 float[][] forestWeightMap,
@@ -883,14 +1027,18 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                 float grassyW = grassyWeightMap[x][z];
                 float wet = wetlandMap[x][z];
                 int biomeType = biomeTypeMap[x][z];
-                if (desertW > 0.42f) {
+                float border = biomeBorderMap[x][z];
+                if (desertW > lerp(0.42f, 0.70f, border)) {
                     continue;
                 }
                 int h = hash(wx, wz, y, 911);
 
                 float plantChance = 0.05f + forestW * 0.22f + grassyW * 0.16f + wet * 0.22f;
-                plantChance *= (1.0f - tundraW * 0.72f);
-                plantChance *= (1.0f - desertW * 0.95f);
+                // Ground cover follows the dithered biome, so a contested column
+                // is not still suppressed by the climate weights around it.
+                plantChance = lerp(plantChance, Math.max(plantChance, 0.16f), border);
+                plantChance *= (1.0f - tundraW * lerp(0.72f, 0.34f, border));
+                plantChance *= (1.0f - desertW * lerp(0.95f, 0.55f, border));
                 if (biomeType == EarthBiome.TROPICAL_RAINFOREST) {
                     plantChance *= 1.38f;
                 } else if (biomeType == EarthBiome.SAVANNA || biomeType == EarthBiome.BOREAL_FOREST) {
@@ -945,6 +1093,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                            int[][] heightMap,
                            int[][] surfaceMap,
                            int[][] biomeTypeMap,
+                           float[][] biomeBorderMap,
                            float[][] tundraWeightMap,
                            float[][] desertWeightMap,
                            float[][] forestWeightMap,
@@ -968,14 +1117,18 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                 float desertW = desertWeightMap[x][z];
                 float ruggedness = ruggednessMap[x][z];
                 float wetland = wetlandMap[x][z];
-                if (desertW > 0.35f || tundraW > 0.48f) {
+                // The column already carries a dithered biome, so the coarse
+                // climate weights only veto the deep interior of a hostile
+                // region; near a border the dithered biome decides.
+                float border = biomeBorderMap[x][z];
+                if (desertW > lerp(0.35f, 0.68f, border) || tundraW > lerp(0.48f, 0.78f, border)) {
                     continue;
                 }
                 float biomeTreeFactor = treeDensityFactorForBiome(biomeType);
                 if (biomeTreeFactor <= 0.01f) {
                     continue;
                 }
-                if (!shouldPlantTree(worldPosX + x, worldPosY + z, forestW, grassyW, ruggedness, wetland, biomeTreeFactor)) {
+                if (!shouldPlantTree(worldPosX + x, worldPosY + z, forestW, grassyW, ruggedness, wetland, biomeTreeFactor, border)) {
                     continue;
                 }
                 if (!isGroundLocallyFlat(heightMap, x, z, 2)) {
@@ -992,8 +1145,12 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     }
 
     private static boolean shouldPlantTree(int worldX, int worldZ, float forestW, float grassyW,
-                                           float ruggedness, float wetland, float biomeTreeFactor) {
+                                           float ruggedness, float wetland, float biomeTreeFactor,
+                                           float border) {
         float suitability = (forestW * 1.05f + grassyW * 0.55f - ruggedness * 0.35f - wetland * 0.22f) * biomeTreeFactor;
+        // A column that dithered into a wooded neighbour still sits in the old
+        // biome's climate weights, so without this its trees never take.
+        suitability += border * 0.42f * biomeTreeFactor;
         if (suitability <= 0.30f) {
             return false;
         }
@@ -1112,6 +1269,110 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             }
         }
         return maxPlacedY + 1;
+    }
+
+    /**
+     * Packed biome tint at a world column.
+     *
+     * Deliberately a pure function of world coordinates and the seed: neighbouring
+     * chunks compute the same value at a shared edge, so the colour is continuous
+     * across chunk borders with no need to consult the neighbour's data.
+     *
+     * The weights here are softer than the ones driving terrain height, because a
+     * colour gradient reads better spread over a wider band than a shape change.
+     */
+    public static float biomeTintAt(int worldX, int worldZ) {
+        if (WorldPreset.clamp(World.WORLD_PRESET) != WorldPreset.EARTH) {
+            return Block.NO_TINT;
+        }
+        float[] rgb = new float[3];
+        biomeTintRgbAt(worldX, worldZ, rgb);
+        return Block.packTint(rgb[0], rgb[1], rgb[2]);
+    }
+
+    /**
+     * How far foliage and soil follow the biome colour.
+     *
+     * Soil is held well back: real ground colour varies far less between biomes
+     * than leaf colour does, and the terrain already signals biome through the
+     * block type it picks.
+     */
+    private static final float FOLIAGE_TINT_STRENGTH = 0.45f;
+    private static final float GROUND_TINT_STRENGTH = 0.20f;
+
+    private static void biomeTintRgbAt(int worldX, int worldZ, float[] out) {
+        double wx = warpedX(worldX, worldZ);
+        double wz = warpedZ(worldX, worldZ);
+        float temperature = sample01(wx, wz, 230.0, 0, 0);
+        float moisture = sample01(wx, wz, 240.0, 137, -89);
+        temperature = clamp01(temperature + (sample01(wx, wz, 120.0, 311, -173) - 0.5f) * 0.26f);
+        moisture = clamp01(moisture + (sample01(wx, wz, 130.0, -421, 257) - 0.5f) * 0.30f);
+        float ruggedness = sample01(wx, wz, 560.0, -211, 173);
+        float macro = sample01(wx, wz, 1800.0, 73, -511);
+        float mountainRegion = sample01(wx, wz, 1350.0, -733, 419);
+
+        float highlands = smoothstep(0.54f, 0.80f, macro) * smoothstep(0.50f, 0.82f, mountainRegion);
+        float lowlands = (1.0f - smoothstep(0.18f, 0.36f, macro))
+                * (1.0f - smoothstep(0.58f, 0.84f, mountainRegion));
+        float mountainMask = smoothstep(0.50f, 0.86f, mountainRegion * 0.62f + highlands * 0.34f);
+
+        float[] w = earthClimateWeights(temperature, moisture, ruggedness,
+                highlands, lowlands, mountainMask, 1.7f);
+        float r = 0f, g = 0f, b = 0f;
+        for (int i = 0; i < w.length; i++) {
+            r += w[i] * EarthBiome.TINT[i][0];
+            g += w[i] * EarthBiome.TINT[i][1];
+            b += w[i] * EarthBiome.TINT[i][2];
+        }
+        out[0] = r;
+        out[1] = g;
+        out[2] = b;
+    }
+
+    /**
+     * Tint sampled at the chunk's block corners, so a vertex can look it up
+     * directly and let the rasteriser interpolate between them.
+     */
+    private void buildTintGrid() {
+        int cells = (sizeX + 1) * (sizeZ + 1);
+        if (tintGrid == null || tintGrid.length != cells) {
+            tintGrid = new float[cells];
+            groundTintGrid = new float[cells];
+        }
+        boolean earth = WorldPreset.clamp(World.WORLD_PRESET) == WorldPreset.EARTH;
+        float[] rgb = new float[3];
+        for (int cx = 0; cx <= sizeX; cx++) {
+            for (int cz = 0; cz <= sizeZ; cz++) {
+                int idx = cx * (sizeZ + 1) + cz;
+                if (!earth) {
+                    tintGrid[idx] = Block.NO_TINT;
+                    groundTintGrid[idx] = Block.NO_TINT;
+                    continue;
+                }
+                biomeTintRgbAt(worldPosX + cx, worldPosY + cz, rgb);
+                tintGrid[idx] = Block.packTint(
+                        lerp(1.0f, rgb[0], FOLIAGE_TINT_STRENGTH),
+                        lerp(1.0f, rgb[1], FOLIAGE_TINT_STRENGTH),
+                        lerp(1.0f, rgb[2], FOLIAGE_TINT_STRENGTH));
+                // Soil shifts with climate too, but far less than leaves do, so
+                // the same field is pulled back toward neutral for ground blocks.
+                groundTintGrid[idx] = Block.packTint(
+                        lerp(1.0f, rgb[0], GROUND_TINT_STRENGTH),
+                        lerp(1.0f, rgb[1], GROUND_TINT_STRENGTH),
+                        lerp(1.0f, rgb[2], GROUND_TINT_STRENGTH));
+            }
+        }
+    }
+
+    @Override
+    public float tintAt(int cornerX, int cornerZ, boolean ground) {
+        float[] grid = ground ? groundTintGrid : tintGrid;
+        if (grid == null) {
+            return Block.NO_TINT;
+        }
+        int cx = Math.max(0, Math.min(sizeX, cornerX));
+        int cz = Math.max(0, Math.min(sizeZ, cornerZ));
+        return grid[cx * (sizeZ + 1) + cz];
     }
 
     private static int hash(int a, int b, int c, int salt) {
@@ -1419,7 +1680,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             return;
         }
         int idx = lightIndex(x, y, z);
-        int next = level - Block.lightCost(type);
+        int next = (byte) Math.max(0, level - (Block.lightCost(type) + (MAX_LIGHT - level) / 8));
         if (next > light[idx]) {
             light[idx] = (byte) next;
             push(x, y, z);
@@ -1457,6 +1718,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         World.BLOCK_LOCK.readLock().lock();
         try {
             computeSkyLight();
+            buildTintGrid();
             int ceiling = Math.min(this.maxHeight, sizeY);
 
             // Pass 1: count exposed faces so the chunk buffer can be sized exactly.
@@ -1701,6 +1963,18 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     public void deleteVBO() {
         Renderer.deleteChunkMesh(this);
         this.numVerts = 0;
+        // purgeVBO used to stay true forever after this ran, and isBuilt
+        // stayed true too, so render()'s `if (purgeVBO) { deleteVBO(); return; }`
+        // took this branch on every future frame and renderChunk()'s
+        // `!isBuilt` rebuild check never re-armed -- a chunk that got purged
+        // while still inside the keep radius (e.g. draw distance changing
+        // mid-sweep) went permanently invisible even though its block data,
+        // and so collision, was untouched. Resetting both here means the
+        // normal isGenerated && !isBuilt path in World.renderChunk() picks it
+        // straight back up and rebuilds it next time it is in view.
+        this.purgeVBO = false;
+        this.isBuilt = false;
+        this.vboIsStale = false;
     }
 
     public void refreshMesh() {

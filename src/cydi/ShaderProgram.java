@@ -10,8 +10,16 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.FloatBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Deque;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static org.lwjgl.opengl.GL20.*;
 import static org.lwjgl.opengl.GL11.GL_TRUE;
@@ -31,8 +39,8 @@ public class ShaderProgram {
             throw new RuntimeException("Could not create shader program");
         }
 
-        int vs = compile(loadResource(vertexResource), GL_VERTEX_SHADER, vertexResource);
-        int fs = compile(loadResource(fragmentResource), GL_FRAGMENT_SHADER, fragmentResource);
+        int vs = compile(Preprocessor.expand(vertexResource), GL_VERTEX_SHADER, vertexResource);
+        int fs = compile(Preprocessor.expand(fragmentResource), GL_FRAGMENT_SHADER, fragmentResource);
 
         glAttachShader(programId, vs);
         glAttachShader(programId, fs);
@@ -52,14 +60,97 @@ public class ShaderProgram {
         }
     }
 
-    private static int compile(String source, int type, String name) {
+    private static int compile(Preprocessor.Result unit, int type, String name) {
         int id = glCreateShader(type);
-        glShaderSource(id, source);
+        glShaderSource(id, unit.source());
         glCompileShader(id);
         if (glGetShaderi(id, GL_COMPILE_STATUS) == 0) {
-            throw new RuntimeException("Failed compiling " + name + ": " + glGetShaderInfoLog(id, 2048));
+            throw new RuntimeException("Failed compiling " + name + ": "
+                    + glGetShaderInfoLog(id, 2048) + unit.sourceLegend());
         }
         return id;
+    }
+
+    /**
+     * Resolves {@code #include "/shaders/..."} directives, which GLSL itself has no
+     * concept of. Shared cloud and noise code lives in one place instead of being
+     * copied into every shader that needs it.
+     *
+     * <p>Each distinct file becomes a numbered GLSL source string via {@code #line}
+     * directives, so compiler errors keep reporting positions against the file the
+     * code was actually written in rather than against the concatenated result.
+     * Repeated includes are skipped, giving {@code #pragma once} semantics.
+     */
+    private static final class Preprocessor {
+
+        private static final Pattern INCLUDE =
+                Pattern.compile("^\\s*#include\\s+[\"<]([^\">]+)[\">]\\s*$");
+
+        record Result(String source, List<String> files) {
+            /** Maps GLSL source-string numbers back to file names for error messages. */
+            String sourceLegend() {
+                if (files.size() < 2) {
+                    return "";
+                }
+                StringBuilder sb = new StringBuilder("\n  (source strings: ");
+                for (int i = 0; i < files.size(); i++) {
+                    sb.append(i > 0 ? ", " : "").append(i).append('=').append(files.get(i));
+                }
+                return sb.append(')').toString();
+            }
+        }
+
+        private final List<String> files = new ArrayList<>();
+        private final Set<String> included = new HashSet<>();
+        private final StringBuilder out = new StringBuilder();
+
+        static Result expand(String path) {
+            Preprocessor p = new Preprocessor();
+            p.emit(path, p.idFor(path), new ArrayDeque<>());
+            return new Result(p.out.toString(), p.files);
+        }
+
+        private int idFor(String path) {
+            int existing = files.indexOf(path);
+            if (existing >= 0) {
+                return existing;
+            }
+            files.add(path);
+            return files.size() - 1;
+        }
+
+        private void emit(String path, int id, Deque<String> stack) {
+            if (stack.contains(path)) {
+                throw new RuntimeException("Circular #include: " + String.join(" -> ", stack)
+                        + " -> " + path);
+            }
+            stack.push(path);
+            String[] lines = loadResource(path).split("\n", -1);
+            for (int i = 0; i < lines.length; i++) {
+                Matcher m = INCLUDE.matcher(lines[i]);
+                if (!m.matches()) {
+                    out.append(lines[i]).append('\n');
+                    continue;
+                }
+                String target = resolve(m.group(1), path);
+                if (included.add(target)) {
+                    int childId = idFor(target);
+                    out.append("#line 1 ").append(childId).append('\n');
+                    emit(target, childId, stack);
+                }
+                // Restore the parent's numbering for whatever follows the directive.
+                out.append("#line ").append(i + 2).append(' ').append(id).append('\n');
+            }
+            stack.pop();
+        }
+
+        private static String resolve(String target, String fromPath) {
+            if (target.startsWith("/")) {
+                return target;
+            }
+            int slash = fromPath.lastIndexOf('/');
+            return (slash < 0 ? "" : fromPath.substring(0, slash + 1)) + target;
+        }
     }
 
     private static String loadResource(String path) {

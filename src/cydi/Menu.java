@@ -75,15 +75,23 @@ public class Menu {
                 () -> Game.OPT_FOG ? "On" : "Off",
                 () -> Game.OPT_FOG = !Game.OPT_FOG, null));
 
-        rows.add(new Row("Fog Density",
-                () -> String.format("%.0f%%", Game.OPT_FOG_DENSITY * 100f),
-                () -> Game.OPT_FOG_DENSITY = clamp(Game.OPT_FOG_DENSITY + 0.10f, 0.30f, 2.50f),
-                () -> Game.OPT_FOG_DENSITY = clamp(Game.OPT_FOG_DENSITY - 0.10f, 0.30f, 2.50f)));
+        rows.add(new Row("Cloud Quality",
+                () -> Game.QUALITY_LABELS[Game.OPT_CLOUD_QUALITY],
+                () -> cycleCloudQuality(1),
+                () -> cycleCloudQuality(-1)));
 
-        rows.add(new Row("Fog Persistence",
-                () -> String.format("%.0f%%", Game.OPT_FOG_PERSISTENCE * 100f),
-                () -> Game.OPT_FOG_PERSISTENCE = clamp(Game.OPT_FOG_PERSISTENCE + 0.10f, 0.00f, 2.50f),
-                () -> Game.OPT_FOG_PERSISTENCE = clamp(Game.OPT_FOG_PERSISTENCE - 0.10f, 0.00f, 2.50f)));
+        rows.add(new Row("Cloud Resolution",
+                () -> Game.SKY_RESOLUTION_LABELS[skyResIndex()],
+                () -> setSkyRes(skyResIndex() + 1),
+                () -> setSkyRes(skyResIndex() - 1)));
+
+        rows.add(new Row("Perf Overlay (F6)",
+                () -> PERF_OVERLAY_LABELS[Game.OPT_PERF_OVERLAY],
+                PerfOverlay::cycle, null));
+
+        rows.add(new Row("Perf Logging",
+                () -> PerfLog.isEnabled() ? "perf.log" : "Off",
+                () -> PerfLog.setEnabled(!PerfLog.isEnabled()), null));
 
         rows.add(new Row("Textures",
                 () -> Game.OPT_USE_TEXTURES && Game.OPT_DRAW_TEXTURES ? "On" : "Off",
@@ -100,62 +108,64 @@ public class Menu {
                 () -> Game.DAY_LENGTH_INDEX = Math.floorMod(
                         Game.DAY_LENGTH_INDEX - 1, Game.DAY_LENGTH_PRESETS.length)));
 
-        rows.add(new Row("Time",
-                () -> Game.TIME_PAUSED ? "Paused" : clockString(),
-                () -> Game.TIME_PAUSED = !Game.TIME_PAUSED, null));
+        rows.add(new Row("God Rays Quality",
+                () -> Game.QUALITY_LABELS[Game.OPT_GOD_RAYS_QUALITY],
+                () -> cycleGodRaysQuality(1),
+                () -> cycleGodRaysQuality(-1)));
 
-        rows.add(new Row("Moon Phase",
-                () -> Renderer.MOON_PHASES[Renderer.getMoonPhase()], null, null));
+        rows.add(new Row("God Rays Strength",
+                () -> String.format("%.0f%%", Game.OPT_GOD_RAYS_INTENSITY_SCALE * 100f),
+                () -> Game.OPT_GOD_RAYS_INTENSITY_SCALE =
+                        clamp(Game.OPT_GOD_RAYS_INTENSITY_SCALE + 0.10f, 0.50f, 2.00f),
+                () -> Game.OPT_GOD_RAYS_INTENSITY_SCALE =
+                        clamp(Game.OPT_GOD_RAYS_INTENSITY_SCALE - 0.10f, 0.50f, 2.00f)));
 
-        rows.add(new Row("Flashlight",
-                () -> Game.OPT_FLASHLIGHT ? "On" : "Off",
-                () -> Game.OPT_FLASHLIGHT = !Game.OPT_FLASHLIGHT, null));
-
-        rows.add(new Row("Frustum Culling",
-                () -> Game.FRUSTUM_CULLING ? "On" : "Off",
-                () -> Game.FRUSTUM_CULLING = !Game.FRUSTUM_CULLING, null));
-
-        rows.add(new Row("Cave Darkness",
-                () -> String.format("%.0f%%", (1.0f - Game.OPT_CAVE_MINIMUM_LIGHT / 0.30f) * 100f),
-                () -> Game.OPT_CAVE_MINIMUM_LIGHT =
-                        Math.max(0.0f, Game.OPT_CAVE_MINIMUM_LIGHT - 0.03f),
-                () -> Game.OPT_CAVE_MINIMUM_LIGHT =
-                        Math.min(0.30f, Game.OPT_CAVE_MINIMUM_LIGHT + 0.03f)));
-
-        rows.add(new Row("God Rays",
-                () -> Game.OPT_GOD_RAYS ? "On" : "Off",
-                () -> Game.OPT_GOD_RAYS = !Game.OPT_GOD_RAYS, null));
-
-        rows.add(new Row("Texture Pack",
-                Renderer::getTexturePackName,
-                () -> Renderer.cycleTexturePack(1),
-                () -> Renderer.cycleTexturePack(-1)));
-
-        rows.add(new Row("Rescan Packs",
-                () -> String.valueOf(Renderer.getTexturePacks().size()),
-                Renderer::rescanTexturePacks, null));
+        rows.add(new Row("Time Speed",
+                () -> String.format("%.1fx", Game.TIME_SPEED),
+                null, null));
 
         rows.add(new Row("Back to Game", () -> "Esc", () -> Game.setMenuOpen(false), null));
         rows.add(new Row("Save and Exit to Title", () -> "", () -> game.saveAndExit(), null));
     }
 
-    private static String clockString() {
-        float t = Game.TIME_OF_DAY;
-        int minutes = (int) (t * 24 * 60);
-        return String.format("Day %d  %02d:%02d", Game.DAY_COUNT + 1, minutes / 60, minutes % 60);
+    private static final String[] PERF_OVERLAY_LABELS = { "Off", "Frame times", "Shader profile" };
+
+    private static int skyResIndex() {
+        for (int i = 0; i < Game.SKY_RESOLUTION_DIVS.length; i++) {
+            if (Game.SKY_RESOLUTION_DIVS[i] == Game.OPT_SKY_RESOLUTION_DIV) {
+                return i;
+            }
+        }
+        return 1;
     }
 
-    private static void setDrawDistance(int value) {
-        int clamped = Math.max(Game.OPT_MIN_DRAW_DISTANCE,
+    private static void setSkyRes(int index) {
+        int n = Game.SKY_RESOLUTION_DIVS.length;
+        Game.OPT_SKY_RESOLUTION_DIV = Game.SKY_RESOLUTION_DIVS[Math.floorMod(index, n)];
+    }
+
+    private static void cycleCloudQuality(int delta) {
+        Game.OPT_CLOUD_QUALITY = Math.floorMod(Game.OPT_CLOUD_QUALITY + delta, 4);
+        Game.OPT_CLOUDS = Game.OPT_CLOUD_QUALITY > 0;
+        Game.OPT_CLOUD_VOL_STEPS = new int[] { 0, 10, 18, 32 }[Game.OPT_CLOUD_QUALITY];
+        Game.OPT_CLOUD_OPACITY_SCALE = 1.0f;
+    }
+
+    private static void cycleGodRaysQuality(int delta) {
+        Game.OPT_GOD_RAYS_QUALITY = Math.floorMod(Game.OPT_GOD_RAYS_QUALITY + delta, 4);
+        Game.OPT_GOD_RAYS = Game.OPT_GOD_RAYS_QUALITY > 0;
+    }
+
+    private static float clamp(float v, float lo, float hi) {
+        return Math.max(lo, Math.min(hi, v));
+    }
+
+    private static void setDrawDistance(int value) {        int clamped = Math.max(Game.OPT_MIN_DRAW_DISTANCE,
                 Math.min(Game.OPT_MAX_DRAW_DISTANCE, value));
         if (clamped != Game.OPT_DRAW_DISTANCE) {
             Game.OPT_DRAW_DISTANCE = clamped;
             Game.INSTANCE.setupPerspective();
         }
-    }
-
-    private static float clamp(float v, float lo, float hi) {
-        return Math.max(lo, Math.min(hi, v));
     }
 
     /** Updates the hovered row from the cursor position, in pixels. */

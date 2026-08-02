@@ -25,6 +25,66 @@ public class Block implements Serializable {
 
         /** Sky light level 0..MAX_LIGHT at a chunk-local voxel. */
         int lightAt(int x, int y, int z);
+
+        /**
+         * Packed biome tint at a chunk-local lattice corner, in [0, sizeX] x
+         * [0, sizeZ]. Sampled at corners rather than block centres so the
+         * rasteriser interpolates the colour across each face.
+         *
+         * @param ground true for soil and rock, which take a softer tint than foliage
+         */
+        default float tintAt(int cornerX, int cornerZ, boolean ground) {
+            return NO_TINT;
+        }
+    }
+
+    /** Packed neutral tint, i.e. a 1.0 multiplier on every channel. */
+    public static final float NO_TINT = packTint(1f, 1f, 1f);
+
+    /** Block takes no biome tint. */
+    public static final int TINT_NONE = 0;
+    /** Whole block takes the foliage tint. */
+    public static final int TINT_FOLIAGE = 1;
+    /** Whole block takes the softer ground tint. */
+    public static final int TINT_GROUND = 2;
+    /** Top face takes the foliage tint, sides and bottom the ground tint. */
+    public static final int TINT_GRASS_BLOCK = 3;
+
+    /**
+     * Packs an RGB multiplier into one float.
+     *
+     * Each channel gets 8 bits over the range [0, 2], so the whole tint costs a
+     * single vertex attribute instead of three. A float mantissa holds 24 bits
+     * exactly, so the packed integer survives the trip to the GPU intact.
+     */
+    public static float packTint(float r, float g, float b) {
+        int ri = Math.round(Math.min(Math.max(r, 0f), 2f) * 127.5f);
+        int gi = Math.round(Math.min(Math.max(g, 0f), 2f) * 127.5f);
+        int bi = Math.round(Math.min(Math.max(b, 0f), 2f) * 127.5f);
+        return ri * 65536f + gi * 256f + bi;
+    }
+
+    /**
+     * How a block responds to the biome colour field.
+     *
+     * Soil and sand are included, not just foliage: they cover most of the
+     * visible ground, so leaving them neutral is what makes biome colour look
+     * absent even when the tint field is varying underneath.
+     */
+    public static int biomeTintKind(int type) {
+        if (type == GRASS) {
+            // The side texture is mostly soil, so only the top takes leaf colour.
+            return TINT_GRASS_BLOCK;
+        }
+        if (type == LEAVES || type == TALL_GRASS || type == BROWN_GRASS) {
+            return TINT_FOLIAGE;
+        }
+        if (type == DIRT || type == MUD || type == SAND || type == RED_SAND
+                || type == CLAY || type == GRAVEL || type == SANDSTONE
+                || type == RED_SANDSTONE) {
+            return TINT_GROUND;
+        }
+        return TINT_NONE;
     }
 
     public static float size = 0.5f;
@@ -265,8 +325,8 @@ public class Block implements Serializable {
 
     /** Vertices emitted per exposed face (2 triangles). */
     public static final int VERTS_PER_FACE = 6;
-    /** position(3) + normal(3) + color+ao(4) + texcoord(2) + skylight(1) */
-    public static final int FLOATS_PER_VERTEX = 13;
+    /** position(3) + normal(3) + color+ao(4) + texcoord(2) + skylight(1) + tint(1) */
+    public static final int FLOATS_PER_VERTEX = 14;
     public static final int FLOATS_PER_FACE = VERTS_PER_FACE * FLOATS_PER_VERTEX;
 
     /** Face normals, ordered 0=+z 1=+x 2=+y 3=-x 4=-y 5=-z. */
@@ -387,6 +447,7 @@ public class Block implements Serializable {
         float shade = 0.93f + jitter(x, y, z, 7) * 1.75f;
 
         int[] tiles = BLOCK_TILES[type];
+        int tintKind = biomeTintKind(type);
 
         for (int f = 0; f < faces.length && f < FACE_CORNERS.length; f++) {
             if (!faces[f]) {
@@ -427,13 +488,27 @@ public class Block implements Serializable {
             float ao2 = cornerAo(solid, corners[2], n, t1, t2, x, y, z) * shade;
             float ao3 = cornerAo(solid, corners[3], n, t1, t2, x, y, z) * shade;
 
+            // Grass, foliage and soil take the biome tint at each corner, so the
+            // colour gradient runs continuously across faces and across chunk
+            // borders instead of stepping per block.
+            float t0 = NO_TINT, t1v = NO_TINT, t2v = NO_TINT, t3v = NO_TINT;
+            if (tintKind != TINT_NONE) {
+                // A grass block wears leaf colour on top and soil colour on its sides.
+                boolean ground = tintKind == TINT_GROUND
+                        || (tintKind == TINT_GRASS_BLOCK && f != 2);
+                t0 = solid.tintAt(x + (int) corners[0][0], z + (int) corners[0][2], ground);
+                t1v = solid.tintAt(x + (int) corners[1][0], z + (int) corners[1][2], ground);
+                t2v = solid.tintAt(x + (int) corners[2][0], z + (int) corners[2][2], ground);
+                t3v = solid.tintAt(x + (int) corners[3][0], z + (int) corners[3][2], ground);
+            }
+
             // Two triangles over the four corners: 0-1-2, 2-3-0.
-            putVertex(buffer, corners[0], n, x, y, z, r, g, b, ao0, u0, u1, v0, v1, light);
-            putVertex(buffer, corners[1], n, x, y, z, r, g, b, ao1, u0, u1, v0, v1, light);
-            putVertex(buffer, corners[2], n, x, y, z, r, g, b, ao2, u0, u1, v0, v1, light);
-            putVertex(buffer, corners[2], n, x, y, z, r, g, b, ao2, u0, u1, v0, v1, light);
-            putVertex(buffer, corners[3], n, x, y, z, r, g, b, ao3, u0, u1, v0, v1, light);
-            putVertex(buffer, corners[0], n, x, y, z, r, g, b, ao0, u0, u1, v0, v1, light);
+            putVertex(buffer, corners[0], n, x, y, z, r, g, b, ao0, u0, u1, v0, v1, light, t0);
+            putVertex(buffer, corners[1], n, x, y, z, r, g, b, ao1, u0, u1, v0, v1, light, t1v);
+            putVertex(buffer, corners[2], n, x, y, z, r, g, b, ao2, u0, u1, v0, v1, light, t2v);
+            putVertex(buffer, corners[2], n, x, y, z, r, g, b, ao2, u0, u1, v0, v1, light, t2v);
+            putVertex(buffer, corners[3], n, x, y, z, r, g, b, ao3, u0, u1, v0, v1, light, t3v);
+            putVertex(buffer, corners[0], n, x, y, z, r, g, b, ao0, u0, u1, v0, v1, light, t0);
         }
     }
 
@@ -486,7 +561,7 @@ public class Block implements Serializable {
                     float[] p = beveledCorner(vx, vy, vz, x, y, z, faces, axis, dir, inset);
                     float uu = (j == 1) ? u1 : u0;
                     float vv = (j == 2) ? v1 : v0;
-                    putSpriteVertex(buffer, p[0], p[1], p[2], nX, nY, nZ, r, g, b, ao, uu, vv, light);
+                    putSpriteVertex(buffer, p[0], p[1], p[2], nX, nY, nZ, r, g, b, ao, uu, vv, light, NO_TINT);
                 }
             }
         }
@@ -564,6 +639,10 @@ public class Block implements Serializable {
         float cx = x + 0.5f;
         float cz = z + 0.5f;
         float h = 0.45f;
+        // Sprites are a single block wide, so one tint sample at the column
+        // centre is enough; averaging the four corners keeps it consistent with
+        // the tinted cube faces around it.
+        float tint = biomeTintKind(type) != TINT_NONE ? solid.tintAt(x, z, false) : NO_TINT;
 
         // Quad A: (\) diagonal.
         putSpriteQuad(buffer,
@@ -571,13 +650,13 @@ public class Block implements Serializable {
                 cx + h, baseY, cz + h,
                 cx + h, topY, cz + h,
                 cx - h, topY, cz - h,
-                r, g, b, ao, u0, u1, v0, v1, light, 0f, 1f, 0f);
+                r, g, b, ao, u0, u1, v0, v1, light, 0f, 1f, 0f, tint);
         putSpriteQuad(buffer,
                 cx + h, baseY, cz + h,
                 cx - h, baseY, cz - h,
                 cx - h, topY, cz - h,
                 cx + h, topY, cz + h,
-                r, g, b, ao, u0, u1, v0, v1, light, 0f, 1f, 0f);
+                r, g, b, ao, u0, u1, v0, v1, light, 0f, 1f, 0f, tint);
 
         // Quad B: (/) diagonal.
         putSpriteQuad(buffer,
@@ -585,13 +664,13 @@ public class Block implements Serializable {
                 cx + h, baseY, cz - h,
                 cx + h, topY, cz - h,
                 cx - h, topY, cz + h,
-                r, g, b, ao, u0, u1, v0, v1, light, 0f, 1f, 0f);
+                r, g, b, ao, u0, u1, v0, v1, light, 0f, 1f, 0f, tint);
         putSpriteQuad(buffer,
                 cx + h, baseY, cz - h,
                 cx - h, baseY, cz + h,
                 cx - h, topY, cz + h,
                 cx + h, topY, cz - h,
-                r, g, b, ao, u0, u1, v0, v1, light, 0f, 1f, 0f);
+                r, g, b, ao, u0, u1, v0, v1, light, 0f, 1f, 0f, tint);
     }
 
     private static void putSpriteQuad(FloatBuffer buffer,
@@ -601,19 +680,20 @@ public class Block implements Serializable {
                                       float x3, float y3, float z3,
                                       float r, float g, float b, float ao,
                                       float u0, float u1, float v0, float v1,
-                                      float light, float nx, float ny, float nz) {
-        putSpriteVertex(buffer, x0, y0, z0, nx, ny, nz, r, g, b, ao, u0, v1, light);
-        putSpriteVertex(buffer, x1, y1, z1, nx, ny, nz, r, g, b, ao, u1, v1, light);
-        putSpriteVertex(buffer, x2, y2, z2, nx, ny, nz, r, g, b, ao, u1, v0, light);
-        putSpriteVertex(buffer, x2, y2, z2, nx, ny, nz, r, g, b, ao, u1, v0, light);
-        putSpriteVertex(buffer, x3, y3, z3, nx, ny, nz, r, g, b, ao, u0, v0, light);
-        putSpriteVertex(buffer, x0, y0, z0, nx, ny, nz, r, g, b, ao, u0, v1, light);
+                                      float light, float nx, float ny, float nz,
+                                      float tint) {
+        putSpriteVertex(buffer, x0, y0, z0, nx, ny, nz, r, g, b, ao, u0, v1, light, tint);
+        putSpriteVertex(buffer, x1, y1, z1, nx, ny, nz, r, g, b, ao, u1, v1, light, tint);
+        putSpriteVertex(buffer, x2, y2, z2, nx, ny, nz, r, g, b, ao, u1, v0, light, tint);
+        putSpriteVertex(buffer, x2, y2, z2, nx, ny, nz, r, g, b, ao, u1, v0, light, tint);
+        putSpriteVertex(buffer, x3, y3, z3, nx, ny, nz, r, g, b, ao, u0, v0, light, tint);
+        putSpriteVertex(buffer, x0, y0, z0, nx, ny, nz, r, g, b, ao, u0, v1, light, tint);
     }
 
     private static void putSpriteVertex(FloatBuffer buffer, float x, float y, float z,
                                         float nx, float ny, float nz,
                                         float r, float g, float b, float ao,
-                                        float u, float v, float light) {
+                                        float u, float v, float light, float tint) {
         buffer.put(x);
         buffer.put(y);
         buffer.put(z);
@@ -627,6 +707,7 @@ public class Block implements Serializable {
         buffer.put(u);
         buffer.put(v);
         buffer.put(light);
+        buffer.put(tint);
     }
 
     /**
@@ -653,7 +734,7 @@ public class Block implements Serializable {
                                   int x, int y, int z,
                                   float r, float g, float b, float ao,
                                   float u0, float u1, float v0, float v1,
-                                  float light) {
+                                  float light, float tint) {
         buffer.put(x + corner[0]);
         buffer.put(y + corner[1]);
         buffer.put(z + corner[2]);
@@ -669,6 +750,7 @@ public class Block implements Serializable {
         buffer.put(corner[3] == 0.0f ? u0 : u1);
         buffer.put(corner[4] == 0.0f ? v0 : v1);
         buffer.put(light);
+        buffer.put(tint);
     }
 
     private static void putPositionedVertex(FloatBuffer buffer, float[] position, float[] corner, int[] n,

@@ -31,6 +31,9 @@ public final class MenuPanel {
     private float[] quads = new float[FLOATS_PER_QUAD * 8];
     private float[] text = new float[16384];
 
+    /** Vertical scroll offset in rows. */
+    private int scrollOffset = 0;
+
     /** Recomputes layout for the current window and row count. */
     public void layout(float w, float h, int rows) {
         rowCount = rows;
@@ -68,8 +71,9 @@ public final class MenuPanel {
         if (mouseX < panelX || mouseX > panelX + panelW) {
             return -1;
         }
-        for (int i = 0; i < rowCount; i++) {
-            float top = panelY + titleH + i * (rowH + rowGap);
+        int visibleRows = (int) Math.floor((panelHeight() - titleH - 12f * (rowH / ROW_H)) / (rowH + rowGap));
+        for (int i = scrollOffset; i < rowCount && i < scrollOffset + visibleRows; i++) {
+            float top = panelY + titleH + (i - scrollOffset) * (rowH + rowGap);
             if (mouseY >= top && mouseY <= top + rowH) {
                 return i;
             }
@@ -77,12 +81,17 @@ public final class MenuPanel {
         return -1;
     }
 
-    /**
-     * @param values may be null for screens with no right-hand column
-     */
+    /** Scrolls by delta rows (positive = down, negative = up). */
+    public void scroll(int delta) {
+        int visibleRows = (int) Math.floor((panelHeight() - titleH - 12f * (rowH / ROW_H)) / (rowH + rowGap));
+        scrollOffset = Math.max(0, Math.min(scrollOffset + delta, rowCount - visibleRows));
+    }
+
+    /** @param values may be null for screens with no right-hand column */
     public void render(float w, float h, String title,
                        List<String> labels, List<String> values, int hovered) {
         float panelH = panelHeight();
+        int visibleRows = (int) Math.floor((panelH - titleH - 12f * (rowH / ROW_H)) / (rowH + rowGap));
 
         int v = 0;
         v += quad(quads, v, 0, 0, w, h, w, h);
@@ -98,13 +107,15 @@ public final class MenuPanel {
 
         v = 0;
         for (int i = 0; i < rowCount; i++) {
-            float top = panelY + titleH + i * (rowH + rowGap);
-            v += quad(quads, v, panelX + 10, top, panelW - 20, rowH, w, h);
+           if (i >= scrollOffset && i < scrollOffset + visibleRows) {
+               float top = panelY + titleH + (i - scrollOffset) * (rowH + rowGap);
+               v += quad(quads, v, panelX + 10, top, panelW - 20, rowH, w, h);
+           }
         }
         Renderer.drawHudQuads(quads, v, 0, 0.16f, 0.17f, 0.21f, 0.95f);
 
         if (hovered >= 0 && hovered < rowCount) {
-            float top = panelY + titleH + hovered * (rowH + rowGap);
+            float top = panelY + titleH + (hovered - scrollOffset) * (rowH + rowGap);
             v = 0;
             v += quad(quads, v, panelX + 10, top, panelW - 20, rowH, w, h);
             Renderer.drawHudQuads(quads, v, 0, 0.30f, 0.42f, 0.58f, 0.95f);
@@ -117,21 +128,24 @@ public final class MenuPanel {
         int totalVerts = written;
 
         for (int i = 0; i < rowCount; i++) {
-            float top = panelY + titleH + i * (rowH + rowGap);
-            float textY = top + (rowH - TextRenderer.lineHeight(textScale)) * 0.5f;
+            if (i >= scrollOffset && i < scrollOffset + visibleRows) {
+                float top = panelY + titleH + (i - scrollOffset) * (rowH + rowGap);
+                float textY = top + (rowH - TextRenderer.lineHeight(textScale)) * 0.5f;
 
-            written = TextRenderer.emit(text, ti, labels.get(i),
-                    panelX + 26, textY, textScale, w, h);
-            ti += written * 4;
-            totalVerts += written;
-
-            if (values != null) {
-                String value = values.get(i);
-                if (value != null && !value.isEmpty()) {
-                    float valueX = panelX + panelW - 26 - TextRenderer.width(value, textScale);
-                    written = TextRenderer.emit(text, ti, value, valueX, textY, textScale, w, h);
+                String label = labels.get(i);
+                if (label != null) {
+                    written = TextRenderer.emit(text, ti, label,
+                            panelX + 26, textY, textScale, w, h);
                     ti += written * 4;
                     totalVerts += written;
+
+                    String value = values.get(i);
+                    if (value != null && !value.isEmpty()) {
+                        float valueX = panelX + panelW - 26 - TextRenderer.width(value, textScale);
+                        written = TextRenderer.emit(text, ti, value, valueX, textY, textScale, w, h);
+                        ti += written * 4;
+                        totalVerts += written;
+                    }
                 }
             }
         }

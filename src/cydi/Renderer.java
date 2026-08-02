@@ -6,6 +6,7 @@ import org.lwjgl.system.MemoryUtil;
 import java.nio.FloatBuffer;
 
 import static org.lwjgl.opengl.GL11.*;
+import static org.lwjgl.opengl.GL12.GL_TEXTURE_3D;
 import static org.lwjgl.opengl.GL13.GL_TEXTURE0;
 import static org.lwjgl.opengl.GL13.glActiveTexture;
 import static org.lwjgl.opengl.GL15.*;
@@ -21,8 +22,13 @@ import static org.lwjgl.opengl.GL30.*;
  */
 public class Renderer {
 
-    /** position(3) + normal(3) + color+ao(4) + texcoord(2) + skylight(1) */
-    public static final int FLOATS_PER_VERTEX = 13;
+    /**
+     * Vertex layout, owned by {@link Block} which writes it.
+     *
+     * Mirroring the value here would let the two drift apart and silently
+     * corrupt every chunk mesh, so it is aliased rather than restated.
+     */
+    public static final int FLOATS_PER_VERTEX = Block.FLOATS_PER_VERTEX;
     public static final int VERTEX_STRIDE_BYTES = FLOATS_PER_VERTEX * Float.BYTES;
 
     private static ShaderProgram chunkShader;
@@ -37,6 +43,7 @@ public class Renderer {
     private static int fullscreenVao;
     private static int fullscreenVbo;
     private static Framebuffer sceneBuffer;
+    private static Framebuffer skyBuffer;
     private static Framebuffer raysBuffer;
     private static final org.joml.Matrix4f invViewProjection = new org.joml.Matrix4f();
     private static final org.joml.Vector4f screenPosScratch = new org.joml.Vector4f();
@@ -102,7 +109,14 @@ public class Renderer {
     private static float cloudBaseHeight = 92.0f;
     private static float cloudLayerDepth = 34.0f;
     private static float cloudSpeed = 0.55f;
+    private static float cloudWindAngle   = 0.3f;
+    private static float cloudWindSpeed   = 0.85f;
+    private static float cloudTurbulence  = 0.15f;
+    private static float cloudStorm       = 0.0f;
     private static float sunCloudOcclusion = 1.0f;
+    private static final int[] GOD_RAY_SAMPLES = { 0, 20, 34, 48 };
+    private static final float[] GOD_RAY_DENSITY = { 0.0f, 0.72f, 0.85f, 0.95f };
+    private static boolean godRaysDrawnThisFrame;
 
     /** Names for the eight moon phases, indexed by {@link #getMoonPhase()}. */
     public static final String[] MOON_PHASES = {
@@ -116,6 +130,14 @@ public class Renderer {
 
     public static float getSunElevation() {
         return sunElevation;
+    }
+
+    public static boolean areCloudsActive() {
+        return cloudsEnabled && Game.OPT_CLOUD_QUALITY > 0;
+    }
+
+    public static boolean wereGodRaysDrawn() {
+        return godRaysDrawnThisFrame;
     }
 
     /**
@@ -133,6 +155,9 @@ public class Renderer {
         skyGradientShader = new ShaderProgram("/shaders/skygradient.vert", "/shaders/skygradient.frag");
         godRayShader = new ShaderProgram("/shaders/post.vert", "/shaders/godrays.frag");
         compositeShader = new ShaderProgram("/shaders/post.vert", "/shaders/composite.frag");
+
+        GpuProfiler.init();
+        CloudNoise.init();
 
         glEnable(GL_DEPTH_TEST);
         glDepthFunc(GL_LEQUAL);
@@ -302,19 +327,46 @@ public class Renderer {
      * know where terrain occludes the sky.
      */
     public static void beginScene(int screenWidth, int screenHeight) {
+        int skyDiv = Math.max(1, Game.OPT_SKY_RESOLUTION_DIV);
+        int skyW = Math.max(1, screenWidth / skyDiv);
+        int skyH = Math.max(1, screenHeight / skyDiv);
         if (sceneBuffer == null) {
             sceneBuffer = new Framebuffer(screenWidth, screenHeight);
             raysBuffer = new Framebuffer(Math.max(1, screenWidth / 2), Math.max(1, screenHeight / 2));
+            skyBuffer = new Framebuffer(skyW, skyH);
         } else {
             sceneBuffer.resize(screenWidth, screenHeight);
             raysBuffer.resize(Math.max(1, screenWidth / 2), Math.max(1, screenHeight / 2));
+            skyBuffer.resize(skyW, skyH);
         }
+
+        // The volumetric cloud march is by far the most expensive thing per pixel,
+        // and the sky it covers is low frequency, so it is marched at a reduced
+        // resolution and scaled up. Cost falls with the square of the divisor.
+        //
+        // The sky always renders to its own buffer, even at full resolution, so
+        // that its alpha channel survives as a cloud-occlusion source for the god
+        // ray pass. Drawing straight into the scene buffer would let the terrain
+        // and the additively blended celestial bodies overwrite that alpha.
+        GpuProfiler.begin(GpuProfiler.Zone.SKY);
+        skyBuffer.bind();
+        glClearColor(skyR, skyG, skyB, 0.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        drawSkyGradient();
 
         sceneBuffer.bind();
         glClearColor(skyR, skyG, skyB, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        drawSkyGradient();
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, skyBuffer.getFbo());
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, sceneBuffer.getFbo());
+        glBlitFramebuffer(0, 0, skyBuffer.getWidth(), skyBuffer.getHeight(),
+                0, 0, screenWidth, screenHeight, GL_COLOR_BUFFER_BIT,
+                skyDiv > 1 ? GL_LINEAR : GL_NEAREST);
+
+        glBindFramebuffer(GL_FRAMEBUFFER, sceneBuffer.getFbo());
+        glViewport(0, 0, screenWidth, screenHeight);
+        GpuProfiler.end(GpuProfiler.Zone.SKY);
     }
 
     /** Paints the atmospheric gradient over the whole framebuffer. */
@@ -326,6 +378,10 @@ public class Renderer {
         glDisable(GL_DEPTH_TEST);
         glDepthMask(false);
         glDisable(GL_CULL_FACE);
+        // Blending is on globally. The sky is opaque and is the first thing drawn,
+        // so alpha blending buys nothing here, but it would corrupt both the colour
+        // and the cloud opacity now written to alpha.
+        glDisable(GL_BLEND);
 
         skyGradientShader.bind();
         skyGradientShader.setMatrix4f("invViewProjection", invViewProjection);
@@ -344,7 +400,7 @@ public class Renderer {
             camZ = (float) Game.GAME_CAMERA.position.z;
         }
         skyGradientShader.setVector3f("cameraWorldPos", camX, camY, camZ);
-        skyGradientShader.setBoolean("cloudsEnabled", cloudsEnabled && Game.OPT_FOG);
+        skyGradientShader.setBoolean("cloudsEnabled", cloudsEnabled);
         skyGradientShader.setFloat("cloudCoverage", cloudCoverage);
         skyGradientShader.setFloat("cloudSharpness", cloudSharpness);
         skyGradientShader.setFloat("cloudOpacity", cloudOpacity);
@@ -352,12 +408,29 @@ public class Renderer {
         skyGradientShader.setFloat("cloudLayerDepth", cloudLayerDepth);
         skyGradientShader.setFloat("cloudTime", (float) org.lwjgl.glfw.GLFW.glfwGetTime());
         skyGradientShader.setFloat("cloudSpeed", cloudSpeed);
+        skyGradientShader.setFloat("cloudWindAngle",  cloudWindAngle);
+        skyGradientShader.setFloat("cloudWindSpeed",  cloudWindSpeed);
+        skyGradientShader.setFloat("cloudTurbulence", cloudTurbulence);
+        skyGradientShader.setFloat("stormFactor", cloudStorm);
+        skyGradientShader.setInt("cloudMarchSteps", Game.OPT_CLOUD_VOL_STEPS);
+        skyGradientShader.setInt("cloudDetailLevel", Game.OPT_CLOUD_QUALITY);
+        skyGradientShader.setInt("profileAblate", ShaderProfiler.activeMask());
         skyGradientShader.setFloat("cloudDayTime", Game.DAY_COUNT + Game.TIME_OF_DAY);
+        skyGradientShader.setFloat("cloudShadowStrength", cloudShadowStrength);
+
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, CloudNoise.texture2D());
+        skyGradientShader.setInt("cloudNoiseTex2D", 1);
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_3D, CloudNoise.texture3D());
+        skyGradientShader.setInt("cloudNoiseTex3D", 2);
+        glActiveTexture(GL_TEXTURE0);
 
         glBindVertexArray(fullscreenVao);
         glDrawArrays(GL_TRIANGLES, 0, 3);
         glBindVertexArray(0);
 
+        glEnable(GL_BLEND);
         glEnable(GL_CULL_FACE);
         glDepthMask(true);
         if (depthWasEnabled) {
@@ -374,11 +447,16 @@ public class Renderer {
             return;
         }
 
-        boolean drewRays = Game.OPT_GOD_RAYS && renderGodRays();
+        boolean drewRays = false;
+        if (Game.OPT_GOD_RAYS) {
+            drewRays = renderGodRays();
+        }
+        godRaysDrawnThisFrame = drewRays;
 
         Framebuffer.unbind(screenWidth, screenHeight);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
+        GpuProfiler.begin(GpuProfiler.Zone.COMPOSITE);
         boolean depthWasEnabled = glIsEnabled(GL_DEPTH_TEST);
         glDisable(GL_DEPTH_TEST);
         glDisable(GL_CULL_FACE);
@@ -390,7 +468,11 @@ public class Renderer {
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, raysBuffer.getColorTexture());
         compositeShader.setInt("raysTexture", 1);
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, sceneBuffer.getDepthTexture());
+        compositeShader.setInt("depthTexture", 2);
         compositeShader.setBoolean("raysEnabled", drewRays);
+        compositeShader.setBoolean("skyBlurEnabled", Game.OPT_SKY_RESOLUTION_DIV <= 1);
 
         glBindVertexArray(fullscreenVao);
         glDrawArrays(GL_TRIANGLES, 0, 3);
@@ -402,6 +484,7 @@ public class Renderer {
             glEnable(GL_DEPTH_TEST);
         }
         ShaderProgram.unbind();
+        GpuProfiler.end(GpuProfiler.Zone.COMPOSITE);
     }
 
     /**
@@ -410,9 +493,17 @@ public class Renderer {
      * @return true when shafts were produced
      */
     private static boolean renderGodRays() {
-        // Pick the dominant light. Both can be up, but only the brighter one
-        // casts shafts worth the cost.
-        boolean useSun = -sunDirY > -moonDirY;
+        // Prefer the sun whenever it is above the horizon at all. The moon runs
+        // a longer, separate orbit (LUNAR_PERIOD_DAYS) than the sun's daily one,
+        // so comparing raw elevation directly used to pick whichever body was
+        // numerically higher -- on days where the moon's drifting position
+        // happened to still be high in the sky, it would outrank the sun for
+        // most of the morning, so shafts stayed on the dim moon branch until
+        // the sun's own elevation finally climbed past it (often not until
+        // near noon). The sun visually dominates the sky the moment it rises,
+        // so it should win outright rather than by comparison; only fall back
+        // to the moon once the sun itself has set below the horizon.
+        boolean useSun = -sunDirY > 0.01f;
         float dirX = useSun ? -sunDirX : -moonDirX;
         float dirY = useSun ? -sunDirY : -moonDirY;
         float dirZ = useSun ? -sunDirZ : -moonDirZ;
@@ -445,10 +536,13 @@ public class Renderer {
         }
 
         float strength = useSun
-                ? (0.55f + 0.45f * duskFactor) * clamp01(dirY * 3.0f)
+                ? (0.90f + 0.55f * duskFactor) * clamp01(dirY * 3.0f)
                 : 0.30f * moonIllumination * clamp01(dirY * 3.0f);
         strength *= edgeFade;
-        if (strength <= 0.01f) {
+        if (useSun) {
+            strength *= 1.35f;
+        }
+        if (strength <= 0.001f) {
             return false;
         }
 
@@ -461,40 +555,23 @@ public class Renderer {
         glDisable(GL_CULL_FACE);
 
         godRayShader.bind();
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, sceneBuffer.getColorTexture());
-        godRayShader.setInt("sceneTexture", 0);
+        GpuProfiler.begin(GpuProfiler.Zone.GODRAYS);
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, sceneBuffer.getDepthTexture());
         godRayShader.setInt("depthTexture", 1);
+        // Cloud occlusion comes from the sky pass's alpha channel. Re-marching the
+        // cloud field once per shaft sample made this pass the second most
+        // expensive in the frame; a texture fetch resolves the same quantity.
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, skyBuffer.getColorTexture());
+        godRayShader.setInt("skyTexture", 2);
 
         godRayShader.setVector4f("lightScreenPos", sx, sy, 0f, 0f);
-        godRayShader.setFloat("intensity", strength);
-        godRayShader.setFloat("decay", 0.972f);
-        godRayShader.setFloat("density", 0.85f);
-        projection.mul(view, invViewProjection);
-        invViewProjection.invert();
-        godRayShader.setMatrix4f("invViewProjection", invViewProjection);
-        float camX = 0.0f;
-        float camY = 64.0f;
-        float camZ = 0.0f;
-        if (Game.GAME_CAMERA != null && Game.GAME_CAMERA.position != null) {
-            camX = (float) Game.GAME_CAMERA.position.x;
-            camY = (float) Game.GAME_CAMERA.position.y;
-            camZ = (float) Game.GAME_CAMERA.position.z;
-        }
-        int preset = WorldPreset.clamp(World.WORLD_PRESET);
-        godRayShader.setVector3f("cameraWorldPos", camX, camY, camZ);
+        godRayShader.setFloat("intensity", strength * Game.OPT_GOD_RAYS_INTENSITY_SCALE);
+        godRayShader.setFloat("decay", useSun ? 0.978f : 0.962f);
+        godRayShader.setInt("raySamples", GOD_RAY_SAMPLES[Game.OPT_GOD_RAYS_QUALITY]);
+        godRayShader.setFloat("density", GOD_RAY_DENSITY[Game.OPT_GOD_RAYS_QUALITY] + (useSun ? 0.10f : 0.0f));
         godRayShader.setBoolean("cloudsEnabled", cloudsEnabled && useSun);
-        godRayShader.setFloat("cloudCoverage", cloudCoverage);
-        godRayShader.setFloat("cloudSharpness", cloudSharpness);
-        godRayShader.setFloat("cloudOpacity", cloudOpacity);
-        godRayShader.setFloat("cloudBaseHeight", cloudBaseHeight);
-        godRayShader.setFloat("cloudLayerDepth", cloudLayerDepth);
-        godRayShader.setFloat("cloudTime", (float) org.lwjgl.glfw.GLFW.glfwGetTime());
-        godRayShader.setFloat("cloudSpeed", cloudSpeed);
-        godRayShader.setFloat("cloudDayTime", Game.DAY_COUNT + Game.TIME_OF_DAY);
-        godRayShader.setInt("atmospherePreset", preset);
         if (useSun) {
             godRayShader.setVector3f("lightColor", sunDiscR, sunDiscG * 0.92f, sunDiscB * 0.80f);
         } else {
@@ -504,6 +581,7 @@ public class Renderer {
         glBindVertexArray(fullscreenVao);
         glDrawArrays(GL_TRIANGLES, 0, 3);
         glBindVertexArray(0);
+        GpuProfiler.end(GpuProfiler.Zone.GODRAYS);
 
         glActiveTexture(GL_TEXTURE0);
         glEnable(GL_CULL_FACE);
@@ -555,6 +633,8 @@ public class Renderer {
         glVertexAttribPointer(3, 2, GL_FLOAT, false, VERTEX_STRIDE_BYTES, 10L * Float.BYTES);
         glEnableVertexAttribArray(4);
         glVertexAttribPointer(4, 1, GL_FLOAT, false, VERTEX_STRIDE_BYTES, 12L * Float.BYTES);
+        glEnableVertexAttribArray(5);
+        glVertexAttribPointer(5, 1, GL_FLOAT, false, VERTEX_STRIDE_BYTES, 13L * Float.BYTES);
 
         glBindVertexArray(0);
         glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -568,14 +648,21 @@ public class Renderer {
      */
     public static void updateSky(float timeOfDay, int dayCount) {
         int preset = WorldPreset.clamp(World.WORLD_PRESET);
-        cloudsEnabled = WorldPreset.hasClouds(preset);
+        cloudsEnabled = WorldPreset.hasClouds(preset) && Game.OPT_CLOUD_QUALITY > 0;
         cloudCoverage = WorldPreset.cloudCoverage(preset);
         cloudSharpness = WorldPreset.cloudSharpness(preset);
-        cloudOpacity = WorldPreset.cloudOpacity(preset);
-        cloudShadowStrength = WorldPreset.cloudShadowStrength(preset);
+        cloudOpacity = Math.max(0.05f, Math.min(1.0f, WorldPreset.cloudOpacity(preset) * Game.OPT_CLOUD_OPACITY_SCALE));
+        cloudShadowStrength = Math.max(0.0f,
+                Math.min(1.0f, WorldPreset.cloudShadowStrength(preset) * Game.OPT_CLOUD_SHADOW_SCALE));
         cloudBaseHeight = WorldPreset.cloudBaseHeight(preset);
         cloudLayerDepth = WorldPreset.cloudLayerDepth(preset);
         cloudSpeed = WorldPreset.cloudSpeed(preset);
+        if (Game.SCREEN == Game.Screen.PLAYING) {
+            cloudWindAngle  = Weather.windAngle;
+            cloudWindSpeed  = Weather.windSpeed;
+            cloudTurbulence = Weather.turbulence;
+            cloudStorm      = Weather.stormFactor;
+        }
         double angle = (timeOfDay - 0.25) * 2.0 * Math.PI;
         float elevation = (float) Math.sin(angle);
         float azimuth = (float) Math.cos(angle);
@@ -881,10 +968,14 @@ public class Renderer {
 
         float time = (float) org.lwjgl.glfw.GLFW.glfwGetTime();
         float dayClock = Game.DAY_COUNT + Game.TIME_OF_DAY;
-        float wx = time * cloudSpeed * 6.0f;
-        float wz = -time * cloudSpeed * 2.5f;
-        float ex = (float) Math.sin(dayClock * 2.324 + time * 0.017) * 96.0f;
-        float ez = (float) Math.cos(dayClock * 1.447 - time * 0.013) * 96.0f;
+        float windMag = (float)(dayClock * cloudSpeed * cloudWindSpeed * 3200.0);
+        float wx = (float)(windMag * Math.cos(cloudWindAngle));
+        float wz = (float)(windMag * Math.sin(cloudWindAngle));
+        float d  = dayClock;
+        float ex = (float)(Math.sin(d * 1.9472) * 280.0 + Math.sin(d * 0.6318) * 110.0 + Math.sin(d * 3.1415) * 60.0
+                   + Math.sin(time * 0.012) * 18.0);
+        float ez = (float)(Math.cos(d * 1.4142) * 280.0 + Math.cos(d * 0.8090) * 110.0 - Math.sin(d * 2.7183) * 60.0
+                   + Math.cos(time * 0.009) * 18.0);
 
         float midT = (t0 + t1) * 0.5f;
         float regime = fbm((camX + toSunX * midT + ex * 0.35f + wx * 0.08f) * 0.00075f,
@@ -899,7 +990,7 @@ public class Renderer {
                     wx, wz, ex, ez, regime, preset) * dt;
         }
 
-        float sigma = lerp(0.055f, 0.140f, cloudOpacity);
+        float sigma = lerp(0.055f, 0.140f, cloudOpacity) * Math.max(0.75f, cloudShadowStrength * 1.8f);
         if (preset == WorldPreset.VENUS) {
             sigma *= 1.8f;
         }
@@ -1003,6 +1094,7 @@ public class Renderer {
      * occludes them naturally.
      */
     public static void drawCelestialBodies() {
+        GpuProfiler.begin(GpuProfiler.Zone.CELESTIAL);
         int preset = WorldPreset.clamp(World.WORLD_PRESET);
         // Strip the translation so the bodies stay fixed on the sky.
         viewRotationScratch.set(view);
@@ -1018,7 +1110,7 @@ public class Renderer {
         glDisable(GL_DEPTH_TEST);
         glDepthMask(false);
         glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE);   // additive, so bodies glow
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         glDisable(GL_CULL_FACE);
         glBindVertexArray(skyVao);
 
@@ -1030,14 +1122,15 @@ public class Renderer {
             skyShader.setVector3f("bodyDirection", -sunDirX, -sunDirY, -sunDirZ);
             // The quad is much larger than the disc so the glow and rays have
             // room to fade out instead of ending at a hard edge.
-            skyShader.setFloat("quadSize", 0.30f);
-            skyShader.setFloat("discHalf", 0.30f);
+            skyShader.setFloat("quadSize", 0.16f * Game.OPT_SUN_SIZE_SCALE);
+            skyShader.setFloat("discHalf", 0.10f * Game.OPT_SUN_SIZE_SCALE);
             skyShader.setVector3f("bodyColor", sunDiscR, sunDiscG, sunDiscB);
-            skyShader.setFloat("bodyAlpha", sunVisible * sunCloudOcclusion);
+            float sunOcclusion = sunCloudOcclusion * sunCloudOcclusion;
+            skyShader.setFloat("bodyAlpha", sunVisible * sunOcclusion);
             skyShader.setBoolean("showRays", true);
             skyShader.setBoolean("roundBody", false);
             skyShader.setFloat("rayTime", (float) org.lwjgl.glfw.GLFW.glfwGetTime());
-            skyShader.setFloat("glowStrength", 0.50f);
+            skyShader.setFloat("glowStrength", 0.12f * Game.OPT_SUN_GLOW_SCALE * sunOcclusion);
             bindBodyTexture(sunTexture, 0f, 0f, 1f, 1f);
             glDrawArrays(GL_TRIANGLES, 0, 6);
         }
@@ -1092,6 +1185,7 @@ public class Renderer {
             glEnable(GL_DEPTH_TEST);
         }
         ShaderProgram.unbind();
+        GpuProfiler.end(GpuProfiler.Zone.CELESTIAL);
     }
 
     private static void drawRoundBody(float dirX, float dirY, float dirZ,
@@ -1129,6 +1223,7 @@ public class Renderer {
 
     /** Binds the chunk shader and uploads all per-frame uniforms once. */
     public static void beginChunkPass() {
+        GpuProfiler.begin(GpuProfiler.Zone.TERRAIN);
         glPolygonMode(GL_FRONT_AND_BACK, wireframe ? GL_LINE : GL_FILL);
 
         chunkShader.bind();
@@ -1173,7 +1268,17 @@ public class Renderer {
         float fogRange = Game.OPT_DRAW_DISTANCE * (float) WorldChunk.sizeX;
         float baseStart = lerp(150.0f, 125.0f, duskFactor);
         float baseEnd = lerp(380.0f, 330.0f, duskFactor);
-        float fogEnd = Math.min(baseEnd, fogRange * 0.985f);
+        // Clamping fogEnd to this fixed baseEnd left a huge flat, fully-fogged
+        // plateau between ~350 units and the real edge once draw distance grew
+        // past ~24 chunks: chunks kept rendering out to fogRange, but the fog
+        // had already gone 100% opaque long before that, so the "edge" read as
+        // a stark wall in the middle of the view instead of a gradual fade at
+        // the actual boundary. Below ~12 chunks there is no such gap -- the
+        // fixed atmospheric range already sits inside the visible area -- so
+        // leave the small-distance behavior alone.
+        float fogEnd = Game.OPT_DRAW_DISTANCE <= 12
+                ? Math.min(baseEnd, fogRange * 0.985f)
+                : Math.min(Math.max(baseEnd, fogRange * 0.80f), fogRange * 0.985f);
         float fogStart = Math.min(baseStart, fogEnd - 40.0f);
         chunkShader.setFloat("fogStart", fogStart);
         chunkShader.setFloat("fogEnd", fogEnd);
@@ -1196,8 +1301,21 @@ public class Renderer {
         chunkShader.setFloat("cloudLayerDepth", cloudLayerDepth);
         chunkShader.setFloat("cloudTime", (float) org.lwjgl.glfw.GLFW.glfwGetTime());
         chunkShader.setFloat("cloudSpeed", cloudSpeed);
+        chunkShader.setFloat("cloudWindAngle",  cloudWindAngle);
+        chunkShader.setFloat("cloudWindSpeed",  cloudWindSpeed);
+        chunkShader.setFloat("cloudTurbulence", cloudTurbulence);
+        chunkShader.setInt("cloudDetailLevel", Game.OPT_CLOUD_QUALITY);
+        chunkShader.setInt("profileAblate", ShaderProfiler.activeMask());
         chunkShader.setFloat("cloudDayTime", Game.DAY_COUNT + Game.TIME_OF_DAY);
         chunkShader.setInt("atmospherePreset", WorldPreset.clamp(World.WORLD_PRESET));
+
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, CloudNoise.texture2D());
+        chunkShader.setInt("cloudNoiseTex2D", 1);
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_3D, CloudNoise.texture3D());
+        chunkShader.setInt("cloudNoiseTex3D", 2);
+        glActiveTexture(GL_TEXTURE0);
     }
 
     public static void renderChunkMesh(WorldChunk chunk) {
@@ -1227,7 +1345,10 @@ public class Renderer {
     }
 
     public static void endChunkPass() {
+        GpuProfiler.end(GpuProfiler.Zone.TERRAIN);
+        GpuProfiler.begin(GpuProfiler.Zone.WATER);
         drawTranslucentQueue();
+        GpuProfiler.end(GpuProfiler.Zone.WATER);
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
         activePass = null;
         ShaderProgram.unbind();
@@ -1456,6 +1577,11 @@ public class Renderer {
         if (raysBuffer != null) {
             raysBuffer.cleanup();
         }
+        if (skyBuffer != null) {
+            skyBuffer.cleanup();
+        }
+        GpuProfiler.cleanup();
+        CloudNoise.cleanup();
         if (fullscreenVbo != 0) {
             glDeleteBuffers(fullscreenVbo);
         }

@@ -37,25 +37,30 @@ public class WorldInactiveChunkSweeperThread implements Runnable {
 
             //for (int i = 0; i < World.sizeX; i++) {
             //   for (int j = 0; j < World.sizeY; j++) {
-            for (int i = 0; i < chunks.size(); i++) {
-                WorldChunk thisChunk = chunks.get(i);
-                if (thisChunk == null) {
-                    continue;
-                }
-                // Parenthesised deliberately. Without it && bound tighter than
-                // ||, so the null check only guarded the first comparison and
-                // a chunk was swept merely for sitting past one bound.
-                boolean outsideKeepArea = thisChunk.posX < xLowerBound
-                        || thisChunk.posX > xUpperBound
-                        || thisChunk.posY < yLowerBound
-                        || thisChunk.posY > yUpperBound;
-                if (outsideKeepArea) {
-                    thisChunk.serialize();
-                    thisChunk.isZombie = true;
-                    if (!World.destroyChunks.contains(thisChunk)) {
-                        World.destroyChunks.add(thisChunk);
+            // World.chunks is mutated (add/remove) from the main thread; without
+            // this lock this background scan can read a torn/resized array
+            // mid-mutation, intermittently throwing or silently skipping chunks.
+            synchronized (World.chunks) {
+                for (int i = 0; i < chunks.size(); i++) {
+                    WorldChunk thisChunk = chunks.get(i);
+                    if (thisChunk == null) {
+                        continue;
                     }
+                    // Parenthesised deliberately. Without it && bound tighter than
+                    // ||, so the null check only guarded the first comparison and
+                    // a chunk was swept merely for sitting past one bound.
+                    boolean outsideKeepArea = thisChunk.posX < xLowerBound
+                            || thisChunk.posX > xUpperBound
+                            || thisChunk.posY < yLowerBound
+                            || thisChunk.posY > yUpperBound;
+                    if (outsideKeepArea) {
+                        thisChunk.serialize();
+                        thisChunk.isZombie = true;
+                        if (!World.destroyChunks.contains(thisChunk)) {
+                            World.destroyChunks.add(thisChunk);
+                        }
 
+                    }
                 }
             }
             //}

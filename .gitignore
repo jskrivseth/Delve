@@ -41,12 +41,18 @@ dist/
 libs/
 natives/
 lwjgl-*/
+# LWJGL's own auto-downloaded native cache (note the leading dot -- distinct
+# from the lwjgl-*/ Maven staging dirs above).
+.lwjgl/
 
 # =========================
 # Logs & Runtime State
 # =========================
 *.log
 errors.log
+perf.csv
+# Frame-by-frame PNG captures from the profiling/frame-capture tooling.
+perf-frames/
 chunks/
 saves/
 
