@@ -115,6 +115,12 @@ public class DevMenu {
         addRelativeKnob("OPT_CLOUD_TRANSLUCENCY_CONTRAST", "Cloud Translucency Contrast", 0.80f, 0.00f, 2.40f,
                 () -> Game.OPT_CLOUD_TRANSLUCENCY_CONTRAST, v -> Game.OPT_CLOUD_TRANSLUCENCY_CONTRAST = v);
 
+        addRelativeKnob("OPT_CHUNK_FADE_DURATION_MS", "Chunk Fade Duration", 1500.0f, 200.0f, 6000.0f,
+                () -> Game.OPT_CHUNK_FADE_DURATION_MS, v -> Game.OPT_CHUNK_FADE_DURATION_MS = v);
+
+        addRelativeKnob("OPT_CHUNK_EDGE_FADE_FRACTION", "Chunk Edge Fade Width", 0.35f, 0.05f, 0.90f,
+                () -> Game.OPT_CHUNK_EDGE_FADE_FRACTION, v -> Game.OPT_CHUNK_EDGE_FADE_FRACTION = v);
+
         rows.add(new Row("Save to dev-tuning.properties", () -> saveStatus, this::save, null));
         rows.add(new Row("Close (F9)", () -> "", () -> Game.setDevMenuOpen(false), null));
     }

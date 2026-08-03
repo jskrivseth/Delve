@@ -56,10 +56,37 @@ public class WorldInactiveChunkSweeperThread implements Runnable {
                     if (outsideKeepArea) {
                         thisChunk.serialize();
                         thisChunk.isZombie = true;
-                        if (!World.destroyChunks.contains(thisChunk)) {
+                        // Idempotent -- starts the fade-out clock the first
+                        // time this chunk is seen outside the keep area, and
+                        // does nothing on later sweeps while it's still
+                        // fading. Only queue it for actual GPU teardown once
+                        // that fade has fully played out.
+                        //
+                        // NOTE ON SCOPE: with the default keep-area radius
+                        // (OPT_CHUNK_SERIALIZE_RADIUS_MULTIPLIER == 1), a
+                        // chunk stops being visited by World.render()'s main
+                        // loop at essentially the same instant it becomes
+                        // sweep-eligible here, so this delay mostly does not
+                        // produce a *visible* fade for the common "walking
+                        // away" case -- that case already fades smoothly via
+                        // the render loop's own distance-based edgeFade
+                        // before a chunk ever reaches this boundary. What
+                        // this really guarantees is (a) GPU teardown never
+                        // happens mid-fade, and (b) a chunk that flickers
+                        // back and forth across the boundary resumes its
+                        // fade continuously with no pop (see
+                        // WorldChunk.requestDestroyFade/cancelDestroyFade).
+                        // A true visible fade-out for abrupt cases (e.g. draw
+                        // distance reduced in settings) would need the render
+                        // loop itself to keep drawing a margin of chunks
+                        // beyond the live radius while they finish fading --
+                        // intentionally out of scope here to avoid touching
+                        // the chunk generation/culling hot path.
+                        thisChunk.requestDestroyFade();
+                        if (thisChunk.isDestroyFadeComplete()
+                                && !World.destroyChunks.contains(thisChunk)) {
                             World.destroyChunks.add(thisChunk);
                         }
-
                     }
                 }
             }

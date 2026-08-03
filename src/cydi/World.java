@@ -417,6 +417,12 @@ public class World {
             if (thisChunk.isZombie) {
                 destroyChunks.remove(thisChunk);
                 thisChunk.isZombie = false;
+                // The player walked back into range before this chunk was
+                // actually swept and freed -- resume its fade back in from
+                // wherever the fade-out had reached, rather than either
+                // leaving it fading toward invisible or popping straight to
+                // full opacity.
+                thisChunk.cancelDestroyFade();
             }
             //If the chunk is done (ready to render) and is immediately within the proximity of the current chunk or is otherwise within the frustum, render
             if (thisChunk.isReady()) {
@@ -425,12 +431,34 @@ public class World {
                 // off-screen never builds and so never becomes drawable.
                 boolean cullable = Game.OPT_CULL_CHUNKS && innerRadius > 1;
                 if (!cullable || thisChunk.isVisible()) {
-                    float edgeFade = 1.0f;
-                    if (outerRadius > 2) {
-                        float t = (outerRadius - innerRadius) / 2.0f;
-                        edgeFade = Math.max(0.0f, Math.min(1.0f, t));
-                    }
-                    thisChunk.renderAlpha = edgeFade;
+                    // Stamped before computing this frame's alpha, not after
+                    // render() (which is where buildVBO() actually runs) --
+                    // see WorldChunk.ensureFadeInStarted() for why: without
+                    // this, a chunk's very first frame on screen always drew
+                    // at full opacity before its fade-in had a chance to
+                    // start.
+                    thisChunk.ensureFadeInStarted();
+
+                    // Continuous distance from the camera's exact (fractional)
+                    // position, not the chunk's integer ring index -- the ring
+                    // index only gave a handful of discrete alpha steps (as
+                    // few as 3, with the old fixed 2-ring margin), which read
+                    // as visible concentric banding / a hard line at the edge
+                    // of view even while standing still. Real distance varies
+                    // smoothly block by block as the camera moves, and the
+                    // fade width now scales with draw distance instead of
+                    // being a fixed ring count.
+                    double dx = (i + 0.5) - (camera.position.x / WorldChunk.sizeX);
+                    double dz = (j + 0.5) - (camera.position.z / WorldChunk.sizeZ);
+                    float chebyshevDist = (float) Math.max(Math.abs(dx), Math.abs(dz));
+                    float fadeMargin = Math.max(2.0f, outerRadius * Game.OPT_CHUNK_EDGE_FADE_FRACTION);
+                    float edgeFade = Math.max(0.0f, Math.min(1.0f,
+                            (outerRadius - chebyshevDist) / fadeMargin));
+                    // Combined with the chunk's own generate/destroy lifecycle
+                    // fade, so a chunk newly popping into view and a chunk
+                    // sitting at the far draw-distance edge fade independently
+                    // but consistently.
+                    thisChunk.renderAlpha = edgeFade * thisChunk.lifecycleFadeAlpha();
                     if (!thisChunk.vboIsStale) {
                         thisChunk.render();
                     } else if (VBO_CHUNKS < World.MAX_CHUNKS_TO_VBO) {

@@ -114,6 +114,31 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     public transient int BLOCK_COUNT = 0;
     public transient int FACE_COUNT = 0;
     public transient float renderAlpha = 1.0f;
+    /** How long a chunk takes to fade in when built and fade out when destroyed. */
+    /** How long a chunk takes to fade in when built and fade out when destroyed. */
+    private static long fadeDurationNanos() {
+        return (long) (Game.OPT_CHUNK_FADE_DURATION_MS * 1_000_000.0);
+    }
+    /**
+     * Wall-clock time this chunk's VBO was first uploaded, or -1 before that.
+     * Stamped once per chunk instance in {@link #buildVBO()} and never reset by
+     * ordinary mesh rebuilds from block edits (those reuse the same VBO handle
+     * and never pass back through the "first build" branch), so editing blocks
+     * near an already-visible chunk never restarts its fade-in.
+     */
+    private transient volatile long meshReadyAtNanos = -1L;
+    /**
+     * Wall-clock time this chunk was first detected as due for destruction, or
+     * -1 while it isn't. Deliberately time-based rather than frame-counted: the
+     * sweeper's keep radius defaults to the same size as the render/draw-distance
+     * radius, so a chunk usually stops being visited by the render loop in the
+     * same instant it becomes sweep-eligible. A frame-counted timer driven only
+     * from the render loop would then never advance again once the chunk stops
+     * being drawn, so it would never finish fading and never actually get freed
+     * -- a permanent chunk/GPU-handle leak. A wall-clock timestamp instead keeps
+     * advancing regardless of whether anything is currently drawing the chunk.
+     */
+    private transient volatile long destroyRequestedAtNanos = -1L;
     private transient boolean wireframe = Game.OPT_DRAW_WIRES;
     private transient boolean[] EXPOSED_FACES = new boolean[6];
     ;
@@ -1847,6 +1872,13 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             this.vboIsStale = false;
             return;
         }
+        if (this.meshReadyAtNanos < 0) {
+            // First time this chunk instance has ever had a mesh uploaded --
+            // starts its fade-in. Never touched again by later rebuilds (block
+            // edits, seam invalidation, etc.), which reuse the existing VBO
+            // handle and never pass through this branch a second time.
+            this.meshReadyAtNanos = System.nanoTime();
+        }
         Renderer.uploadChunkMesh(this, data);
         // Only now is the count valid for the buffer the GPU holds.
         this.numVerts = this.pendingVerts;
@@ -1968,6 +2000,99 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         this.purgeVBO = false;
         this.isBuilt = false;
         this.vboIsStale = false;
+        this.meshReadyAtNanos = -1L;
+        this.destroyRequestedAtNanos = -1L;
+    }
+
+    /**
+     * Starts (once) this chunk's destroy fade-out clock. Idempotent -- the
+     * sweeper re-detects the same out-of-range chunk on every sweep, and
+     * restarting the clock each time would mean it never finishes fading and
+     * so never actually gets torn down.
+     *
+     * Backdates the clock so the fade-out picks up from whatever alpha this
+     * chunk is already showing (e.g. still partway through fading in) rather
+     * than always assuming it was fully opaque -- otherwise a chunk leaving
+     * view mid fade-in would visibly pop up to full brightness for an instant
+     * before starting to fade back down.
+     */
+    public synchronized void requestDestroyFade() {
+        if (this.destroyRequestedAtNanos < 0) {
+            float currentAlpha = lifecycleFadeAlpha();
+            long backdateNanos = (long) ((1.0f - currentAlpha) * fadeDurationNanos());
+            this.destroyRequestedAtNanos = System.nanoTime() - backdateNanos;
+        }
+    }
+
+    /**
+     * Cancels an in-progress destroy fade, e.g. when the player walks back into
+     * range before the chunk was actually swept and freed.
+     *
+     * Backdates meshReadyAtNanos so the fade-in resumes from whatever alpha the
+     * fade-out had already reached, rather than snapping straight to fully
+     * visible (a stale, long-elapsed meshReadyAtNanos from the original build)
+     * or fully invisible -- either would be a visible pop when a chunk crosses
+     * back and forth across the keep-radius boundary.
+     */
+    public synchronized void cancelDestroyFade() {
+        if (this.destroyRequestedAtNanos < 0) {
+            return;
+        }
+        float currentAlpha = lifecycleFadeAlpha();
+        long backdateNanos = (long) (currentAlpha * fadeDurationNanos());
+        this.destroyRequestedAtNanos = -1L;
+        this.meshReadyAtNanos = System.nanoTime() - backdateNanos;
+    }
+
+    /** True once a requested destroy fade has fully played out -- only then is it
+     *  safe to actually free this chunk's GPU resources. */
+    public boolean isDestroyFadeComplete() {
+        return this.destroyRequestedAtNanos >= 0
+                && (System.nanoTime() - this.destroyRequestedAtNanos) >= fadeDurationNanos();
+    }
+
+    /**
+     * Alpha driven purely by this chunk's own generate/destroy lifecycle (0-1),
+     * independent of the distance-based edge fade computed in
+     * World.renderChunk() -- the two are combined by multiplication there.
+     * Fading out takes priority over fading in, since a chunk already queued
+     * for destruction must never ramp back toward full opacity.
+     */
+    public float lifecycleFadeAlpha() {
+        long now = System.nanoTime();
+        long duration = fadeDurationNanos();
+        if (this.destroyRequestedAtNanos >= 0) {
+            float t = (now - this.destroyRequestedAtNanos) / (float) duration;
+            return clamp01(1.0f - t);
+        }
+        if (this.meshReadyAtNanos >= 0) {
+            float t = (now - this.meshReadyAtNanos) / (float) duration;
+            return clamp01(t);
+        }
+        return 1.0f;
+    }
+
+    /**
+     * Ensures the fade-in clock has started before this chunk's very first
+     * draw call. World.renderChunk() computes this frame's renderAlpha
+     * (which reads {@link #lifecycleFadeAlpha()}) BEFORE calling
+     * {@link #render()} -- and render() is what actually calls
+     * {@link #buildVBO()}, which is where meshReadyAtNanos first gets
+     * stamped. Left alone, that ordering meant a chunk's first-ever frame on
+     * screen always evaluated lifecycleFadeAlpha() while meshReadyAtNanos was
+     * still -1 (not yet stamped this frame), falling through to the "not
+     * tracked yet" 1.0 fallback -- so every newly built chunk rendered at
+     * full opacity for exactly one frame before the fade-in formula ever
+     * engaged, which is indistinguishable from "not fading in at all" when
+     * chunks build faster than a human notices a single dropped frame (e.g.
+     * flying forward into freshly generated terrain). Calling this first
+     * closes that gap by stamping the clock proactively, so the very first
+     * frame already reads a fresh (near-zero) alpha.
+     */
+    public void ensureFadeInStarted() {
+        if (this.meshReadyAtNanos < 0) {
+            this.meshReadyAtNanos = System.nanoTime();
+        }
     }
 
     public void refreshMesh() {

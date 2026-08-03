@@ -105,6 +105,15 @@ public class Game {
      *  baseline gaps; higher hoists L1 and L2 further apart/up). Tuned via
      *  the F9 dev menu -- 3.0 gives each deck clearly separated air. */
     public static float OPT_CLOUD_LAYER_SPACING = 3.00f;
+    /** Chunk generate/destroy fade duration, in milliseconds. Tuned via the
+     *  F9 dev menu -- longer makes new terrain visibly ease in/out instead
+     *  of popping. */
+    public static float OPT_CHUNK_FADE_DURATION_MS = 1500.0f;
+    /** Fraction of draw distance devoted to the smooth fade at the edge of
+     *  view (higher = wider, more gradual falloff into fog/sky well before
+     *  the actual draw-distance boundary, instead of a hard line). Tuned via
+     *  the F9 dev menu. */
+    public static float OPT_CHUNK_EDGE_FADE_FRACTION = 0.35f;
     /** Strength multiplier for the inter-layer shadow chain (L2 dims L1,
      *  both dim L0); 1.0 = original baseline, 0 disables it entirely. Tuned
      *  down slightly via the F9 dev menu. */
