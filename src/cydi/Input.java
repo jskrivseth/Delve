@@ -167,6 +167,10 @@ public class Input {
             rightMouseWasDown = right;
         }
 
+        // Clear look state so resuming a world does not jump the view
+        cursorDeltaX = 0;
+        cursorDeltaY = 0;
+
         if (wasPressed(GLFW_KEY_ESCAPE)) {
             if (Game.TITLE.isShowingWorlds()) {
                 Game.TITLE.openMain();

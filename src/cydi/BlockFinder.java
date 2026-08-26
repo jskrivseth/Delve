@@ -27,23 +27,24 @@ public class BlockFinder {
             Game.consoleMsg("No chunk found @ (" + chunkX + "," + chunkZ + "} using (" + x + "," + y + "," + z + ")");
             return;
         }
-        x -= chunk.worldPosX;
-        z -= chunk.worldPosY;
-        if (x >= 0 && x < WorldChunk.sizeX) {
-            if (y >= 0 && y < WorldChunk.sizeY) {
-                if (z >= 0 && z < WorldChunk.sizeZ) {
+        int localX = Math.floorMod(x, WorldChunk.sizeX);
+        int localY = y;
+        int localZ = Math.floorMod(z, WorldChunk.sizeZ);
+        if (localX >= 0 && localX < WorldChunk.sizeX) {
+            if (localY >= 0 && localY < WorldChunk.sizeY) {
+                if (localZ >= 0 && localZ < WorldChunk.sizeZ) {
                     World.BLOCK_LOCK.writeLock().lock();
                     try {
-                        chunk.blocks[x][y][z] = type;
+                        chunk.blocks[localX][localY][localZ] = type;
                     } finally {
                         World.BLOCK_LOCK.writeLock().unlock();
                     }
                     chunk.meshIsStale = true;
                     chunk.isModified = true;
                     if (type != Block.AIR) {
-                        chunk.noteBlockPlacedAt(y);
+                        chunk.noteBlockPlacedAt(localY);
                     }
-                    invalidateSeam(chunkX, chunkZ, x, z);
+                    invalidateSeam(chunkX, chunkZ, localX, localZ);
                     return;
                 }
             }
@@ -78,25 +79,31 @@ public class BlockFinder {
         }
     }
 
-    public static void setSelectedBlock(int x, int y, int z) {
+    /** Gets the chunk containing world coordinates (x, z), or null if not loaded. */
+    private static WorldChunk getChunkFor(int x, int z) {
         int chunkX = Math.floorDiv(x, WorldChunk.sizeX);
         int chunkZ = Math.floorDiv(z, WorldChunk.sizeZ);
-        WorldChunk chunk = World.getChunk(chunkX, chunkZ);
+        return World.getChunk(chunkX, chunkZ);
+    }
+
+    public static void setSelectedBlock(int x, int y, int z) {
+        WorldChunk chunk = getChunkFor(x, z);
         if (chunk == null) {
-            Game.consoleMsg("No chunk found @ (" + chunkX + "," + chunkZ + "} using (" + x + "," + y + "," + z + ")");
+            Game.consoleMsg("No chunk found @ (" + x + "," + z + "} using world coords");
             return;
         }
-        x -= chunk.worldPosX;
-        z -= chunk.worldPosY;
-        if (x >= 0 && x < WorldChunk.sizeX) {
-            if (y >= 0 && y < WorldChunk.sizeY) {
-                if (z >= 0 && z < WorldChunk.sizeZ) {
+        int localX = Math.floorMod(x, WorldChunk.sizeX);
+        int localY = y;
+        int localZ = Math.floorMod(z, WorldChunk.sizeZ);
+        if (localX >= 0 && localX < WorldChunk.sizeX) {
+            if (localY >= 0 && localY < WorldChunk.sizeY) {
+                if (localZ >= 0 && localZ < WorldChunk.sizeZ) {
                     chunk.selectedBlock = new Block(x, y, z);
                     return;
                 }
             }
         }
-        Game.consoleMsg("Failed to set a block @ (" + chunkX + "," + chunkZ + "} using (" + x + "," + y + "," + z + ")");
+        Game.consoleMsg("Failed to set a block @ (" + chunk.worldPosX + "," + chunk.worldPosY + "} using (" + x + "," + y + "," + z + ")");
     }
 
     public static void setBlockType(WorldChunk chunk, int x, int y, int z, int type) {
@@ -114,7 +121,11 @@ public class BlockFinder {
                     if (type != Block.AIR) {
                         chunk.noteBlockPlacedAt(y);
                     }
-                    invalidateSeam(chunk.posX, chunk.posY, x, z);
+                    int chunkX = Math.floorDiv(chunk.worldPosX, WorldChunk.sizeX);
+                    int chunkZ = Math.floorDiv(chunk.worldPosY, WorldChunk.sizeZ);
+                    int localX = x;
+                    int localZ = z;
+                    invalidateSeam(chunkX, chunkZ, localX, localZ);
                     return;
                 }
             }
@@ -175,10 +186,11 @@ public class BlockFinder {
     public static RayHit raycast(double ox, double oy, double oz,
                                  double dirX, double dirY, double dirZ,
                                  double maxDistance, BlockLookup lookup) {
-        double len = Math.sqrt(dirX * dirX + dirY * dirY + dirZ * dirZ);
-        if (len == 0) {
-            return null;
+        if (dirX == 0 && dirY == 0 && dirZ == 0) {
+            return null;   // Guard against zero-length ray
         }
+
+        double len = Math.sqrt(dirX * dirX + dirY * dirY + dirZ * dirZ);
         double dx = dirX / len, dy = dirY / len, dz = dirZ / len;
 
         int x = (int) Math.floor(ox);
@@ -282,3 +294,4 @@ public class BlockFinder {
         return data[Math.floorMod(worldX, WorldChunk.sizeX)][worldY][Math.floorMod(worldZ, WorldChunk.sizeZ)];
     }
 }
+

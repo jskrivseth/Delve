@@ -16,6 +16,7 @@
         <lwjgl.version>3.4.2</lwjgl.version>
         <joml.version>1.10.9</joml.version>
         <main.class>cydi.Main</main.class>
+        <junit.version>5.10.0</junit.version>
     </properties>
 
     <profiles>
@@ -68,11 +69,26 @@
             <artifactId>joml</artifactId>
             <version>${joml.version}</version>
         </dependency>
+
+        <!-- Testing dependencies -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-api</artifactId>
+            <version>${junit.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-engine</artifactId>
+            <version>${junit.version}</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
         <finalName>delve</finalName>
         <sourceDirectory>src</sourceDirectory>
+        <testSourceDirectory>test/java</testSourceDirectory>
         <resources>
             <resource><directory>resources</directory></resource>
             <!-- Bundle the art so the packaged app finds its atlas on the

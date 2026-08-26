@@ -6,6 +6,7 @@ package cydi;
 
 import org.joml.Vector2f;
 import org.joml.Vector3f;
+import cydi.Vector3d;
 import org.joml.Vector4f;
 
 /**

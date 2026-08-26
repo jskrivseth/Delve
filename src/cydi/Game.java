@@ -526,8 +526,9 @@ public class Game {
         FACE_COUNT = 0;
         BLOCK_COUNT = 0;
         if (!TIME_PAUSED && !MENU_OPEN && !DEV_MENU_OPEN) {
-            float delta = (gameTime / 1000.0f) * TIME_SPEED / dayLengthSeconds();
-            float advanced = TIME_OF_DAY + delta;
+            // Clamp delta to prevent massive leaps when the player is away (e.g. tabbed out)
+            float dt = Math.min((gameTime / 1000.0f) * TIME_SPEED / dayLengthSeconds(), 0.25f);
+            float advanced = TIME_OF_DAY + dt;
             if (advanced >= 1.0f) {
                 DAY_COUNT += (int) advanced;
             }

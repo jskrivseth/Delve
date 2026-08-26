@@ -32,7 +32,7 @@ public class FirstPersonCamera extends Camera {
     }
 
     public void resetPosition() {
-        position.y = Game.PLAYER_START_POSITION.y;
+        position.x = Game.PLAYER_START_POSITION.x;
         position.y = Game.PLAYER_START_POSITION.y;
         position.z = Game.PLAYER_START_POSITION.z;
         velocity = new Vector3d(0, 0, 0);
@@ -42,11 +42,8 @@ public class FirstPersonCamera extends Camera {
 
 //increment the camera's current yaw rotation
     public void yaw(float amount) {
-        //increment the yaw by the amount param
-//        if (yaw > 360.0f || yaw < -360.0f) {
-//            yaw = 0.0f;
-//        }
         yaw += amount;
+        yaw %= 360.0f;
         sight = cydi.Vector3d.axisRotation(sight, sky, (float)(amount * DEG_TO_RAD));
         right = cydi.Vector3d.cross(sight, sky).normalized();
         orientationChanged();
@@ -54,7 +51,6 @@ public class FirstPersonCamera extends Camera {
 
 //increment the camera's current pitch rotation
     public void pitch(float amount) {
-        //increment the pitch by the amount param
         if (amount + pitch < 85.0f && amount + pitch > -85.0f) {
             pitch += amount;
             sight = cydi.Vector3d.axisRotation(sight, right, (float)(amount * DEG_TO_RAD));
@@ -331,7 +327,7 @@ public class FirstPersonCamera extends Camera {
 
     @Override
     public void applyAcceleration(Vector3d velocity) {
-        MathHelper.divide(velocity, this.CAMERA_MASS, acceleration);
+        MathHelper.divide(velocity, (double)this.CAMERA_MASS, acceleration);
         Vector3d.add(this.velocity, acceleration, this.velocity);
     }
 
