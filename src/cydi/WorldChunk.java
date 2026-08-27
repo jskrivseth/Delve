@@ -1524,13 +1524,16 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
      * lit neighbours so light bleeds between chunks.
      */
     private void computeSkyLight() {
-        byte[] light = this.skyLight;
-        if (light == null) {
-            light = new byte[sizeX * sizeY * sizeZ];
-            this.skyLight = light;
-        } else {
-            java.util.Arrays.fill(light, (byte) 0);
-        }
+        // Build the full light map into a fresh local array and publish it only
+        // when complete (single volatile store of the reference). A neighbour
+        // chunk reads this chunk's light concurrently via
+        // World.skyLightGlobal -> localLight while seeding its own borders.
+        // Clearing and refilling the already-published array in place let that
+        // neighbour observe a half-cleared (dark) state and bake a dark seam
+        // into its own light -- the "dark hole" that only healed after a later
+        // rebuild re-read a consistent state. Publishing a fully-built array
+        // atomically removes the race.
+        byte[] light = new byte[sizeX * sizeY * sizeZ];
         if (lightQueue == null) {
             lightQueue = new int[1 << 16];
         }
@@ -1579,6 +1582,11 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             spread(light, x, y, z - 1, level);
         }
 
+        // Publish the complete light map first, then flag neighbours whose
+        // border light changed. Ordering matters: a neighbour flagged here will
+        // re-seed its borders from this chunk, so this chunk's new (complete)
+        // light must already be the published one it reads.
+        this.skyLight = light;
         publishBorderChanges(light);
     }
 
@@ -1713,7 +1721,11 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
 
         this.neighborsGenerated = World.allNeighborsAreGenerated(this);
         if (!this.neighborsGenerated) {
-            //System.out.println("Can't build yet because the neighbors aren't ready");
+            // Can't build yet because the neighbors aren't ready. Re-flag the
+            // stale marker so the next frame retries the rebuild -- previously
+            // this attempt was dropped and the chunk stayed stale (stale mesh
+            // and stale light) until some later edit happened to re-trigger it.
+            this.meshIsStale = true;
             return;
         }
         if (this.isBuilding) {
