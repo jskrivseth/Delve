@@ -170,6 +170,4 @@ No licence chosen yet.
 
 ## Naming
 
-The Java package is still `cydi` after the rename to Delve. The package rename
-is deliberately deferred: it touches every source file and carries no functional
-benefit.
+The Java package is now `delve`, matching the project name.

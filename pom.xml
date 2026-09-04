@@ -4,7 +4,7 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>com.cydi</groupId>
+    <groupId>com.delve</groupId>
     <artifactId>delve</artifactId>
     <version>1.0-SNAPSHOT</version>
     <packaging>jar</packaging>
@@ -15,7 +15,7 @@
         <maven.compiler.release>17</maven.compiler.release>
         <lwjgl.version>3.4.2</lwjgl.version>
         <joml.version>1.10.9</joml.version>
-        <main.class>cydi.Main</main.class>
+        <main.class>delve.core.Main</main.class>
         <junit.version>5.10.0</junit.version>
     </properties>
 
