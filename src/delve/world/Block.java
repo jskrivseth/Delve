@@ -694,7 +694,13 @@ public class Block implements Serializable {
         // Sprites are a single block wide, so one tint sample at the column
         // centre is enough; averaging the four corners keeps it consistent with
         // the tinted cube faces around it.
-        float tint = biomeTintKind(type) != TINT_NONE ? solid.tintAt(x, z, false) : NO_TINT;
+        // Grass sits directly against the block below it, so use the restrained
+        // ground tint rather than the stronger foliage tint. This keeps vivid
+        // biome greens from vibrating against clay, red clay, and stone patches.
+        boolean groundTint = type == TALL_GRASS || type == FERN || type == REED_GRASS
+                || type == BROWN_GRASS;
+        float tint = biomeTintKind(type) != TINT_NONE
+                ? solid.tintAt(x, z, groundTint) : NO_TINT;
 
         // Quad A: (\) diagonal.
         putSpriteQuad(buffer, indices,
