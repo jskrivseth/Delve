@@ -55,17 +55,17 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     /*
      * Flags
      */
-    public boolean meshIsStale = false;
-    public boolean vboIsStale = false;
-    public boolean isRefreshing = false;
-    public boolean isDefunct = false;
-    public boolean isBuilding = false;
-    public boolean isBuilt = false;
-    public boolean isGenerating = false;
-    public boolean isGenerated = false;
-    public boolean isZombie = false;
-    public boolean neighborsGenerated = false;
-    public boolean purgeVBO = false;
+    public volatile boolean meshIsStale = false;
+    public volatile boolean vboIsStale = false;
+    public volatile boolean isRefreshing = false;
+    public volatile boolean isDefunct = false;
+    public volatile boolean isBuilding = false;
+    public volatile boolean isBuilt = false;
+    public volatile boolean isGenerating = false;
+    public volatile boolean isGenerated = false;
+    public volatile boolean isZombie = false;
+    public volatile boolean neighborsGenerated = false;
+    public volatile boolean purgeVBO = false;
     public boolean serialize = false;
     /** Set when the player edits this chunk, so it is persisted before unloading. */
     public volatile boolean isModified = false;
