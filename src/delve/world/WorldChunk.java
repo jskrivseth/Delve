@@ -112,6 +112,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
      */
     public volatile byte[] blocks;     //Contains all the blocks in this chunk
     public volatile int numVerts;
+    public volatile boolean containsTransparentBlocks;
     /** Vertices in the leading opaque range; the remainder is translucent. */
     public volatile int opaqueVerts;
     /** Index counts mirroring {@link #numVerts}/{@link #opaqueVerts}. */
@@ -1888,11 +1889,13 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             // writer -- shared quads and unrolled triangle pairs alike.
             int faceCount = 0;
             int blockCount = 0;
+            boolean transparentBlocks = false;
             for (int i = 0; i < sizeX; i++) {
                 for (int j = 0; j < ceiling; j++) {
                     for (int k = 0; k < sizeZ; k++) {
                         int type = voxels[blockIndex(i, j, k)] & 0xFF;
                         if (type != 0) {
+                            transparentBlocks |= Block.isTransparent(type);
                             if (Block.isSpritePlant(type)) {
                                 faceCount += 4; // two crossed quads, double sided
                             } else if (Block.isMarchingRock(type)) {
@@ -1910,6 +1913,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
 
             BLOCK_COUNT = blockCount;
             FACE_COUNT = faceCount;
+            this.containsTransparentBlocks = transparentBlocks;
 
             if (faceCount == 0) {
                 this.pendingVerts = 0;
@@ -1977,6 +1981,10 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
      */
     private int computeExposedFaces(byte[] voxels, int i, int j, int k, boolean[] out) {
         int type = voxels[blockIndex(i, j, k)] & 0xFF;
+        if (Block.isLeaf(type)) {
+            java.util.Arrays.fill(out, true);
+            return 6;
+        }
         int neighborX = 0, neighborY = 0;
         if (i == 0) {  // Look down
             neighborX = World.chunkNeighbor(2, i, j, k, posX, posY);

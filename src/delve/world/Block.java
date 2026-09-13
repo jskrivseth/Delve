@@ -525,6 +525,12 @@ public class Block implements Serializable {
                 t2v = solid.tintAt(x + (int) corners[2][0], z + (int) corners[2][2], ground);
                 t3v = solid.tintAt(x + (int) corners[3][0], z + (int) corners[3][2], ground);
             }
+            if (isLeaf(type)) {
+                t0 = adjustLeafTint(type, t0);
+                t1v = adjustLeafTint(type, t1v);
+                t2v = adjustLeafTint(type, t2v);
+                t3v = adjustLeafTint(type, t3v);
+            }
 
             // Four corner vertices, then the same two triangles (0-1-2, 2-3-0)
             // spelled as indices -- the repeats were written twice before.
@@ -535,6 +541,26 @@ public class Block implements Serializable {
             putVertex(buffer, corners[3], n, x, y, z, r, g, b, ao3, u0, u1, v0, v1, light, t3v);
             indices.put(vi).put(vi + 1).put(vi + 2).put(vi + 2).put(vi + 3).put(vi);
         }
+    }
+
+    private static float adjustLeafTint(int type, float packed) {
+        float r = (float) Math.floor(packed / 65536.0f) / 127.5f;
+        float g = (float) Math.floor((packed % 65536.0f) / 256.0f) / 127.5f;
+        float b = (packed % 256.0f) / 127.5f;
+        if (type == DARK_LEAVES) {
+            r *= 0.68f;
+            g *= 0.84f;
+            b *= 0.62f;
+        } else if (type == GOLDEN_LEAVES) {
+            r *= 1.35f;
+            g *= 1.08f;
+            b *= 0.52f;
+        } else if (type == PALE_LEAVES) {
+            r *= 1.08f;
+            g *= 1.20f;
+            b *= 0.82f;
+        }
+        return packTint(r, g, b);
     }
 
     /**
