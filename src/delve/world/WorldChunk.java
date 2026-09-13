@@ -889,6 +889,14 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     private static int surfaceTypeFor(int height, BiomeBlend biome, float ruggedness,
                                       float temperature, float highlands, float wetland,
                                       int worldX, int worldZ, int biomeType) {
+        int base = baseSurfaceTypeFor(height, biome, ruggedness, temperature, highlands,
+                wetland, worldX, worldZ, biomeType);
+        return earthSurfacePatch(base, biomeType, ruggedness, wetland, worldX, worldZ);
+    }
+
+    private static int baseSurfaceTypeFor(int height, BiomeBlend biome, float ruggedness,
+                                      float temperature, float highlands, float wetland,
+                                      int worldX, int worldZ, int biomeType) {
         float desertW = biome.weight(BiomeDefinition.DESERT);
         float tundraW = biome.weight(BiomeDefinition.TUNDRA);
         float forestW = biome.weight(BiomeDefinition.FOREST);
@@ -992,6 +1000,48 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         return Block.GRASS;
     }
 
+    /**
+     * Sparse exposed patches break up otherwise uniform biome interiors while
+     * remaining a pure function of absolute coordinates. Patches are limited
+     * to compatible ground types so snow, water, and wetland silhouettes stay
+     * unchanged.
+     */
+    static int earthSurfacePatch(int base, int biomeType, float ruggedness,
+                                 float wetland, int worldX, int worldZ) {
+        if (base != Block.GRASS && base != Block.DIRT && base != Block.SAND
+                && base != Block.RED_SAND && base != Block.MUD && base != Block.CLAY) {
+            return base;
+        }
+        // A second, smaller field keeps biome interiors from reading as one
+        // uninterrupted material sheet while remaining coherent at chunk edges.
+        float patch = sample01(worldX, worldZ, 17.0, 587, -941);
+        int roll = hash(worldX, worldZ, biomeType, 1207) % 100;
+        if (biomeType == EarthBiome.HOT_DESERT) {
+            return patch > 0.62f && roll < 38 ? Block.SANDSTONE : base;
+        }
+        if (biomeType == EarthBiome.WETLAND) {
+            return patch > 0.58f && roll < 34 ? Block.PEAT : base;
+        }
+        if (biomeType == EarthBiome.TUNDRA || biomeType == EarthBiome.BOREAL_FOREST) {
+            return patch > 0.70f && roll < 26 ? Block.GRAVEL : base;
+        }
+        if (biomeType == EarthBiome.SAVANNA || biomeType == EarthBiome.SHRUBLAND) {
+            return patch > 0.58f && roll < (28 + (int) (ruggedness * 24f))
+                    ? Block.RED_CLAY : base;
+        }
+        if (biomeType == EarthBiome.ALPINE) {
+            return patch > 0.56f && roll < (28 + (int) (ruggedness * 30f))
+                    ? Block.STONE : base;
+        }
+        if (biomeType == EarthBiome.TEMPERATE_FOREST
+                || biomeType == EarthBiome.TROPICAL_RAINFOREST) {
+            return patch > 0.68f && roll < 24 && wetland < 0.60f
+                    ? Block.PEAT : base;
+        }
+        return patch > 0.62f && roll < (22 + (int) (ruggedness * 20f))
+                ? Block.LIMESTONE : base;
+    }
+
     private static int fillerTypeFor(int surface, BiomeBlend biome, int y, int height,
                                      int worldX, int worldZ, float wetland) {
         int depth = height - y;
@@ -1000,6 +1050,21 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         }
         if (surface == Block.RED_SAND) {
             return depth >= 3 ? Block.RED_SANDSTONE : Block.RED_SAND;
+        }
+        if (surface == Block.SANDSTONE) {
+            return depth >= 3 ? Block.SANDSTONE : Block.SAND;
+        }
+        if (surface == Block.GRAVEL) {
+            return depth >= 3 ? Block.STONE : Block.GRAVEL;
+        }
+        if (surface == Block.PEAT) {
+            return depth >= 3 ? Block.DIRT : Block.PEAT;
+        }
+        if (surface == Block.LIMESTONE) {
+            return depth >= 3 ? Block.STONE : Block.LIMESTONE;
+        }
+        if (surface == Block.RED_CLAY) {
+            return depth >= 3 ? Block.DIRT : Block.RED_CLAY;
         }
         if (surface == Block.CLAY) {
             return Block.CLAY;
@@ -1018,6 +1083,9 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         }
         if (surface == Block.STONE) {
             return Block.ANDESITE;
+        }
+        if (surface == Block.MOSSY_COBBLESTONE) {
+            return depth >= 3 ? Block.STONE : Block.MOSSY_COBBLESTONE;
         }
         // Damp, low columns can lay clay under shallow lake water.
         if (wetland > 0.48f || height <= SEA_LEVEL + 2) {
@@ -1072,7 +1140,8 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                     continue;
                 }
                 if (surface != Block.GRASS && surface != Block.CLAY && surface != Block.SNOW
-                        && surface != Block.DIRT && surface != Block.MUD && surface != Block.SLUSH) {
+                        && surface != Block.DIRT && surface != Block.MUD && surface != Block.SLUSH
+                        && surface != Block.PEAT && surface != Block.RED_CLAY) {
                     continue;
                 }
                 if (data[x][y + 1][z] != Block.AIR) {
@@ -1097,8 +1166,11 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                     continue;
                 }
                 int h = hash(wx, wz, y, 911);
+                float flowerCluster = sample01(wx, wz, 58.0, -283, 719);
 
-                float plantChance = 0.05f + forestW * 0.22f + grassyW * 0.16f + wet * 0.22f;
+                float foliagePatch = sample01(wx, wz, 19.0, 143, -557);
+                float plantChance = 0.18f + forestW * 0.46f + grassyW * 0.42f + wet * 0.38f;
+                plantChance *= lerp(0.62f, 1.55f, foliagePatch);
                 // Ground cover follows the dithered biome, so a contested column
                 // is not still suppressed by the climate weights around it.
                 plantChance = lerp(plantChance, Math.max(plantChance, 0.16f), border);
@@ -1118,34 +1190,95 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                 int type;
                 int pick = (h >>> 16) & 0xFF;
                 switch (biomeType) {
-                    case EarthBiome.TUNDRA -> type = pick < 86 ? Block.BROWN_GRASS : (pick < 96 ? Block.MUSHROOM : Block.TALL_GRASS);
-                    case EarthBiome.BOREAL_FOREST -> type = pick < 72 ? Block.BROWN_GRASS : (pick < 92 ? Block.MUSHROOM : Block.TALL_GRASS);
-                    case EarthBiome.SAVANNA -> type = pick < 80 ? Block.BROWN_GRASS : (pick < 94 ? Block.TALL_GRASS : Block.FLOWER);
-                    case EarthBiome.SHRUBLAND -> type = pick < 74 ? Block.BROWN_GRASS : (pick < 92 ? Block.MUSHROOM : Block.FLOWER);
-                    case EarthBiome.TROPICAL_RAINFOREST -> type = pick < 66 ? Block.TALL_GRASS : (pick < 86 ? Block.FLOWER : Block.MUSHROOM);
-                    case EarthBiome.WETLAND -> type = pick < 70 ? Block.TALL_GRASS : (pick < 82 ? Block.FLOWER : Block.MUSHROOM);
-                    case EarthBiome.ALPINE -> type = pick < 88 ? Block.BROWN_GRASS : Block.MUSHROOM;
+                    case EarthBiome.TUNDRA -> type = pick < 70 ? Block.BROWN_GRASS : (pick < 95 ? Block.FERN : Block.MUSHROOM);
+                    case EarthBiome.BOREAL_FOREST -> type = pick < 54 ? Block.FERN : (pick < 95 ? Block.BROWN_GRASS : Block.MUSHROOM);
+                    case EarthBiome.SAVANNA -> type = pick < 56 ? Block.REED_GRASS : (pick < 82 ? Block.BROWN_GRASS : Block.FLOWER);
+                    case EarthBiome.SHRUBLAND -> type = pick < 48 ? Block.REED_GRASS : (pick < 76 ? Block.BROWN_GRASS : Block.FLOWER);
+                    case EarthBiome.TROPICAL_RAINFOREST -> type = pick < 52 ? Block.FERN : (pick < 78 ? Block.TALL_GRASS : Block.FLOWER);
+                    case EarthBiome.WETLAND -> type = pick < 52 ? Block.REED_GRASS : (pick < 76 ? Block.FERN : Block.FLOWER);
+                    case EarthBiome.ALPINE -> type = pick < 62 ? Block.BROWN_GRASS : (pick < 95 ? Block.FERN : Block.MUSHROOM);
                     default -> {
                         if (wet > 0.62f) {
-                            type = pick < 74 ? Block.TALL_GRASS : (pick < 90 ? Block.FLOWER : Block.MUSHROOM);
+                            type = pick < 74 ? Block.TALL_GRASS : (pick < 95 ? Block.FLOWER : Block.MUSHROOM);
                         } else if (forestW > 0.58f) {
-                            type = pick < 62 ? Block.TALL_GRASS : (pick < 82 ? Block.FLOWER : Block.MUSHROOM);
+                            type = pick < 62 ? Block.TALL_GRASS : (pick < 95 ? Block.FLOWER : Block.MUSHROOM);
                         } else {
                             type = pick < 76 ? Block.TALL_GRASS : Block.FLOWER;
                         }
                     }
                 }
+                // Flowers occupy coherent meadows rather than appearing
+                // uniformly across every grassy column. Outside a meadow,
+                // keep the same candidate as a grass variant.
+                if (type == Block.FLOWER && flowerCluster < 0.63f) {
+                    type = grassVariantForBiome(biomeType, pick);
+                }
                 if (surface == Block.SNOW && type == Block.FLOWER) {
                     type = tundraW > 0.45f ? Block.BROWN_GRASS : Block.TALL_GRASS;
+                } else if (type == Block.FLOWER) {
+                    type = flowerTypeForBiome(biomeType, h);
+                }
+                // Red-clay patches are intentionally warm and high-contrast;
+                // keep bright green strands out of them so the ground patch
+                // remains readable instead of looking like a neon outline.
+                if (surface == Block.RED_CLAY
+                        && (type == Block.TALL_GRASS || type == Block.FERN || type == Block.REED_GRASS)) {
+                    type = Block.BROWN_GRASS;
                 }
 
                 data[x][y + 1][z] = type;
+                // A nearby companion makes foliage read as a natural patch
+                // rather than evenly scattered single voxels. The candidate
+                // stays inside the chunk's protected interior.
+                if (foliagePatch > 0.57f && (h & 7) == 0
+                        && (!isFlowerVariant(type) || flowerCluster > 0.67f)) {
+                    int dx = (h & 1) == 0 ? 1 : -1;
+                    int dz = (h & 2) == 0 ? 0 : (h & 4) == 0 ? 1 : -1;
+                    int nx = x + dx;
+                    int nz = z + dz;
+                    if (nx >= 2 && nx <= sizeX - 3 && nz >= 2 && nz <= sizeZ - 3) {
+                        int neighborY = heightMap[nx][nz];
+                        if (neighborY == y && data[nx][neighborY + 1][nz] == Block.AIR) {
+                            data[nx][neighborY + 1][nz] = type;
+                            highest = Math.max(highest, neighborY + 2);
+                        }
+                    }
+                }
                 if (y + 2 > highest) {
                     highest = y + 2;
                 }
             }
         }
         return highest;
+    }
+
+    private static int flowerTypeForBiome(int biomeType, int hash) {
+        int pick = (hash >>> 8) % 3;
+        if (biomeType == EarthBiome.TROPICAL_RAINFOREST || biomeType == EarthBiome.WETLAND) {
+            return pick == 0 ? Block.BLUE_FLOWER : (pick == 1 ? Block.PURPLE_FLOWER : Block.FLOWER);
+        }
+        if (biomeType == EarthBiome.SAVANNA || biomeType == EarthBiome.HOT_DESERT) {
+            return pick == 0 ? Block.RED_FLOWER : (pick == 1 ? Block.FLOWER : Block.BLUE_FLOWER);
+        }
+        return pick == 0 ? Block.FLOWER : (pick == 1 ? Block.RED_FLOWER : Block.PURPLE_FLOWER);
+    }
+
+    private static int grassVariantForBiome(int biomeType, int pick) {
+        if (biomeType == EarthBiome.WETLAND || biomeType == EarthBiome.TROPICAL_RAINFOREST) {
+            return pick < 92 ? Block.FERN : Block.REED_GRASS;
+        }
+        if (biomeType == EarthBiome.SAVANNA || biomeType == EarthBiome.SHRUBLAND) {
+            return pick < 62 ? Block.REED_GRASS : (pick < 88 ? Block.BROWN_GRASS : Block.TALL_GRASS);
+        }
+        if (biomeType == EarthBiome.TUNDRA || biomeType == EarthBiome.ALPINE) {
+            return pick < 58 ? Block.BROWN_GRASS : (pick < 88 ? Block.FERN : Block.TALL_GRASS);
+        }
+        return pick < 46 ? Block.TALL_GRASS : (pick < 78 ? Block.FERN : Block.BROWN_GRASS);
+    }
+
+    private static boolean isFlowerVariant(int type) {
+        return type == Block.FLOWER || type == Block.RED_FLOWER
+                || type == Block.PURPLE_FLOWER || type == Block.BLUE_FLOWER;
     }
 
     /**
@@ -1173,7 +1306,8 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                 if (data[x][y][z] != surface) {
                     continue;
                 }
-                if ((surface != Block.GRASS && surface != Block.DIRT && surface != Block.MUD)
+                if ((surface != Block.GRASS && surface != Block.DIRT && surface != Block.MUD
+                        && surface != Block.PEAT && surface != Block.RED_CLAY)
                         || y <= SEA_LEVEL + 1 || y >= sizeY - 10) {
                     continue;
                 }

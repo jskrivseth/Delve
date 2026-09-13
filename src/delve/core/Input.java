@@ -48,6 +48,7 @@ public class Input {
 
     private boolean leftMouseWasDown;
     private boolean rightMouseWasDown;
+    private boolean middleMouseWasDown;
 
     private long doubleTapWindowEnd;
 
@@ -319,6 +320,7 @@ public class Input {
     private void handleMouseButtons() {
         boolean left = glfwGetMouseButton(window.handle(), GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
         boolean right = glfwGetMouseButton(window.handle(), GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+        boolean middle = glfwGetMouseButton(window.handle(), GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS;
 
         if (left && !leftMouseWasDown) {
             World.BREAK_BLOCK_REQUESTED = true;
@@ -326,8 +328,12 @@ public class Input {
         if (right && !rightMouseWasDown) {
             World.PLACE_BLOCK_REQUESTED = true;
         }
+        if (middle && !middleMouseWasDown) {
+            World.PICK_BLOCK_REQUESTED = true;
+        }
         leftMouseWasDown = left;
         rightMouseWasDown = right;
+        middleMouseWasDown = middle;
     }
 
     private void handleToggles() {
