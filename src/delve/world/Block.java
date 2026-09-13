@@ -237,7 +237,7 @@ public class Block implements Serializable {
         {0, 11, 0, 11, 0, 11},       //18 red sandstone
         {6, 0, 6, 0, 6, 0},          //19 andesite
         {6, 1, 6, 1, 6, 1},          //20 diorite
-        {6, 2, 6, 2, 6, 2},          //21 granite
+        {1, 0, 1, 0, 1, 0},          //21 granite: opaque stone fallback
         {4, 2, 4, 2, 4, 2},          //22 mossy cobblestone
         {1, 2, 1, 2, 1, 2},          //23 deepslate
         {7, 2, 7, 2, 7, 2},          //24 tall grass
