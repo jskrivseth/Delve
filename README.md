@@ -81,9 +81,10 @@ window title reports the biome under the player.
 
 Terrain generation carves deterministic 3D-noise caves in absolute world
 coordinates, so tunnels continue cleanly across chunk seams. Bedrock is
-protected. A separate broad erosion field connects selected cave bodies to the
-surface with rough, funnel-shaped mouths that widen below the exposed lip;
-ordinary caves still taper beneath intact terrain.
+protected. Intersecting, domain-warped noise sheets form sparse winding
+passages rather than repeated open chambers. A low-frequency regional gate
+keeps surface entrances uncommon; selected passages connect to rough,
+funnel-shaped erosion mouths that widen below the exposed lip.
 
 ## Texture packs
 

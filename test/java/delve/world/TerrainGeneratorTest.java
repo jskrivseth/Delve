@@ -50,12 +50,12 @@ public class TerrainGeneratorTest {
     }
 
     @Test
-    public void entrancesAreWideAndFrequentEnoughToDiscover() {
+    public void hillsideEntrancesAreWideButNotContinuous() {
         PerlinNoiseGenerator.reseed(91423L);
         int entranceColumns = 0;
         int adjacentPairs = 0;
         boolean previous = false;
-        for (int x = -128; x < 128; x++) {
+        for (int x = -512; x < 512; x++) {
             boolean open = TerrainGenerator.isCave(x, 94, 0, 96);
             if (open) {
                 entranceColumns++;
@@ -65,8 +65,9 @@ public class TerrainGeneratorTest {
             }
             previous = open;
         }
-        assertTrue(entranceColumns >= 12, "Entrances should occur often enough along a hillside");
-        assertTrue(adjacentPairs >= 6, "Entrances should span multiple adjacent columns");
+        assertTrue(entranceColumns >= 4, "Entrances should remain discoverable");
+        assertTrue(entranceColumns <= 80, "Entrances should occupy less than eight percent of a hillside");
+        assertTrue(adjacentPairs >= 2, "Entrances should span multiple adjacent columns");
     }
 
     @Test
@@ -75,7 +76,7 @@ public class TerrainGeneratorTest {
         int breached = 0;
         int largestRun = 0;
         int run = 0;
-        for (int x = -256; x < 256; x++) {
+        for (int x = -1024; x < 1024; x++) {
             if (TerrainGenerator.isCave(x, 96, 0, 96)) {
                 breached++;
                 largestRun = Math.max(largestRun, ++run);
@@ -85,7 +86,33 @@ public class TerrainGeneratorTest {
                 run = 0;
             }
         }
-        assertTrue(breached >= 10, "Surface cave mouths should be discoverable");
+        assertTrue(breached >= 4, "Surface cave mouths should be discoverable");
+        assertTrue(breached <= 80, "Surface cave mouths should remain rare");
         assertTrue(largestRun >= 4, "Surface cave mouths should be several blocks wide");
+    }
+
+    @Test
+    public void undergroundCavesFormSparsePassagesInsteadOfOpenBlobs() {
+        PerlinNoiseGenerator.reseed(91423L);
+        int samples = 0;
+        int open = 0;
+        int connected = 0;
+        for (int x = -96; x < 96; x++) {
+            for (int z = -96; z < 96; z++) {
+                boolean current = TerrainGenerator.isCave(x, 48, z, 96);
+                samples++;
+                if (current) {
+                    open++;
+                    if (TerrainGenerator.isCave(x + 1, 48, z, 96)
+                            || TerrainGenerator.isCave(x, 48, z + 1, 96)) {
+                        connected++;
+                    }
+                }
+            }
+        }
+        double openRatio = open / (double) samples;
+        assertTrue(openRatio >= 0.005, "Tunnel field should produce traversable passages: " + openRatio);
+        assertTrue(openRatio <= 0.10, "Tunnel field should leave most underground rock intact: " + openRatio);
+        assertTrue(connected >= open * 0.70, "Tunnel voxels should form connected passages");
     }
 }
