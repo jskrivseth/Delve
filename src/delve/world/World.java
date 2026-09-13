@@ -89,6 +89,7 @@ public class World {
     private static final ArrayDeque<Long> waterQueue = new ArrayDeque<Long>();
     /** Water is intentionally much slower than the render loop. */
     public static int MAX_WATER_UPDATES = 12;
+    public static int MAX_WATER_DROP_DISTANCE = 8;
     public static long WATER_UPDATE_INTERVAL_NANOS = 180_000_000L;
     private static long nextWaterUpdateAtNanos;
     /*
@@ -286,7 +287,14 @@ public class World {
                 enqueueWaterUpdate(x, y, z + 1);
                 continue;
             }
-            boolean flowedDown = spreadWater(x, y - 1, z, level == 8 ? 7 : level);
+            boolean flowedDown = false;
+            int downwardLevel = level == 8 ? 7 : level;
+            for (int drop = 1; drop <= MAX_WATER_DROP_DISTANCE && y - drop >= 0; drop++) {
+                if (!spreadWater(x, y - drop, z, downwardLevel)) {
+                    break;
+                }
+                flowedDown = true;
+            }
             if (!flowedDown && level > 1) {
                 spreadWater(x - 1, y, z, level - 1);
                 spreadWater(x + 1, y, z, level - 1);
