@@ -85,7 +85,8 @@ public class Block implements Serializable {
         }
         if (type == DIRT || type == MUD || type == SAND || type == RED_SAND
                 || type == CLAY || type == GRAVEL || type == SANDSTONE
-                || type == RED_SANDSTONE) {
+                || type == RED_SANDSTONE || type == PEAT || type == LIMESTONE
+                || type == RED_CLAY) {
             return TINT_GROUND;
         }
         return TINT_NONE;
@@ -171,6 +172,12 @@ public class Block implements Serializable {
         new float[]{0.77f, 0.66f, 0.32f, 1.0f},
         //37 - Frost boulder
         new float[]{0.66f, 0.82f, 0.89f, 1.0f},
+        //38 - Peat
+        new float[]{0.20f, 0.15f, 0.10f, 1.0f},
+        //39 - Limestone
+        new float[]{0.72f, 0.70f, 0.61f, 1.0f},
+        //40 - Red clay
+        new float[]{0.62f, 0.25f, 0.16f, 1.0f},
     };
 
     public static final int AIR = 0, GRASS = 1, WATER = 2, SAND = 3, SNOW = 4,
@@ -182,6 +189,7 @@ public class Block implements Serializable {
             BROWN_GRASS = 27, MUD = 28, SLUSH = 29, BASALT = 30,
             SULFUR_STONE = 31, FROST_ICE = 32, THOLIN = 33, VOLCANIC_ASH = 34,
             BASALT_BOULDER = 35, SULFUR_BOULDER = 36, FROST_BOULDER = 37;
+    public static final int PEAT = 38, LIMESTONE = 39, RED_CLAY = 40;
 
     /** Human readable names, indexed by block type. */
     public static final String[] BLOCK_NAMES = {
@@ -191,7 +199,7 @@ public class Block implements Serializable {
         "Granite", "Mossy Cobblestone", "Deepslate", "Tall Grass", "Flower",
         "Mushroom", "Brown Grass", "Mud", "Slush", "Basalt", "Sulfur Stone",
         "Frost Ice", "Tholin", "Volcanic Ash", "Basalt Boulder",
-        "Sulfur Boulder", "Frost Boulder",
+        "Sulfur Boulder", "Frost Boulder", "Peat", "Limestone", "Red Clay",
     };
 
     /** Types a player may place, in block-picker order. */
@@ -201,7 +209,7 @@ public class Block implements Serializable {
         RED_SANDSTONE, ANDESITE, DIORITE, GRANITE, MOSSY_COBBLESTONE, DEEPSLATE,
         TALL_GRASS, FLOWER, MUSHROOM, BROWN_GRASS, MUD, SLUSH,
         BASALT, SULFUR_STONE, FROST_ICE, THOLIN, VOLCANIC_ASH,
-        BASALT_BOULDER, SULFUR_BOULDER, FROST_BOULDER,
+        BASALT_BOULDER, SULFUR_BOULDER, FROST_BOULDER, PEAT, LIMESTONE, RED_CLAY,
     };
 
     public static String nameOf(int type) {
@@ -254,6 +262,9 @@ public class Block implements Serializable {
         {15, 2, 15, 2, 15, 2},       //35 basalt boulder
         {15, 3, 15, 3, 15, 3},       //36 sulfur boulder
         {15, 5, 15, 5, 15, 5},       //37 frost boulder
+        {8, 8, 8, 8, 8, 8},          //38 peat
+        {9, 8, 9, 8, 9, 8},          //39 limestone
+        {10, 8, 10, 8, 10, 8},       //40 red clay
     };
 
     /** Atlas tiles per row/column, exposed so the HUD can slice block icons. */

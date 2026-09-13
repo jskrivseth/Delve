@@ -38,19 +38,19 @@ class BiomeSurfaceVariationTest {
     void biomePatchRulesProduceVisibleDifferences() {
         PerlinNoiseGenerator.reseed(91423L);
         boolean foundDesertRock = false;
-        boolean foundForestStone = false;
-        for (int x = -256; x < 256 && (!foundDesertRock || !foundForestStone); x++) {
-            for (int z = -256; z < 256 && (!foundDesertRock || !foundForestStone); z++) {
+        boolean foundForestPeat = false;
+        for (int x = -256; x < 256 && (!foundDesertRock || !foundForestPeat); x++) {
+            for (int z = -256; z < 256 && (!foundDesertRock || !foundForestPeat); z++) {
                 int desert = WorldChunk.earthSurfacePatch(
                         Block.SAND, EarthBiome.HOT_DESERT, 0.55f, 0.05f, x, z);
                 int forest = WorldChunk.earthSurfacePatch(
                         Block.GRASS, EarthBiome.TEMPERATE_FOREST, 0.55f, 0.20f, x, z);
                 foundDesertRock |= desert == Block.SANDSTONE;
-                foundForestStone |= forest == Block.MOSSY_COBBLESTONE;
+                foundForestPeat |= forest == Block.PEAT;
             }
         }
 
         assertNotEquals(false, foundDesertRock);
-        assertNotEquals(false, foundForestStone);
+        assertNotEquals(false, foundForestPeat);
     }
 }

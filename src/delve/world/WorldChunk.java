@@ -1020,14 +1020,14 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             return patch > 0.62f && roll < 38 ? Block.SANDSTONE : base;
         }
         if (biomeType == EarthBiome.WETLAND) {
-            return patch > 0.68f && roll < 28 ? Block.GRAVEL : base;
+            return patch > 0.58f && roll < 34 ? Block.PEAT : base;
         }
         if (biomeType == EarthBiome.TUNDRA || biomeType == EarthBiome.BOREAL_FOREST) {
             return patch > 0.70f && roll < 26 ? Block.GRAVEL : base;
         }
         if (biomeType == EarthBiome.SAVANNA || biomeType == EarthBiome.SHRUBLAND) {
             return patch > 0.58f && roll < (28 + (int) (ruggedness * 24f))
-                    ? Block.GRAVEL : base;
+                    ? Block.RED_CLAY : base;
         }
         if (biomeType == EarthBiome.ALPINE) {
             return patch > 0.56f && roll < (28 + (int) (ruggedness * 30f))
@@ -1036,10 +1036,10 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         if (biomeType == EarthBiome.TEMPERATE_FOREST
                 || biomeType == EarthBiome.TROPICAL_RAINFOREST) {
             return patch > 0.68f && roll < 24 && wetland < 0.60f
-                    ? Block.MOSSY_COBBLESTONE : base;
+                    ? Block.PEAT : base;
         }
         return patch > 0.62f && roll < (22 + (int) (ruggedness * 20f))
-                ? Block.GRAVEL : base;
+                ? Block.LIMESTONE : base;
     }
 
     private static int fillerTypeFor(int surface, BiomeBlend biome, int y, int height,
@@ -1056,6 +1056,15 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         }
         if (surface == Block.GRAVEL) {
             return depth >= 3 ? Block.STONE : Block.GRAVEL;
+        }
+        if (surface == Block.PEAT) {
+            return depth >= 3 ? Block.DIRT : Block.PEAT;
+        }
+        if (surface == Block.LIMESTONE) {
+            return depth >= 3 ? Block.STONE : Block.LIMESTONE;
+        }
+        if (surface == Block.RED_CLAY) {
+            return depth >= 3 ? Block.DIRT : Block.RED_CLAY;
         }
         if (surface == Block.CLAY) {
             return Block.CLAY;
@@ -1131,7 +1140,8 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                     continue;
                 }
                 if (surface != Block.GRASS && surface != Block.CLAY && surface != Block.SNOW
-                        && surface != Block.DIRT && surface != Block.MUD && surface != Block.SLUSH) {
+                        && surface != Block.DIRT && surface != Block.MUD && surface != Block.SLUSH
+                        && surface != Block.PEAT && surface != Block.RED_CLAY) {
                     continue;
                 }
                 if (data[x][y + 1][z] != Block.AIR) {
@@ -1232,7 +1242,8 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                 if (data[x][y][z] != surface) {
                     continue;
                 }
-                if ((surface != Block.GRASS && surface != Block.DIRT && surface != Block.MUD)
+                if ((surface != Block.GRASS && surface != Block.DIRT && surface != Block.MUD
+                        && surface != Block.PEAT && surface != Block.RED_CLAY)
                         || y <= SEA_LEVEL + 1 || y >= sizeY - 10) {
                     continue;
                 }
