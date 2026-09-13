@@ -30,7 +30,7 @@ import java.awt.image.BufferedImage;
 
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ConcurrentLinkedDeque;
 
 import java.util.*;
 import java.io.*;
@@ -92,8 +92,8 @@ public class World {
      * A concurrent queue prevents those legitimate publish-time additions from
      * corrupting ArrayDeque's internal state.
      */
-    private static final ConcurrentLinkedQueue<Long> waterQueue =
-            new ConcurrentLinkedQueue<Long>();
+    private static final ConcurrentLinkedDeque<Long> waterQueue =
+            new ConcurrentLinkedDeque<Long>();
     /**
      * Wavefront of cells to reclaim after water was removed. Kept separate from
      * {@link #waterQueue} because it answers a different question: not "where
@@ -271,7 +271,18 @@ public class World {
 
     public static void enqueueWaterUpdate(int x, int y, int z) {
         if (y >= 0 && y < WorldChunk.sizeY) {
-            waterQueue.add(waterKey(x, y, z));
+            waterQueue.addLast(waterKey(x, y, z));
+        }
+    }
+
+    /**
+     * Player edits must not wait behind terrain-water settling queued by chunk
+     * generation. The update itself still fans out through the regular FIFO,
+     * preserving deterministic simulation order after the immediate response.
+     */
+    public static void enqueueWaterUpdateImmediate(int x, int y, int z) {
+        if (y >= 0 && y < WorldChunk.sizeY) {
+            waterQueue.addFirst(waterKey(x, y, z));
         }
     }
 
@@ -379,7 +390,7 @@ public class World {
         processWaterDrains(MAX_WATER_DRAINS);
         int processed = 0;
         while (processed++ < budget && !waterQueue.isEmpty()) {
-            long key = waterQueue.remove();
+            long key = waterQueue.removeFirst();
             int x = waterX(key), y = waterY(key), z = waterZ(key);
                 WorldChunk source = getChunk(Math.floorDiv(x, WorldChunk.sizeX),
                         Math.floorDiv(z, WorldChunk.sizeZ));

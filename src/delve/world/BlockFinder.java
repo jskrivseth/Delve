@@ -54,7 +54,7 @@ public class BlockFinder {
                     }
                     invalidateSeam(chunkX, chunkZ, localX, localZ);
                     if (type == Block.WATER) {
-                        World.enqueueWaterUpdate(x, y, z);
+                        World.enqueueWaterUpdateImmediate(x, y, z);
                         World.processWaterUpdates(World.MAX_WATER_DROP_DISTANCE + 1);
                     } else if (wasWater) {
                         enqueueWaterNeighborhood(x, y, z);
@@ -148,7 +148,8 @@ public class BlockFinder {
                     int localZ = z;
                     invalidateSeam(chunkX, chunkZ, localX, localZ);
                     if (type == Block.WATER) {
-                        World.enqueueWaterUpdate(chunk.worldPosX + x, y, chunk.worldPosY + z);
+                        World.enqueueWaterUpdateImmediate(
+                                chunk.worldPosX + x, y, chunk.worldPosY + z);
                         World.processWaterUpdates(World.MAX_WATER_DROP_DISTANCE + 1);
                     } else if (wasWater) {
                         enqueueWaterNeighborhood(chunk.worldPosX + x, y, chunk.worldPosY + z);

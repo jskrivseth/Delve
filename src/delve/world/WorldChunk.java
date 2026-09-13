@@ -499,8 +499,10 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                     if (waterLevels[blockIndex(x, y, z)] != 1) {
                         continue;
                     }
+                    boolean surface = y + 1 >= sizeY
+                            || waterLevels[blockIndex(x, y + 1, z)] == 0;
                     if (isWaterReplaceableAt(x, y - 1, z)
-                            || isGeneratedWaterLedge(x, y, z)) {
+                            || (surface && isGeneratedWaterLedge(x, y, z))) {
                         World.enqueueWaterUpdate(worldPosX + x, y, worldPosY + z);
                     }
                 }

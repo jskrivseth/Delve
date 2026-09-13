@@ -41,6 +41,22 @@ class WaterSimulationTest {
     }
 
     @Test
+    void placedSourceRunsBeforeTerrainWaterBacklog() {
+        WorldChunk chunk = chunk(0, 0);
+        chunk.blocks[WorldChunk.blockIndex(4, 7, 4)] = (byte) Block.STONE;
+        chunk.setWaterLevel(4, 8, 4, 8);
+        for (int i = 0; i < 1000; i++) {
+            World.enqueueWaterUpdate(12, 12, 12);
+        }
+
+        World.enqueueWaterUpdateImmediate(4, 8, 4);
+        World.processWaterUpdates(1);
+
+        assertEquals(7, chunk.waterLevel(3, 8, 4),
+                "placed source was starved behind terrain-water settling");
+    }
+
+    @Test
     void verticalColumnDoesNotSpreadUntilItsBottomHitsTerrain() {
         WorldChunk chunk = chunk(0, 0);
         chunk.blocks[WorldChunk.blockIndex(4, 4, 4)] = (byte) Block.STONE;
