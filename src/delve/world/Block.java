@@ -813,6 +813,14 @@ public class Block implements Serializable {
                 r, g, b, ao, u0, u1, v0, v1, light, tint);
     }
 
+    /**
+     * One quad per plane, single winding. Chunks containing vegetation are
+     * drawn with face culling disabled, so a reversed duplicate would not add
+     * a visible back face; it would only draw the exact same pixels a second
+     * time under the pass's alpha blending, which showed up as z-fighting and
+     * uneven darkening wherever blades overlapped.
+     */
+
     private static void writePlantPlane(FloatBuffer buffer, IntBuffer indices,
                                         float cx, float baseY, float cz, float topY,
                                         float halfWidth, float angle, float leanX, float leanZ,
@@ -829,10 +837,6 @@ public class Block implements Serializable {
         putSpriteQuad(buffer, indices,
                 bx0, baseY, bz0, bx1, baseY, bz1,
                 tx1, topY, tz1, tx0, topY, tz0,
-                r, g, b, ao, u0, u1, v0, v1, light, 0f, 1f, 0f, tint);
-        putSpriteQuad(buffer, indices,
-                bx1, baseY, bz1, bx0, baseY, bz0,
-                tx0, topY, tz0, tx1, topY, tz1,
                 r, g, b, ao, u0, u1, v0, v1, light, 0f, 1f, 0f, tint);
     }
 

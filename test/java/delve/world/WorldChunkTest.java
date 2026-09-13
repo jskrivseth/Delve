@@ -90,6 +90,12 @@ public class WorldChunkTest {
         }
     }
 
+    /**
+     * Crossed sprite planes each contribute one single-winded quad; the
+     * reversed duplicate was removed because vegetation chunks render with
+     * culling off, and the coincident copy only double-blended (visible as
+     * z-fighting where blades overlapped).
+     */
     @Test
     public void testWriteCrossSpriteSharesCornersAcrossBothDiagonals() {
         FloatBuffer verts = org.lwjgl.BufferUtils.createFloatBuffer(4 * 6 * Block.FLOATS_PER_VERTEX);
@@ -97,7 +103,7 @@ public class WorldChunkTest {
 
         Block.writeCrossSprite(verts, inds, 1, 33, 2, Block.TALL_GRASS, OPEN_SKY);
 
-        assertEquals(4 * 4 * Block.FLOATS_PER_VERTEX, verts.position());
-        assertEquals(4 * Block.INDICES_PER_FACE, inds.position());
+        assertEquals(2 * 4 * Block.FLOATS_PER_VERTEX, verts.position());
+        assertEquals(2 * Block.INDICES_PER_FACE, inds.position());
     }
 }

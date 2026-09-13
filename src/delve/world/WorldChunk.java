@@ -2112,7 +2112,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                         if (type != 0) {
                             transparentBlocks |= Block.isTransparent(type);
                             if (Block.isSpritePlant(type)) {
-                                faceCount += 4; // two crossed quads, double sided
+                                faceCount += 2; // two crossed quads, cull-off doubles sides
                             } else if (Block.isMarchingRock(type)) {
                                 if (computeExposedFaces(voxels, i, j, k, EXPOSED_FACES) > 0) {
                                     faceCount += 8; // centered closed rock mesh (octahedron)
@@ -2172,7 +2172,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                         int type = voxels[blockIndex(i, j, k)] & 0xFF;
                         if (type != 0 && Block.isTranslucent(type)
                                 && computeExposedFaces(voxels, i, j, k, EXPOSED_FACES) > 0) {
-                            if (isGeneratedWaterSurface(i, j, k)) {
+                            if (isSlopedWaterSurface(i, j, k)) {
                                 fillWaterCornerHeights(i, j, k, waterTopHeights);
                                 Block.writeWaterCube(buffer, indices, i, j, k,
                                         EXPOSED_FACES, this, waterTopHeights);
@@ -2258,8 +2258,16 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         return count;
     }
 
-    private boolean isGeneratedWaterSurface(int x, int y, int z) {
-        return waterLevelAt(x, y, z) == 1 && waterLevelAt(x, y + 1, z) == 0;
+    private boolean isSlopedWaterSurface(int x, int y, int z) {
+        int level = waterLevelAt(x, y, z);
+        if (level == 0 || level == 8 || waterLevelAt(x, y + 1, z) > 0) {
+            return false;
+        }
+        if (level == 1) {
+            return true;
+        }
+        int below = blockTypeAt(x, y - 1, z);
+        return below != Block.WATER && !Block.isWaterReplaceable(below);
     }
 
     /**
@@ -2275,19 +2283,26 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     }
 
     float waterCornerHeight(int cornerX, int y, int cornerZ) {
-        int generatedSurfaces = 0;
+        float total = 0.0f;
         for (int dx = -1; dx <= 0; dx++) {
             for (int dz = -1; dz <= 0; dz++) {
-                int level = waterLevelAt(cornerX + dx, y, cornerZ + dz);
-                if (level > 1 && waterLevelAt(cornerX + dx, y + 1, cornerZ + dz) == 0) {
+                int x = cornerX + dx;
+                int z = cornerZ + dz;
+                int level = waterLevelAt(x, y, z);
+                if (level == 8 || (level > 0 && !isSlopedWaterSurface(x, y, z))) {
                     return 1.0f;
                 }
-                if (level == 1 && waterLevelAt(cornerX + dx, y + 1, cornerZ + dz) == 0) {
-                    generatedSurfaces++;
-                }
+                total += level == 0 ? 0.55f : waterSurfaceHeight(level);
             }
         }
-        return 0.55f + generatedSurfaces * 0.10f;
+        return total * 0.25f;
+    }
+
+    private static float waterSurfaceHeight(int level) {
+        if (level == 1) {
+            return 0.84f;
+        }
+        return 0.60f + (level - 2) * 0.06f;
     }
 
     private int waterLevelAt(int x, int y, int z) {
@@ -2301,6 +2316,21 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             return 0;
         }
         return chunk.waterLevel(
+                Math.floorMod(worldPosX + x, sizeX), y,
+                Math.floorMod(worldPosY + z, sizeZ));
+    }
+
+    private int blockTypeAt(int x, int y, int z) {
+        if (y < 0 || y >= sizeY) {
+            return Block.BEDROCK;
+        }
+        WorldChunk chunk = World.getChunk(
+                Math.floorDiv(worldPosX + x, sizeX),
+                Math.floorDiv(worldPosY + z, sizeZ));
+        if (chunk == null || !chunk.isGenerated) {
+            return Block.STONE;
+        }
+        return chunk.getBlock(
                 Math.floorMod(worldPosX + x, sizeX), y,
                 Math.floorMod(worldPosY + z, sizeZ));
     }

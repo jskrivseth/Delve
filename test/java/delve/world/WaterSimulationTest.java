@@ -132,6 +132,29 @@ class WaterSimulationTest {
         assertEquals(1.0f, chunk.waterCornerHeight(5, 6, 4));
     }
 
+    @Test
+    void propagatedWaterRestingOnTerrainAlsoSlopes() {
+        WorldChunk chunk = chunk(0, 0);
+        chunk.blocks[WorldChunk.blockIndex(4, 5, 4)] = (byte) Block.STONE;
+        chunk.blocks[WorldChunk.blockIndex(5, 5, 4)] = (byte) Block.STONE;
+        chunk.setWaterLevel(4, 6, 4, 7);
+        chunk.setWaterLevel(5, 6, 4, 6);
+
+        float sharedEdge = chunk.waterCornerHeight(5, 6, 4);
+
+        assertTrue(sharedEdge < 1.0f);
+        assertTrue(sharedEdge > 0.55f);
+    }
+
+    @Test
+    void verticalFlowColumnRemainsFullHeight() {
+        WorldChunk chunk = chunk(0, 0);
+        chunk.setWaterLevel(4, 7, 4, 7);
+        chunk.setWaterLevel(4, 6, 4, 7);
+
+        assertEquals(1.0f, chunk.waterCornerHeight(4, 7, 4));
+    }
+
     /**
      * Lakes are held by the bowl they fill, not by a source at the top. Once the
      * simulation looks at them they must settle rather than slowly evaporate.
