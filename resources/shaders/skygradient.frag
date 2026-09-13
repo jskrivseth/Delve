@@ -54,6 +54,11 @@ uniform float cloudTaaPhase;
 // toward the horizon, that a screen pixel spans many lattice cells of it.
 const float CLOUD_DETAIL_NEAR = 1600.0;
 const float CLOUD_DETAIL_FAR  = 4200.0;
+// Shallow rays can cross a very long cloud slab before the finite march cap.
+// Fade only that far end of the view ray so silhouettes dissolve into the
+// atmospheric horizon instead of ending at the cap as a flat band.
+const float HORIZON_FADE_DISTANCE_NEAR = 5200.0;
+const float HORIZON_FADE_DISTANCE_FAR  = 9000.0;
 
 /**
  * Coarse transmittance of a single layer along the sun direction, sampled
@@ -127,6 +132,13 @@ void marchLayer(vec3 dir, vec3 toSun, float baseH, float layerD,
     // multiplied down to near-nothing on the way out. Cap the ceiling by
     // horizonFade so that band gets proportionally fewer steps instead.
     float marchLen = t1 - t0;
+    // Keep nearby and steeply viewed clouds fully opaque. Only the portion of
+    // a shallow ray that is both long and already horizon-faded is attenuated;
+    // this is applied to density so transmittance, published cloud alpha, and
+    // the existing TAA accumulation all receive the same smooth result.
+    float distanceFade = smoothstep(HORIZON_FADE_DISTANCE_NEAR,
+                                    HORIZON_FADE_DISTANCE_FAR, marchLen);
+    float horizonVisibility = mix(1.0, distanceFade, 1.0 - horizonFade);
     float stepsCeil = max(float(steps), float(steps) * mix(0.30, 5.0, horizonFade));
     int   nSteps   = int(clamp(marchLen / 12.0, float(steps), stepsCeil));
     if (ablated(AB_STEPS)) nSteps = max(nSteps / 2, 2);
@@ -171,6 +183,7 @@ void marchLayer(vec3 dir, vec3 toSun, float baseH, float layerD,
         float lodFade = smoothstep(CLOUD_DETAIL_NEAR, CLOUD_DETAIL_FAR, t);
         float billowAO;
         float d = cloudDensity(pos, wind, evolv, regime, baseH, layerD, ec, lodFade, layerDetail, billowAO);
+        d *= horizonVisibility;
         if (d > 0.002) {
             float lightTrans = 1.0;
             if (doShadow) {
