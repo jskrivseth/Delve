@@ -37,6 +37,16 @@ uniform float cloudUnderglowScaleL1;
 uniform float cloudUnderglowScaleL2;
 uniform float cloudTranslucencyContrast;
 
+// TAA step reduction. While enabled the march spends cloudTaaFraction of its
+// step budget on a coarser geometric ladder spanning the same slab, and the
+// in-cell phase of the marching/position noise rotates through a golden
+// sequence every frame -- so what was static per-pixel error becomes noise
+// the renderer's cloudtaa.frag history averages away. Step optical depth
+// scales with dt, so the coarser ladder self-compensates its extinction.
+uniform bool  cloudTaaEnabled;
+uniform float cloudTaaFraction;
+uniform float cloudTaaPhase;
+
 // Distance along the ray, in world units, over which the visible march fades
 // out its 3D erosion detail (see cloudDensity's lodFade). Chosen so a cloud
 // passing close overhead keeps its cauliflower detail while the same detail
@@ -120,6 +130,12 @@ void marchLayer(vec3 dir, vec3 toSun, float baseH, float layerD,
     float stepsCeil = max(float(steps), float(steps) * mix(0.30, 5.0, horizonFade));
     int   nSteps   = int(clamp(marchLen / 12.0, float(steps), stepsCeil));
     if (ablated(AB_STEPS)) nSteps = max(nSteps / 2, 2);
+    // TAA trades steps for frames: the same slab is spanned by a coarser
+    // ladder (growth/dt below re-solve for the reduced count, so the march
+    // still reaches t1 and each step's optical depth grows with its dt).
+    if (cloudTaaEnabled) {
+        nSteps = max(2, int(round(float(nSteps) * cloudTaaFraction)));
+    }
     float growth   = pow(4.0, 1.0 / max(float(nSteps), 1.0));
     float dt       = marchLen * (growth - 1.0) / (pow(growth, float(nSteps)) - 1.0);
 
@@ -128,7 +144,11 @@ void marchLayer(vec3 dir, vec3 toSun, float baseH, float layerD,
     // low-discrepancy, so neighbouring pixels differ enough to break banding
     // without either artefact.
     float ign = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
-    float t = t0 + dt * ign;
+    // Rotating the in-cell phase by the frame's golden-sequence offset is what
+    // makes the reduced-step error decorrelate over frames; the spatial IGN
+    // distribution underneath is unchanged, so a single frame looks as noisy
+    // as today and a few accumulated frames look smoother than today.
+    float t = t0 + dt * (cloudTaaEnabled ? fract(ign + cloudTaaPhase) : ign);
 
     float sigma = mix(0.055, 0.140, cloudOpacity) * sigmaScale;
     if (atmospherePreset == 2) sigma *= 1.8;
@@ -144,7 +164,8 @@ void marchLayer(vec3 dir, vec3 toSun, float baseH, float layerD,
     for (int i = 0; i < nSteps; i++) {
         if (t >= t1) break;
         float stepNoise = fract(52.9829189 * fract(dot(
-                gl_FragCoord.xy + vec2(float(i) * 19.73, float(i) * 7.31),
+                gl_FragCoord.xy + vec2(float(i) * 19.73, float(i) * 7.31)
+                        + (cloudTaaEnabled ? vec2(cloudTaaPhase * 289.7, cloudTaaPhase * 131.7) : vec2(0.0)),
                 vec2(0.06711056, 0.00583715))));
         vec3 pos = cameraWorldPos + dir * (t + (stepNoise - 0.5) * dt * 0.85);
         float lodFade = smoothstep(CLOUD_DETAIL_NEAR, CLOUD_DETAIL_FAR, t);

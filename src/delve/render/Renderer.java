@@ -45,6 +45,7 @@ public class Renderer {
     private static ShaderProgram skyGradientShader;
     private static ShaderProgram godRayShader;
     private static ShaderProgram compositeShader;
+    private static ShaderProgram cloudTaaShader;
     private static int skyVao;
     private static int skyVbo;
     private static int fullscreenVao;
@@ -52,6 +53,25 @@ public class Renderer {
     private static Framebuffer sceneBuffer;
     private static Framebuffer skyBuffer;
     private static Framebuffer raysBuffer;
+
+    /*
+     * TAA step reduction for the cloud march (Game.OPT_CLOUD_TAA):
+     * taaCur holds this frame's reduced-step float sky, taaHist a ping-pong
+     * pair of accumulation histories (only one is read and the *other*
+     * written each frame), all at sky-buffer resolution.
+     */
+    private static Framebuffer taaCur;
+    private static final Framebuffer[] taaHist = new Framebuffer[2];
+    private static int taaWrite;
+    private static int taaWidth = -1, taaHeight = -1;
+    private static boolean taaNeedsReset = true;
+    private static boolean prevTaaArmed;
+    private static int prevTaaPreset = -1;
+    private static long taaFrameIndex;
+    private static float taaMotion = 1.0f;
+    private static double prevCamX, prevCamY, prevCamZ;
+    private static double prevFx, prevFy, prevFz;
+    private static boolean prevCamKnown;
     private static final org.joml.Matrix4f invViewProjection = new org.joml.Matrix4f();
     private static final org.joml.Vector4f screenPosScratch = new org.joml.Vector4f();
 
@@ -163,6 +183,7 @@ public class Renderer {
         hudShader = new ShaderProgram("/shaders/hud.vert", "/shaders/hud.frag");
         skyShader = new ShaderProgram("/shaders/sky.vert", "/shaders/sky.frag");
         skyGradientShader = new ShaderProgram("/shaders/skygradient.vert", "/shaders/skygradient.frag");
+        cloudTaaShader = new ShaderProgram("/shaders/post.vert", "/shaders/cloudtaa.frag");
         godRayShader = new ShaderProgram("/shaders/post.vert", "/shaders/godrays.frag");
         compositeShader = new ShaderProgram("/shaders/post.vert", "/shaders/composite.frag");
 
@@ -362,6 +383,41 @@ public class Renderer {
         // that its alpha channel survives as a cloud-occlusion source for the god
         // ray pass. Drawing straight into the scene buffer would let the terrain
         // and the additively blended celestial bodies overwrite that alpha.
+        // Timed spans: with TAA on, the SKY zone brackets exactly what it
+        // always did cost-wise for the march (the gradient/march into taaCur),
+        // and the accumulate pass -- plus the bookkeeping blits that only
+        // exist because it does -- owns CLOUD_TAA, so the two configurations'
+        // sky_ms figures compare apples to apples and nothing escapes the
+        // accounting total either way.
+        updateCloudTaaTargets(skyW, skyH);
+        if (taaCur != null) {
+            GpuProfiler.begin(GpuProfiler.Zone.SKY);
+            taaCur.bind();
+            glClearColor(skyR, skyG, skyB, 0.0f);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            drawSkyGradient();
+            GpuProfiler.end(GpuProfiler.Zone.SKY);
+
+            GpuProfiler.begin(GpuProfiler.Zone.CLOUD_TAA);
+            accumulateCloudTaa();
+            GpuProfiler.end(GpuProfiler.Zone.CLOUD_TAA);
+
+            sceneBuffer.bind();
+            glClearColor(skyR, skyG, skyB, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, skyBuffer.getFbo());
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, sceneBuffer.getFbo());
+            glBlitFramebuffer(0, 0, skyBuffer.getWidth(), skyBuffer.getHeight(),
+                    0, 0, screenWidth, screenHeight, GL_COLOR_BUFFER_BIT,
+                    skyDiv > 1 ? GL_LINEAR : GL_NEAREST);
+
+            glBindFramebuffer(GL_FRAMEBUFFER, sceneBuffer.getFbo());
+            glViewport(0, 0, screenWidth, screenHeight);
+            GpuProfiler.end(GpuProfiler.Zone.CLOUD_TAA);
+            return;
+        }
+
         GpuProfiler.begin(GpuProfiler.Zone.SKY);
         skyBuffer.bind();
         glClearColor(skyR, skyG, skyB, 0.0f);
@@ -381,6 +437,152 @@ public class Renderer {
         glBindFramebuffer(GL_FRAMEBUFFER, sceneBuffer.getFbo());
         glViewport(0, 0, screenWidth, screenHeight);
         GpuProfiler.end(GpuProfiler.Zone.SKY);
+    }
+
+    /**
+     * Creates, resizes or releases the TAA float targets. Any of those events
+     * -- and arming the feature itself, or switching atmosphere presets --
+     * invalidates whatever the history holds, so the next accumulate pass
+     * replaces it wholesale instead of trusting stale pixels.
+     */
+    private static void updateCloudTaaTargets(int w, int h) {
+        boolean wanted = Game.OPT_CLOUD_TAA && cloudsEnabled && Game.OPT_CLOUD_VOL_STEPS > 0;
+        if (!wanted) {
+            if (taaCur != null) {
+                taaCur.cleanup();
+                taaCur = null;
+            }
+            for (Framebuffer hist : taaHist) {
+                if (hist != null) {
+                    hist.cleanup();
+                }
+            }
+            taaHist[0] = null;
+            taaHist[1] = null;
+            prevTaaArmed = false;
+            return;
+        }
+        if (taaCur == null) {
+            taaCur = new Framebuffer(w, h, true);
+            taaHist[0] = new Framebuffer(w, h, true);
+            taaHist[1] = new Framebuffer(w, h, true);
+            taaWrite = 0;
+        } else {
+            taaCur.resize(w, h);
+            taaHist[0].resize(w, h);
+            taaHist[1].resize(w, h);
+        }
+        int preset = WorldPreset.clamp(World.WORLD_PRESET);
+        if (!prevTaaArmed || preset != prevTaaPreset || w != taaWidth || h != taaHeight) {
+            taaNeedsReset = true;
+        }
+        prevTaaArmed = true;
+        prevTaaPreset = preset;
+        taaWidth = w;
+        taaHeight = h;
+    }
+
+    /**
+     * Folds this frame's reduced-step sky (already marched into taaCur by the
+     * caller) into the ping-pong history and publishes the result into
+     * skyBuffer -- the same texture the rest of the pipeline already samples
+     * for its upscale blit and the god rays' cloud-occlusion alpha, so
+     * nothing downstream learns that temporal accumulation exists. See
+     * cloudtaa.frag for the clipping/blending scheme.
+     */
+    private static void accumulateCloudTaa() {
+        Framebuffer dst = taaHist[taaWrite];
+        Framebuffer src = taaHist[1 - taaWrite];
+        dst.bind();
+        boolean depthWasEnabled = glIsEnabled(GL_DEPTH_TEST);
+        glDisable(GL_DEPTH_TEST);
+        glDepthMask(false);
+        glDisable(GL_CULL_FACE);
+        glDisable(GL_BLEND);
+
+        cloudTaaShader.bind();
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, taaCur.getColorTexture());
+        cloudTaaShader.setInt("curTex", 0);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, src.getColorTexture());
+        cloudTaaShader.setInt("histTex", 1);
+        cloudTaaShader.setVector2f("texel", 1.0f / dst.getWidth(), 1.0f / dst.getHeight());
+        cloudTaaShader.setFloat("staticAlpha", Game.OPT_CLOUD_TAA_RESPONSE);
+        cloudTaaShader.setFloat("motion", taaMotion);
+        cloudTaaShader.setFloat("reset", taaNeedsReset ? 1.0f : 0.0f);
+
+        glBindVertexArray(fullscreenVao);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glBindVertexArray(0);
+
+        glActiveTexture(GL_TEXTURE0);
+        glEnable(GL_CULL_FACE);
+        glEnable(GL_BLEND);
+        glDepthMask(true);
+        if (depthWasEnabled) {
+            glEnable(GL_DEPTH_TEST);
+        }
+        ShaderProgram.unbind();
+
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, dst.getFbo());
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, skyBuffer.getFbo());
+        glBlitFramebuffer(0, 0, dst.getWidth(), dst.getHeight(),
+                0, 0, skyBuffer.getWidth(), skyBuffer.getHeight(),
+                GL_COLOR_BUFFER_BIT, GL_LINEAR);
+
+        taaWrite = 1 - taaWrite;
+        taaNeedsReset = false;
+        taaFrameIndex++;
+    }
+
+    /**
+     * Per-frame motion scalar in 0..1: rotation and translation velocities
+     * since the last sky frame, normalized against thresholds at which a
+     * screen-space history stops being trustworthy (a ~150 deg/s sweep or a
+     * ~300 blocks/s slide displaces cloud structure by a pixel or more per
+     * frame). The accumulate pass raises the history rejection toward 1 at
+     * that rate, which is how ghosting is bounded during strafe/climb.
+     */
+    private static float computeCloudTaaMotion(double cx, double cy, double cz) {
+        double fx = -view.m02(), fy = -view.m12(), fz = -view.m22();
+        double len = Math.sqrt(fx * fx + fy * fy + fz * fz);
+        if (len < 1e-6) {
+            prevCamKnown = false;
+            return 1.0f;
+        }
+        fx /= len;
+        fy /= len;
+        fz /= len;
+        float motion = 1.0f;
+        if (prevCamKnown) {
+            double ms = delve.core.FrameStats.frameMs();
+            double perSec = ms > 0.5 ? 1000.0 / ms : 60.0;
+            double dot = Math.max(-1.0, Math.min(1.0, prevFx * fx + prevFy * fy + prevFz * fz));
+            double rotPerSec = Math.acos(dot) * perSec;
+            double dx = cx - prevCamX, dy = cy - prevCamY, dz = cz - prevCamZ;
+            double distPerSec = Math.sqrt(dx * dx + dy * dy + dz * dz) * perSec;
+            motion = taaMotionScore(rotPerSec, distPerSec);
+        }
+        prevCamX = cx;
+        prevCamY = cy;
+        prevCamZ = cz;
+        prevFx = fx;
+        prevFy = fy;
+        prevFz = fz;
+        prevCamKnown = true;
+        return motion;
+    }
+
+    /**
+     * History-rejection score 0..1 for a frame's measured camera velocity.
+     * Pure so it can be unit tested against the thresholds the accumulation
+     * trusts: a sweep at ~150 deg/s or a slide at ~300 blocks/s displaces a
+     * cloud pixel between frames and must fully distrust the history; motion
+     * half that far must still leave the history meaningfully weighted.
+     */
+    static float taaMotionScore(double rotRadPerSec, double blocksPerSec) {
+        return (float) Math.min(1.0, Math.max(rotRadPerSec / 2.7, blocksPerSec / 300.0));
     }
 
     /** Paints the atmospheric gradient over the whole framebuffer. */
@@ -437,6 +639,12 @@ public class Renderer {
         skyGradientShader.setFloat("cloudUnderglowScaleL1", Game.OPT_CLOUD_UNDERGLOW_SCALE_L1);
         skyGradientShader.setFloat("cloudUnderglowScaleL2", Game.OPT_CLOUD_UNDERGLOW_SCALE_L2);
         skyGradientShader.setFloat("cloudTranslucencyContrast", Game.OPT_CLOUD_TRANSLUCENCY_CONTRAST);
+        boolean taaMarch = taaCur != null;
+        skyGradientShader.setBoolean("cloudTaaEnabled", taaMarch);
+        skyGradientShader.setFloat("cloudTaaFraction", Game.OPT_CLOUD_TAA_SAMPLES);
+        skyGradientShader.setFloat("cloudTaaPhase",
+                (float) ((taaFrameIndex * 0.6180339887498949) % 1.0));
+        taaMotion = computeCloudTaaMotion(camX, camY, camZ);
 
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, CloudNoise.texture2D());
@@ -1643,6 +1851,18 @@ public class Renderer {
         }
         if (compositeShader != null) {
             compositeShader.cleanup();
+        }
+        if (cloudTaaShader != null) {
+            cloudTaaShader.cleanup();
+        }
+        if (taaCur != null) {
+            taaCur.cleanup();
+        }
+        if (taaHist[0] != null) {
+            taaHist[0].cleanup();
+        }
+        if (taaHist[1] != null) {
+            taaHist[1].cleanup();
         }
         if (sceneBuffer != null) {
             sceneBuffer.cleanup();

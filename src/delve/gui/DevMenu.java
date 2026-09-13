@@ -129,6 +129,18 @@ public class DevMenu {
         addRelativeKnob("OPT_CHUNK_EDGE_FADE_FRACTION", "Chunk Edge Fade Width", 0.35f, 0.05f, 0.90f,
                 () -> Game.OPT_CHUNK_EDGE_FADE_FRACTION, v -> Game.OPT_CHUNK_EDGE_FADE_FRACTION = v);
 
+        rows.add(new Row("Cloud TAA",
+                () -> Game.OPT_CLOUD_TAA ? "On" : "Off",
+                () -> Game.OPT_CLOUD_TAA = !Game.OPT_CLOUD_TAA, null));
+        persisted.put("OPT_CLOUD_TAA", () -> Boolean.toString(Game.OPT_CLOUD_TAA));
+        addKnob("OPT_CLOUD_TAA_SAMPLES", "Cloud TAA Steps/Frame",
+                () -> Game.OPT_CLOUD_TAA_SAMPLES + "f",
+                () -> String.format("%.0f%%", Game.OPT_CLOUD_TAA_SAMPLES * 100f),
+                () -> Game.OPT_CLOUD_TAA_SAMPLES = clamp(Game.OPT_CLOUD_TAA_SAMPLES + 0.25f, 0.25f, 1.00f),
+                () -> Game.OPT_CLOUD_TAA_SAMPLES = clamp(Game.OPT_CLOUD_TAA_SAMPLES - 0.25f, 0.25f, 1.00f));
+        addRelativeKnob("OPT_CLOUD_TAA_RESPONSE", "Cloud TAA Response", 0.35f, 0.10f, 0.80f,
+                () -> Game.OPT_CLOUD_TAA_RESPONSE, v -> Game.OPT_CLOUD_TAA_RESPONSE = v);
+
         rows.add(new Row("Save to dev-tuning.properties", () -> saveStatus, this::save, null));
         rows.add(new Row("Close (F9)", () -> "", () -> Game.setDevMenuOpen(false), null));
     }
