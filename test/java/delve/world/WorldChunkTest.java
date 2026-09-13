@@ -100,4 +100,20 @@ public class WorldChunkTest {
         assertEquals(4 * 4 * Block.FLOATS_PER_VERTEX, verts.position());
         assertEquals(4 * Block.INDICES_PER_FACE, inds.position());
     }
+
+    @Test
+    public void testWaterMeshUsesPerCornerTopHeights() {
+        boolean[] topOnly = {false, false, true, false, false, false};
+        FloatBuffer verts = org.lwjgl.BufferUtils.createFloatBuffer(Block.FLOATS_PER_FACE);
+        IntBuffer inds = org.lwjgl.BufferUtils.createIntBuffer(Block.INDICES_PER_FACE);
+
+        Block.writeWaterCube(verts, inds, 1, 20, 2, topOnly, OPEN_SKY,
+                new float[]{0.45f, 0.95f, 0.55f, 1.0f});
+
+        verts.flip();
+        float firstY = verts.get(1);
+        float secondY = verts.get(Block.FLOATS_PER_VERTEX + 1);
+        assertEquals(21.0f, firstY, 0.0001f);
+        assertEquals(20.95f, secondY, 0.0001f);
+    }
 }
