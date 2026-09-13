@@ -14,6 +14,36 @@ import delve.core.Game;
  */
 public class TerrainGenerator {
 
+    static final int CAVE_MIN_Y = 8;
+    static final int CAVE_SURFACE_BUFFER = 4;
+    private static final double CAVE_BODY_SCALE_XZ = 34.0;
+    private static final double CAVE_BODY_SCALE_Y = 24.0;
+    private static final double CAVE_DETAIL_SCALE_XZ = 13.0;
+    private static final double CAVE_DETAIL_SCALE_Y = 10.0;
+
+    /**
+     * Tests a world-space cave voxel. Coordinates are absolute block
+     * coordinates, so the same sample is used on both sides of chunk seams.
+     * The surface buffer and minimum depth keep the surface silhouette and
+     * foundation intact; water and bedrock are filtered by the caller.
+     */
+    static boolean isCave(int worldX, int y, int worldZ, int surfaceY) {
+        if (y <= CAVE_MIN_Y || y >= surfaceY - CAVE_SURFACE_BUFFER) {
+            return false;
+        }
+        double body = Math.abs(PerlinNoiseGenerator.getNoise(
+                worldX / CAVE_BODY_SCALE_XZ,
+                y / CAVE_BODY_SCALE_Y,
+                worldZ / CAVE_BODY_SCALE_XZ));
+        double detail = Math.abs(PerlinNoiseGenerator.getNoise(
+                (worldX + 173) / CAVE_DETAIL_SCALE_XZ,
+                (y - 67) / CAVE_DETAIL_SCALE_Y,
+                (worldZ - 251) / CAVE_DETAIL_SCALE_XZ));
+        double depth = Math.min(1.0, Math.max(0.0, (surfaceY - y - CAVE_SURFACE_BUFFER) / 72.0));
+        double threshold = 0.16 + depth * 0.08;
+        return body * 0.72 + detail * 0.28 < threshold;
+    }
+
     static float[][] terrain;
     
     static float[][] generateWhiteNoise(int width, int height) {

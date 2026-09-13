@@ -413,6 +413,8 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             }
         }
 
+        carveCaves(data, heightMap);
+
         if (worldPreset == WorldPreset.EARTH) {
             highest = plantTrees(data, heightMap, surfaceMap, biomeTypeMap, biomeBorderMap, tundraWeightMap, desertWeightMap, forestWeightMap, grassyWeightMap, ruggednessMap, wetlandMap, highest);
             highest = plantVegetation(data, heightMap, surfaceMap, biomeTypeMap, biomeBorderMap, tundraWeightMap, desertWeightMap, forestWeightMap, grassyWeightMap, wetlandMap, highest);
@@ -425,6 +427,23 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
 
         this.isGenerated = true;
         this.isBuilt = false;
+    }
+
+    private void carveCaves(int[][][] data, int[][] heightMap) {
+        for (int x = 0; x < sizeX; x++) {
+            for (int z = 0; z < sizeZ; z++) {
+                int worldX = worldPosX + x;
+                int worldZ = worldPosY + z;
+                int surfaceY = heightMap[x][z];
+                for (int y = TerrainGenerator.CAVE_MIN_Y; y < surfaceY - TerrainGenerator.CAVE_SURFACE_BUFFER; y++) {
+                    int type = data[x][y][z];
+                    if (type != Block.AIR && type != Block.WATER && type != Block.BEDROCK
+                            && TerrainGenerator.isCave(worldX, y, worldZ, surfaceY)) {
+                        data[x][y][z] = Block.AIR;
+                    }
+                }
+            }
+        }
     }
 
     /** Sea level; columns below this are flooded with water. */
