@@ -65,6 +65,7 @@ public class Renderer {
     private static int taaWrite;
     private static int taaWidth = -1, taaHeight = -1;
     private static boolean taaNeedsReset = true;
+    private static boolean taaUnsupportedWarned;
     private static boolean prevTaaArmed;
     private static int prevTaaPreset = -1;
     private static long taaFrameIndex;
@@ -400,7 +401,6 @@ public class Renderer {
 
             GpuProfiler.begin(GpuProfiler.Zone.CLOUD_TAA);
             accumulateCloudTaa();
-            GpuProfiler.end(GpuProfiler.Zone.CLOUD_TAA);
 
             sceneBuffer.bind();
             glClearColor(skyR, skyG, skyB, 1.0f);
@@ -471,6 +471,26 @@ public class Renderer {
             taaCur.resize(w, h);
             taaHist[0].resize(w, h);
             taaHist[1].resize(w, h);
+        }
+        // RGBA16F colour-renderability is only core from GL 4.0 / the
+        // EXT_color_buffer_float family. Rather than ship a black sky on an
+        // old or odd driver, verify the targets actually assembled and fall
+        // back to the untimed full-step path once, loudly, if they did not.
+        if (!(taaCur.isComplete() && taaHist[0].isComplete() && taaHist[1].isComplete())) {
+            if (!taaUnsupportedWarned) {
+                taaUnsupportedWarned = true;
+                System.err.println("[CloudTAA] driver cannot assemble RGBA16F targets; "
+                        + "temporal cloud step reduction disabled for this session.");
+            }
+            Game.OPT_CLOUD_TAA = false;
+            taaCur.cleanup();
+            taaCur = null;
+            taaHist[0].cleanup();
+            taaHist[1].cleanup();
+            taaHist[0] = null;
+            taaHist[1] = null;
+            prevTaaArmed = false;
+            return;
         }
         int preset = WorldPreset.clamp(World.WORLD_PRESET);
         if (!prevTaaArmed || preset != prevTaaPreset || w != taaWidth || h != taaHeight) {
