@@ -20,8 +20,12 @@ public class WorldChunkBufferBuilderThread implements Runnable {
     @Override
     public void run() {
         synchronized (chunkToProcess) {
-            chunkToProcess.buildMesh();
-            chunkToProcess.isRefreshing = false;
+            try {
+                chunkToProcess.buildMesh();
+            } finally {
+                chunkToProcess.isBuilding = false;
+                chunkToProcess.isRefreshing = false;
+            }
         }
     }
 }

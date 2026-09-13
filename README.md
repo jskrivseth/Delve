@@ -77,6 +77,14 @@ biomes are blended rather than stamped, so surface blocks, foliage and terrain
 shaping cross-fade over a margin instead of changing along a hard line. The
 window title reports the biome under the player.
 
+## Caves
+
+Terrain generation carves deterministic 3D-noise caves in absolute world
+coordinates, so tunnels continue cleanly across chunk seams. Bedrock and the
+surface voxel are protected; the cave field tapers through the final four
+underground blocks to create discoverable multi-block entrances without making
+the terrain surface generally porous.
+
 ## Texture packs
 
 Packs are loaded at runtime from `texturepacks/`, as either a directory or a

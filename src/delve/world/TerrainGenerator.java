@@ -40,12 +40,13 @@ public class TerrainGenerator {
                 (y - 67) / CAVE_DETAIL_SCALE_Y,
                 (worldZ - 251) / CAVE_DETAIL_SCALE_XZ));
         int depthBelowSurface = surfaceY - y;
-        // Most caves remain behind a four-block roof, but an unusually quiet
-        // noise pocket may open through the last few blocks. This makes rare
-        // entrances possible on hillsides without turning the surface porous.
+        // Taper the ordinary cave field through the last four underground
+        // blocks. The broad component dominates here so entrances form useful
+        // openings rather than isolated pinholes, while the surface voxel itself
+        // remains protected by the guard above.
         if (depthBelowSurface <= CAVE_SURFACE_BUFFER) {
-            double entranceThreshold = depthBelowSurface <= 2 ? 0.065 : 0.045;
-            return body * 0.72 + detail * 0.28 < entranceThreshold;
+            double entranceThreshold = depthBelowSurface <= 2 ? 0.13 : 0.12;
+            return body * 0.85 + detail * 0.15 < entranceThreshold;
         }
         double depth = Math.min(1.0, Math.max(0.0, (depthBelowSurface - CAVE_SURFACE_BUFFER) / 72.0));
         double threshold = 0.16 + depth * 0.08;

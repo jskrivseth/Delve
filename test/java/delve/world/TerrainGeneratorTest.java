@@ -20,8 +20,7 @@ public class TerrainGeneratorTest {
     public void cavePredicateProtectsSurfaceAndFoundation() {
         PerlinNoiseGenerator.reseed(91423L);
         assertFalse(TerrainGenerator.isCave(37, 8, -19, 96));
-        assertFalse(TerrainGenerator.isCave(37, 92, -19, 96));
-        assertFalse(TerrainGenerator.isCave(37, 95, -19, 96));
+        assertFalse(TerrainGenerator.isCave(37, 96, -19, 96));
     }
 
     @Test
@@ -48,5 +47,25 @@ public class TerrainGeneratorTest {
             }
         }
         assertTrue(found);
+    }
+
+    @Test
+    public void entrancesAreWideAndFrequentEnoughToDiscover() {
+        PerlinNoiseGenerator.reseed(91423L);
+        int entranceColumns = 0;
+        int adjacentPairs = 0;
+        boolean previous = false;
+        for (int x = -128; x < 128; x++) {
+            boolean open = TerrainGenerator.isCave(x, 94, 0, 96);
+            if (open) {
+                entranceColumns++;
+                if (previous) {
+                    adjacentPairs++;
+                }
+            }
+            previous = open;
+        }
+        assertTrue(entranceColumns >= 12, "Entrances should occur often enough along a hillside");
+        assertTrue(adjacentPairs >= 6, "Entrances should span multiple adjacent columns");
     }
 }

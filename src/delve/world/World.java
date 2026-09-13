@@ -408,6 +408,9 @@ public class World {
             }
 
             if (!thisChunk.isGenerated && !Game.MEMORY_BOUND && GEN_CHUNKS < World.MAX_CHUNKS_TO_GEN) {
+                // Reserve before enqueueing; otherwise a busy executor leaves
+                // the chunk looking idle and every frame submits another job.
+                thisChunk.isGenerating = true;
                 Runnable chunkBuilder = new WorldChunkLoadThread(thisChunk);
                 threadPool.execute(chunkBuilder);
                 GEN_CHUNKS++;
@@ -421,6 +424,7 @@ public class World {
                 //We can't know if the neighboring blocks are exposed until the neighbor is generated
                 if (innerRadius < outerRadius - 1) {
                     thisChunk.isRefreshing = true;
+                    thisChunk.isBuilding = true;
                     Runnable chunkBufferBuilder = new WorldChunkBufferBuilderThread(thisChunk);
                     threadPool.execute(chunkBufferBuilder);
                     BUILT_CHUNKS++;
@@ -472,12 +476,13 @@ public class World {
                     // sitting at the far draw-distance edge fade independently
                     // but consistently.
                     thisChunk.renderAlpha = edgeFade * thisChunk.lifecycleFadeAlpha();
-                    if (!thisChunk.vboIsStale) {
-                        thisChunk.render();
-                    } else if (VBO_CHUNKS < World.MAX_CHUNKS_TO_VBO) {
-                        thisChunk.render();
+                    if (thisChunk.hasPendingMesh() && VBO_CHUNKS < World.MAX_CHUNKS_TO_VBO) {
+                        thisChunk.uploadPendingMesh();
                         VBO_CHUNKS++;
                     }
+                    // Upload throttling must never throttle drawing an existing
+                    // GPU mesh: keep it visible until its replacement uploads.
+                    thisChunk.render();
                 }
                 thisChunk.selectedBlock = null;
             }
@@ -571,7 +576,9 @@ public class World {
 
     /**
      * Sky light by absolute world coordinates, for light bleeding across chunk
-     * borders. Unloaded chunks report full daylight so seams do not read as dark.
+     * borders. Only a published light field can seed a neighbour; treating
+     * missing/unlit terrain as daylight injects phantom light into sealed caves
+     * which is repeatedly removed as neighbouring chunks finish generation.
      */
     public static int skyLightGlobal(int worldX, int y, int worldZ) {
         if (y < 0) {
@@ -584,12 +591,12 @@ public class World {
                 Math.floorDiv(worldX, WorldChunk.sizeX),
                 Math.floorDiv(worldZ, WorldChunk.sizeZ));
         if (chunk == null || !chunk.isGenerated) {
-            return WorldChunk.MAX_LIGHT;
+            return 0;
         }
         int level = chunk.localLight(
                 Math.floorMod(worldX, WorldChunk.sizeX), y,
                 Math.floorMod(worldZ, WorldChunk.sizeZ));
-        return level < 0 ? WorldChunk.MAX_LIGHT : level;
+        return Math.max(0, level);
     }
 
     //Looks at the neigher of a block on the edge of a chunk
