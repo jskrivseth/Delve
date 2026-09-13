@@ -399,7 +399,11 @@ public class World {
             //continue;
         }
         if (thisChunk != null) {
-            if (thisChunk.isBuilding || thisChunk.isGenerating || thisChunk.isRefreshing) {
+            // A refresh builds a replacement mesh while the existing VBO remains
+            // valid. Hiding the chunk for isRefreshing creates visible holes as
+            // lighting invalidates neighbouring cave meshes during startup.
+            // Initial generation/builds still have no drawable VBO and wait.
+            if (thisChunk.isGenerating || (thisChunk.isBuilding && !thisChunk.isReady())) {
                 return;
             }
 
