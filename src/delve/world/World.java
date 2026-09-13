@@ -85,6 +85,8 @@ public class World {
     public static ArrayList<WorldChunk> chunks = new ArrayList<WorldChunk>();
     public static ArrayList<WorldChunk> destroyChunks = new ArrayList<WorldChunk>();
     public static ArrayList<WorldChunk> generateChunks = new ArrayList<WorldChunk>();
+    private static final ArrayDeque<Long> waterQueue = new ArrayDeque<Long>();
+    public static int MAX_WATER_UPDATES = 128;
     /*
      * State
      */
@@ -106,6 +108,7 @@ public class World {
         GEN_CHUNKS = 0;
         BUILT_CHUNKS = 0;
         VBO_CHUNKS = 0;
+        waterQueue.clear();
         SWEEPER_IS_SLEEPING = true;
         WAKE_SWEEPER = true;
         BREAK_BLOCK_REQUESTED = false;
@@ -217,7 +220,81 @@ public class World {
         GEN_CHUNKS = 0;
         VBO_CHUNKS = 0;
         serializeAndFreeInactiveChunks();
+        processWaterUpdates(MAX_WATER_UPDATES);
         pickSelectedBlock();
+    }
+
+    private static long waterKey(int x, int y, int z) {
+        return (((long) x & 0x1FFFFFL) << 43)
+                | (((long) y & 0x7FL) << 36)
+                | ((long) z & 0x1FFFFFL);
+    }
+
+    private static int waterX(long key) { return (int) (key >> 43); }
+    private static int waterY(long key) { return (int) ((key >> 36) & 0x7F); }
+    private static int waterZ(long key) {
+        return ((int) (key & 0x1FFFFFL) << 11) >> 11;
+    }
+
+    public static void enqueueWaterUpdate(int x, int y, int z) {
+        if (y >= 0 && y < WorldChunk.sizeY) {
+            waterQueue.addLast(waterKey(x, y, z));
+        }
+    }
+
+    public static void clearWaterUpdates() {
+        waterQueue.clear();
+    }
+
+    /** Runs a bounded, deterministic FIFO water pass; exposed for focused tests. */
+    public static int processWaterUpdates(int budget) {
+        int processed = 0;
+        while (processed++ < budget && !waterQueue.isEmpty()) {
+            long key = waterQueue.removeFirst();
+            int x = waterX(key), y = waterY(key), z = waterZ(key);
+                WorldChunk source = getChunk(Math.floorDiv(x, WorldChunk.sizeX),
+                        Math.floorDiv(z, WorldChunk.sizeZ));
+            if (source == null || !source.isGenerated || source.waterLevels == null) {
+                continue;
+            }
+            int lx = Math.floorMod(x, WorldChunk.sizeX), lz = Math.floorMod(z, WorldChunk.sizeZ);
+            int level = source.waterLevel(lx, y, lz);
+            if (level == 0) {
+                continue;
+            }
+            spreadWater(x, y - 1, z, level == 8 ? 7 : level);
+            if (level > 1) {
+                spreadWater(x - 1, y, z, level - 1);
+                spreadWater(x + 1, y, z, level - 1);
+                spreadWater(x, y, z - 1, level - 1);
+                spreadWater(x, y, z + 1, level - 1);
+            }
+        }
+        return Math.min(processed, budget);
+    }
+
+    private static void spreadWater(int x, int y, int z, int level) {
+        if (y < 0 || y >= WorldChunk.sizeY) return;
+        WorldChunk target = getChunk(Math.floorDiv(x, WorldChunk.sizeX),
+                Math.floorDiv(z, WorldChunk.sizeZ));
+        if (target == null || !target.isGenerated) return;
+        int lx = Math.floorMod(x, WorldChunk.sizeX), lz = Math.floorMod(z, WorldChunk.sizeZ);
+        int type = target.getBlock(lx, y, lz);
+        if (type != Block.AIR && type != Block.WATER) return;
+        int old = target.waterLevel(lx, y, lz);
+        if (old >= 8 || old >= level) return;
+        BLOCK_LOCK.writeLock().lock();
+        try {
+            if (target.setWaterLevel(lx, y, lz, level)) {
+                enqueueWaterUpdate(x, y, z);
+                enqueueWaterUpdate(x - 1, y, z);
+                enqueueWaterUpdate(x + 1, y, z);
+                enqueueWaterUpdate(x, y, z - 1);
+                enqueueWaterUpdate(x, y, z + 1);
+            }
+        } finally {
+            BLOCK_LOCK.writeLock().unlock();
+        }
     }
 
     private void pickSelectedBlock() {

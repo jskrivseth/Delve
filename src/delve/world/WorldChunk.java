@@ -111,6 +111,8 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
      * which cuts both resident memory and meshing's pointer chasing.
      */
     public volatile byte[] blocks;     //Contains all the blocks in this chunk
+    /** Water volume per voxel: 0 is dry, 1..7 is flowing, 8 is a source. */
+    public volatile byte[] waterLevels;
     public volatile int numVerts;
     /** Vertices in the leading opaque range; the remainder is translucent. */
     public volatile int opaqueVerts;
@@ -143,6 +145,24 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         return (long) (Game.OPT_CHUNK_FADE_DURATION_MS * 1_000_000.0);
     }
 
+    public int waterLevel(int x, int y, int z) {
+        return waterLevels[blockIndex(x, y, z)] & 0xFF;
+    }
+
+    public boolean setWaterLevel(int x, int y, int z, int level) {
+        int index = blockIndex(x, y, z);
+        int old = waterLevels[index] & 0xFF;
+        if (old == level) {
+            return false;
+        }
+        waterLevels[index] = (byte) level;
+        blocks[index] = (byte) (level == 0 ? Block.AIR : Block.WATER);
+        meshIsStale = true;
+        isModified = true;
+        noteBlockPlacedAt(y);
+        return true;
+    }
+
     private static long fadeInDurationNanos() {
         return (long) (Game.OPT_CHUNK_FADE_IN_DURATION_MS * 1_000_000.0);
     }
@@ -173,6 +193,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
 
     public WorldChunk(int x, int y) {
         blocks = new byte[sizeX * sizeY * sizeZ];
+        waterLevels = new byte[blocks.length];
         posX = x;
         posY = y;
         worldPosX = (int) posX * sizeX;
@@ -412,6 +433,16 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         }
 
         this.blocks = flatten(data);
+        this.waterLevels = new byte[blocks.length];
+        for (int x = 0; x < sizeX; x++) {
+            for (int y = 0; y < sizeY; y++) {
+                for (int z = 0; z < sizeZ; z++) {
+                    if (data[x][y][z] == Block.WATER) {
+                        waterLevels[blockIndex(x, y, z)] = (byte) (y == SEA_LEVEL ? 8 : 1);
+                    }
+                }
+            }
+        }
         this.maxHeight = Math.min(highest + 1, sizeY);
 
         this.isGenerated = true;
@@ -2299,7 +2330,8 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         // The save format predates flat storage; bridge back to the 3-D array.
         World.BLOCK_LOCK.readLock().lock();
         try {
-            return Serializer.serializeArray(expand(this.blocks), saveName());
+            return Serializer.serializeArray(expand(this.blocks), saveName())
+                    && Serializer.serializeBytes(this.waterLevels, saveName() + ".water");
         } finally {
             World.BLOCK_LOCK.readLock().unlock();
         }
@@ -2322,6 +2354,16 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             return false;
         }
         this.blocks = flatten(loaded);
+        byte[] savedWater = Serializer.deserializeBytes(saveName() + ".water");
+        this.waterLevels = savedWater != null && savedWater.length == blocks.length
+                ? savedWater : new byte[blocks.length];
+        if (savedWater == null) {
+            for (int i = 0; i < blocks.length; i++) {
+                if ((blocks[i] & 0xFF) == Block.WATER) {
+                    waterLevels[i] = 1;
+                }
+            }
+        }
         recomputeMaxHeight();
         return true;
     }
