@@ -215,4 +215,90 @@ class WaterSimulationTest {
 
         assertEquals(expected, second.waterLevel(3, 8, 4));
     }
+
+    /**
+     * Boundary continuity: two sloped level-1 cubes on opposite sides of a
+     * chunk edge must place the shared lattice corner at the same height, or
+     * their water meshes shear apart into a visible crack.
+     */
+    @Test
+    void adjacentChunksShareLatticeCornersAcrossTheEdge() {
+        WorldChunk left = chunk(0, 0);
+        WorldChunk right = chunk(1, 0);
+        left.setWaterLevel(WorldChunk.sizeX - 1, 6, 3, 1);
+        left.setWaterLevel(WorldChunk.sizeX - 1, 6, 4, 1);
+        right.setWaterLevel(0, 6, 3, 1);
+        right.setWaterLevel(0, 6, 4, 1);
+
+        float fromLeft = left.waterCornerHeight(WorldChunk.sizeX, 6, 4);
+        float fromRight = right.waterCornerHeight(0, 6, 4);
+
+        assertTrue(fromLeft > 0.0f, "shared corner collapsed to dry");
+        assertEquals(fromLeft, fromRight, 0.0001f);
+    }
+
+    /**
+     * Regression for the v0.8.0 crack: while the neighbour has not published
+     * its water yet, the corner its columns contribute to would collapse to
+     * a dry trough. Seam paving paves the unknown columns over with stable
+     * heights equal to what the corner will have once the neighbour is read.
+     */
+    @Test
+    void pavedCornersCoverAQuarterlyLoadedNeighbour() {
+        WorldChunk left = chunk(0, 0);
+        WorldChunk right = chunk(1, 0);
+        left.setWaterLevel(WorldChunk.sizeX - 1, 6, 3, 1);
+        left.setWaterLevel(WorldChunk.sizeX - 1, 6, 4, 1);
+        right.setWaterLevel(0, 6, 3, 1);
+        right.setWaterLevel(0, 6, 4, 1);
+        assertTrue(left.hasIncompleteNeighbor());
+
+        float withNeighbour = left.waterCornerHeight(WorldChunk.sizeX, 6, 4);
+
+        // The neighbour drops back to un-published state, as during streaming.
+        right.isGenerated = false;
+        left.seamPaved = false;
+        float unpaved = left.waterCornerHeight(WorldChunk.sizeX, 6, 4);
+        assertTrue(unpaved < withNeighbour,
+                "unpaved corner unexpectedly kept the full height (crack detector broke)");
+
+        left.seamPaved = true;
+        float paved = left.waterCornerHeight(WorldChunk.sizeX, 6, 4);
+        assertEquals(withNeighbour, paved, 0.0001f);
+        left.seamPaved = false;
+    }
+
+    /**
+     * Flow dropped at a seam while the neighbour was ungenerated used to stay
+     * dropped forever, leaving mismatched levels (and a mismatched corner) on
+     * the two sides. The publish-path boundary replay re-drives exactly that
+     * water across the edge; interior columns are untouched.
+     */
+    @Test
+    void boundaryReplayCarriesSeamWaterIntoALateNeighbour() {
+        WorldChunk left = chunk(0, 0);
+        WorldChunk late = new WorldChunk(1, 0);   // registered, still generating
+        World.registerChunk(late);
+        chunks.add(late);
+
+        left.blocks[WorldChunk.blockIndex(WorldChunk.sizeX - 2, 5, 4)] = (byte) Block.STONE;
+        left.blocks[WorldChunk.blockIndex(WorldChunk.sizeX - 1, 5, 4)] = (byte) Block.STONE;
+        left.setWaterLevel(WorldChunk.sizeX - 2, 6, 4, 8);
+        left.setWaterLevel(WorldChunk.sizeX - 1, 6, 4, 7);
+        World.enqueueWaterUpdate(WorldChunk.sizeX - 2, 6, 4);
+        World.enqueueWaterUpdate(WorldChunk.sizeX - 1, 6, 4);
+        World.processWaterUpdates(200);
+
+        assertEquals(0, late.waterLevel(0, 6, 4),
+                "seam water leaked into an ungenerated chunk");
+
+        late.blocks[WorldChunk.blockIndex(0, 5, 4)] = (byte) Block.STONE;
+        late.isGenerated = true;
+
+        left.replayBoundaryColumns();
+        World.processWaterUpdates(200);
+
+        assertTrue(late.waterLevel(0, 6, 4) > 0,
+                "boundary replay failed to carry seam water into the loaded neighbour");
+    }
 }

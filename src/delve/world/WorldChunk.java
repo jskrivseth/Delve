@@ -140,6 +140,20 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     private volatile int pendingOpaqueIndices;
     /** Counts produced by the worker before its atomic pending-mesh publish. */
     private volatile int pendingVerts;
+    /**
+     * Seam pavement is standing in for neighbour water this build could not
+     * read: some touching chunk is missing, ungenerated, still building, or
+     * holding a mesh it has not published yet. While set, the water corner
+     * sampler treats unreadable lattice columns as surface continuations
+     * instead of dry ground, and the build publishes only after scheduling a
+     * boundary replay so the simulation reconciles the seam. Same philosophy
+     * as World.isSolidGlobal counting unloaded chunks as solid "so seams do
+     * not flash bright": a stable approximation beats a visible crack.
+     */
+    transient volatile boolean seamPaved;
+    /** Bounds the post-publish rebuilds a paved seam may request. */
+    private transient volatile int seamPavedRetries;
+    private static final int MAX_SEAM_PAVED_MESH_RETRIES = 4;
     /*
      * Properties
      */
@@ -2082,6 +2096,13 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             Game.consoleMsg("Attempt to build a mesh for a chunk that is not generated.. ");
             return;
         }
+        // Decide seam paving before any corner height is sampled: a neighbour
+        // that is loaded but still building, or not loaded at all, cannot lend
+        // its water levels to the lattice corners this mesh will share with it.
+        this.seamPaved = hasIncompleteNeighbor();
+        if (!this.seamPaved) {
+            this.seamPavedRetries = 0;
+        }
         if (this.EXPOSED_FACES == null) {
             this.EXPOSED_FACES = new boolean[6];
         }
@@ -2131,6 +2152,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             this.containsTransparentBlocks = transparentBlocks;
 
             if (faceCount == 0) {
+                this.seamPaved = false;
                 this.pendingVerts = 0;
                 this.pendingIndices = 0;
                 this.pendingMesh = PendingMesh.EMPTY;
@@ -2189,6 +2211,14 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             this.pendingIndices = indices.position();
             buffer.flip();
             indices.flip();
+            if (this.seamPaved) {
+                // The corner heights above were paved over neighbours this
+                // build could not read. Queue the rim's water into the normal
+                // simulation so both sides of every edge reconcile; the
+                // staleness re-arm in uploadPendingMesh lets exact values bake
+                // once the neighbours catch up.
+                replayBoundaryColumns();
+            }
             this.pendingMesh = new PendingMesh(buffer, indices, pendingVerts,
                     pendingOpaqueVerts, pendingIndices, pendingOpaqueIndices);
         } finally {
@@ -2277,19 +2307,44 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     float waterCornerHeight(int cornerX, int y, int cornerZ) {
         int generatedSurfaces = 0;
         float flowingHeight = 0.0f;
+        boolean surfaceSeen = false;
+        int unknownColumns = 0;
         for (int dx = -1; dx <= 0; dx++) {
             for (int dz = -1; dz <= 0; dz++) {
-                int level = waterLevelAt(cornerX + dx, y, cornerZ + dz);
-                if (level == 8 && waterLevelAt(cornerX + dx, y + 1, cornerZ + dz) == 0) {
+                int cx = cornerX + dx;
+                int cz = cornerZ + dz;
+                int level = seamPaved
+                        ? waterLevelAtOrUnknown(cx, y, cz)
+                        : waterLevelAt(cx, y, cz);
+                if (level < 0) {
+                    unknownColumns++;
+                    continue;
+                }
+                if (waterLevelAt(cx, y + 1, cz) != 0) {
+                    continue;
+                }
+                if (level == 8) {
                     return 1.0f;
                 }
-                if (level == 1 && waterLevelAt(cornerX + dx, y + 1, cornerZ + dz) == 0) {
+                if (level == 1) {
+                    surfaceSeen = true;
                     generatedSurfaces++;
-                } else if (level > 1 && level < 8
-                        && waterLevelAt(cornerX + dx, y + 1, cornerZ + dz) == 0) {
+                } else if (level > 1 && level < 8) {
+                    surfaceSeen = true;
                     flowingHeight = Math.max(flowingHeight, waterSurfaceHeight(level));
                 }
             }
+        }
+        // Pavement: while a neighbour's water field is unreadable, its lattice
+        // columns count as generated-water continuations of this corner rather
+        // than as dry ground, whenever a readable column proves the corner is
+        // a water surface. Both sides of the seam then derive matching corner
+        // heights, and the boundary replay queued at publish settles the
+        // levels into the exact values. Without this, the chunk that builds
+        // first bakes a dry trough where its neighbour will bake a surface --
+        // the crack along the edge.
+        if (seamPaved && surfaceSeen) {
+            generatedSurfaces += unknownColumns;
         }
         float generatedHeight = generatedSurfaces == 0
                 ? 0.0f : 0.55f + generatedSurfaces * 0.10f;
@@ -2307,6 +2362,17 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     }
 
     private int waterLevelAt(int x, int y, int z) {
+        int level = waterLevelAtOrUnknown(x, y, z);
+        return level < 0 ? 0 : level;
+    }
+
+    /**
+     * Like {@link #waterLevelAt}, but separates "dry" from "cannot know":
+     * returns -1 when the column's owning chunk is absent or ungenerated and
+     * therefore has no published water to consult. Only the seam-paved corner
+     * sampler uses this; every other consumer keeps seeing plain levels.
+     */
+    private int waterLevelAtOrUnknown(int x, int y, int z) {
         if (y < 0 || y >= sizeY) {
             return 0;
         }
@@ -2314,11 +2380,76 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                 Math.floorDiv(worldPosX + x, sizeX),
                 Math.floorDiv(worldPosY + z, sizeZ));
         if (chunk == null || !chunk.isGenerated) {
-            return 0;
+            return -1;
         }
         return chunk.waterLevel(
                 Math.floorMod(worldPosX + x, sizeX), y,
                 Math.floorMod(worldPosY + z, sizeZ));
+    }
+
+    /**
+     * Whether any touching chunk's water may be unusably out of date for
+     * meshing this one: absent, ungenerated, still building, or holding a
+     * mesh it has not published yet. Includes diagonals, because the shared
+     * lattice corners at chunk tips sample their four columns across chunk
+     * corners too. Slots outside the world's chunk extent are complete.
+     */
+    boolean hasIncompleteNeighbor() {
+        for (int dx = -1; dx <= 1; dx++) {
+            int cx = posX + dx;
+            if (cx < 0 || cx >= World.sizeX) {
+                continue;
+            }
+            for (int dz = -1; dz <= 1; dz++) {
+                if (dx == 0 && dz == 0) {
+                    continue;
+                }
+                int cz = posY + dz;
+                if (cz < 0 || cz >= World.sizeY) {
+                    continue;
+                }
+                WorldChunk neighbor = World.getChunk(cx, cz);
+                if (neighbor == null || !neighbor.isGenerated
+                        || neighbor.isBuilding || neighbor.hasPendingMesh()) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Cross-edge reconciliation for water on the chunk's rim. Runs at publish
+     * time when a neighbour could not be read: every water-carrying boundary
+     * cell, and the cell it faces in the neighbouring column, is queued into
+     * the ordinary water simulation so propagation and drainage that were
+     * silently dropped while the neighbour was ungenerated re-drive across
+     * the seam. Dry rim cells enqueue nothing and interior columns are never
+     * re-propagated, keeping the pass cheap; micro-updates from settling beat
+     * a crack that lasts until the next manual rebuild.
+     */
+    void replayBoundaryColumns() {
+        int ceiling = Math.min(maxHeight, sizeY);
+        for (int x = 0; x < sizeX; x++) {
+            for (int y = 0; y < ceiling; y++) {
+                replayBoundaryCell(x, y, 0, 0, -1);
+                replayBoundaryCell(x, y, sizeZ - 1, 0, 1);
+            }
+        }
+        for (int z = 0; z < sizeZ; z++) {
+            for (int y = 0; y < ceiling; y++) {
+                replayBoundaryCell(0, y, z, -1, 0);
+                replayBoundaryCell(sizeX - 1, y, z, 1, 0);
+            }
+        }
+    }
+
+    private void replayBoundaryCell(int x, int y, int z, int outX, int outZ) {
+        if (waterLevels[blockIndex(x, y, z)] == 0) {
+            return;
+        }
+        World.enqueueWaterUpdate(worldPosX + x, y, worldPosY + z);
+        World.enqueueWaterUpdate(worldPosX + x + outX, y, worldPosY + z + outZ);
     }
 
     /**
@@ -2345,6 +2476,15 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         }
         this.pendingMesh = null;
         buildVBO(mesh);
+        if (mesh != PendingMesh.EMPTY && this.seamPaved
+                && this.seamPavedRetries < MAX_SEAM_PAVED_MESH_RETRIES) {
+            // Published on paved corners: ask for one more rebuild so exact
+            // heights bake once the neighbours publish. Bounded so a chunk
+            // permanently on the edge of the loaded region cannot rebuild in
+            // a loop; its paved mesh stands, replayed each publish.
+            this.seamPavedRetries++;
+            this.meshIsStale = true;
+        }
     }
 
     public void buildVBO() {
