@@ -1203,7 +1203,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                     continue;
                 }
 
-                int style = hash(worldPosX + x, y, worldPosY + z, 71) % 4;
+                int style = selectTreeArchetype(worldPosX + x, y, worldPosY + z);
                 int trunk = 4 + hash(worldPosX + x, y, worldPosY + z, 173) % 4; // 4..7
                 int crownR = 1 + hash(worldPosX + x, y, worldPosY + z, 241) % 2; // 1..2
                 highest = Math.max(highest, placeTree(data, x, y, z, trunk, crownR, style));
@@ -1266,30 +1266,50 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         return true;
     }
 
-    private static int placeTree(int[][][] data, int x, int groundY, int z,
-                                 int trunkHeight, int crownRadius, int style) {
+    static int selectTreeArchetype(int worldX, int groundY, int worldZ) {
+        return hash(worldX, groundY, worldZ, 71) % TreeArchetype.values().length;
+    }
+
+    enum TreeArchetype {
+        ROUND_CANOPY,
+        TAPERED_CONIFER,
+        UMBRELLA,
+        OPEN_BRANCHING,
+        COLUMNAR,
+        COMPACT
+    }
+
+    static int placeTree(int[][][] data, int x, int groundY, int z,
+                         int trunkHeight, int crownRadius, int style) {
+        TreeArchetype archetype = TreeArchetype.values()[Math.floorMod(style, TreeArchetype.values().length)];
         int topY = Math.min(sizeY - 2, groundY + trunkHeight);
         for (int y = groundY + 1; y <= topY; y++) {
-            data[x][y][z] = Block.WOOD;
+            if (isReplaceableTreeSpace(data[x][y][z])) {
+                data[x][y][z] = Block.WOOD;
+            }
         }
 
         int crownCenterY = Math.min(sizeY - 2, topY);
         int maxPlacedY = topY;
-        int lower = (style == 2) ? -2 : -1;
-        int upper = (style == 1) ? 2 : 1;
+        int lower = archetype == TreeArchetype.UMBRELLA ? -2 : -1;
+        int upper = archetype == TreeArchetype.TAPERED_CONIFER ? 2 : 1;
         for (int y = crownCenterY + lower; y <= crownCenterY + upper; y++) {
             if (y < 1 || y >= sizeY - 1) {
                 continue;
             }
             int r = crownRadius;
-            if (style == 0) {
+            if (archetype == TreeArchetype.ROUND_CANOPY) {
                 r = (y >= crownCenterY) ? Math.max(1, crownRadius - 1) : crownRadius;
-            } else if (style == 1) {
+            } else if (archetype == TreeArchetype.TAPERED_CONIFER) {
                 r = (y == crownCenterY + 2) ? 1 : crownRadius + 1;
-            } else if (style == 3) {
+            } else if (archetype == TreeArchetype.OPEN_BRANCHING) {
                 r = (y == crownCenterY + 1) ? 1 : crownRadius;
-            } else {
+            } else if (archetype == TreeArchetype.UMBRELLA) {
                 r = (y <= crownCenterY - 1) ? crownRadius + 1 : crownRadius;
+            } else if (archetype == TreeArchetype.COLUMNAR) {
+                r = 1;
+            } else {
+                r = y == crownCenterY ? 1 : Math.min(crownRadius, 1);
             }
             if (r < 1) {
                 r = 1;
@@ -1299,15 +1319,16 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                     if (Math.abs(dx) + Math.abs(dz) > r + 1) {
                         continue;
                     }
-                    if (style == 3 && ((hash(x + dx, y, z + dz, 99) % 100) < 28)) {
+                    if (archetype == TreeArchetype.OPEN_BRANCHING
+                            && ((hash(x + dx, y, z + dz, 99) % 100) < 28)) {
                         continue;
                     }
                     int px = x + dx;
                     int pz = z + dz;
-                    if (px < 0 || px >= sizeX || pz < 0 || pz >= sizeZ) {
+                    if (px <= 0 || px >= sizeX - 1 || pz <= 0 || pz >= sizeZ - 1) {
                         continue;
                     }
-                    if (data[px][y][pz] == Block.AIR || data[px][y][pz] == Block.LEAVES) {
+                    if (isReplaceableTreeSpace(data[px][y][pz])) {
                         data[px][y][pz] = Block.LEAVES;
                         if (y > maxPlacedY) {
                             maxPlacedY = y;
@@ -1321,15 +1342,19 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             maxPlacedY = Math.max(maxPlacedY, topY + 1);
         }
         // Occasional side branches for variety.
-        if (style == 1 || style == 2) {
+        if (archetype == TreeArchetype.TAPERED_CONIFER
+                || archetype == TreeArchetype.UMBRELLA
+                || archetype == TreeArchetype.OPEN_BRANCHING) {
             int by = groundY + 2 + hash(x, z, trunkHeight, 58) % Math.max(1, trunkHeight - 1);
             if (by < topY - 1) {
                 int dir = hash(x, z, groundY, 121) % 4;
                 int bx = x + (dir == 0 ? 1 : dir == 1 ? -1 : 0);
                 int bz = z + (dir == 2 ? 1 : dir == 3 ? -1 : 0);
                 if (bx > 0 && bx < sizeX - 1 && bz > 0 && bz < sizeZ - 1) {
-                    data[bx][by][bz] = Block.WOOD;
-                    if (data[bx][by + 1][bz] == Block.AIR) {
+                    if (isReplaceableTreeSpace(data[bx][by][bz])) {
+                        data[bx][by][bz] = Block.WOOD;
+                    }
+                    if (isReplaceableTreeSpace(data[bx][by + 1][bz])) {
                         data[bx][by + 1][bz] = Block.LEAVES;
                         maxPlacedY = Math.max(maxPlacedY, by + 1);
                     }
@@ -1337,6 +1362,10 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             }
         }
         return maxPlacedY + 1;
+    }
+
+    private static boolean isReplaceableTreeSpace(int block) {
+        return block == Block.AIR || block == Block.LEAVES;
     }
 
     /**
