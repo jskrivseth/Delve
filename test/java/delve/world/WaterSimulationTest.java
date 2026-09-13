@@ -132,6 +132,16 @@ class WaterSimulationTest {
         assertEquals(1.0f, chunk.waterCornerHeight(5, 6, 4));
     }
 
+    @Test
+    void flowingWaterLevelControlsSurfaceHeight() {
+        WorldChunk chunk = chunk(0, 0);
+        chunk.setWaterLevel(4, 6, 4, 2);
+        assertEquals(0.45f, chunk.waterCornerHeight(5, 6, 5), 0.0001f);
+
+        chunk.setWaterLevel(5, 6, 4, 7);
+        assertEquals(0.95f, chunk.waterCornerHeight(5, 6, 5), 0.0001f);
+    }
+
     /**
      * Lakes are held by the bowl they fill, not by a source at the top. Once the
      * simulation looks at them they must settle rather than slowly evaporate.

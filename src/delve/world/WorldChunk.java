@@ -2203,9 +2203,8 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
      * Fills {@code out} with the exposure mask for one block and returns how many
      * faces are exposed. Neighbouring chunks are consulted at the chunk borders.
      *
-     * Water always occupies its whole cell, so no per-fluid-level geometry is
-     * consulted here; faces shared with another water voxel are culled so a body
-     * of water reads as one continuous volume.
+     * Water always occupies its whole cell for culling, while exposed flowing
+     * surfaces use their level when their vertices are emitted.
      */
     private int computeExposedFaces(byte[] voxels, int i, int j, int k, boolean[] out) {
         int type = voxels[blockIndex(i, j, k)] & 0xFF;
@@ -2259,7 +2258,8 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     }
 
     private boolean isGeneratedWaterSurface(int x, int y, int z) {
-        return waterLevelAt(x, y, z) == 1 && waterLevelAt(x, y + 1, z) == 0;
+        int level = waterLevelAt(x, y, z);
+        return level > 0 && level < 8 && waterLevelAt(x, y + 1, z) == 0;
     }
 
     /**
@@ -2276,18 +2276,34 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
 
     float waterCornerHeight(int cornerX, int y, int cornerZ) {
         int generatedSurfaces = 0;
+        float flowingHeight = 0.0f;
         for (int dx = -1; dx <= 0; dx++) {
             for (int dz = -1; dz <= 0; dz++) {
                 int level = waterLevelAt(cornerX + dx, y, cornerZ + dz);
-                if (level > 1 && waterLevelAt(cornerX + dx, y + 1, cornerZ + dz) == 0) {
+                if (level == 8 && waterLevelAt(cornerX + dx, y + 1, cornerZ + dz) == 0) {
                     return 1.0f;
                 }
                 if (level == 1 && waterLevelAt(cornerX + dx, y + 1, cornerZ + dz) == 0) {
                     generatedSurfaces++;
+                } else if (level > 1 && level < 8
+                        && waterLevelAt(cornerX + dx, y + 1, cornerZ + dz) == 0) {
+                    flowingHeight = Math.max(flowingHeight, waterSurfaceHeight(level));
                 }
             }
         }
-        return 0.55f + generatedSurfaces * 0.10f;
+        float generatedHeight = generatedSurfaces == 0
+                ? 0.0f : 0.55f + generatedSurfaces * 0.10f;
+        return Math.max(generatedHeight, flowingHeight);
+    }
+
+    static float waterSurfaceHeight(int level) {
+        if (level >= 8) {
+            return 1.0f;
+        }
+        if (level <= 1) {
+            return 0.55f;
+        }
+        return 0.25f + level * 0.10f;
     }
 
     private int waterLevelAt(int x, int y, int z) {
