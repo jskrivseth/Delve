@@ -2081,7 +2081,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             this.vboIsStale = false;
             this.buildVBO();
         }
-        if (this.meshIsStale) {
+        if (this.meshIsStale && !this.isRefreshing) {
             this.meshIsStale = false;
             this.refreshMesh();
         }
@@ -2233,7 +2233,15 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         }
     }
 
-    public void refreshMesh() {
+    public synchronized void refreshMesh() {
+        // Several neighbours can publish border-light changes before this
+        // rebuild reaches the worker. Queueing every notification produces a
+        // stream of obsolete meshes that continuously replaces the VBO. Keep
+        // one active rebuild and retain meshIsStale for a single follow-up if a
+        // newer border state arrives while it is running.
+        if (this.isRefreshing || this.isBuilding || !this.isGenerated) {
+            return;
+        }
         this.isRefreshing = true;
         // Reuse the shared pool rather than spawning a raw Thread per rebuild.
         World.threadPool.execute(new WorldChunkBufferBuilderThread(this));
