@@ -2182,9 +2182,6 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
      */
     private float waterHeight(int x, int y, int z) {
         int level = waterLevel(x, y, z);
-        if (waterLevelAt(x, y - 1, z) > 0) {
-            return 1.0f;
-        }
         return level >= 8 ? 1.0f : Math.max(0.5f, level / 8.0f);
     }
 
