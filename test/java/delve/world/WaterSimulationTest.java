@@ -155,6 +155,12 @@ class WaterSimulationTest {
                 lake.setWaterLevel(x, 6, z, 1);
             }
         }
+        for (int i = 1; i <= 7; i++) {
+            lake.blocks[WorldChunk.blockIndex(1, 6, i)] = (byte) Block.STONE;
+            lake.blocks[WorldChunk.blockIndex(7, 6, i)] = (byte) Block.STONE;
+            lake.blocks[WorldChunk.blockIndex(i, 6, 1)] = (byte) Block.STONE;
+            lake.blocks[WorldChunk.blockIndex(i, 6, 7)] = (byte) Block.STONE;
+        }
         for (int x = 2; x <= 6; x++) {
             World.enqueueWaterUpdate(x, 6, 3);
         }
@@ -167,6 +173,34 @@ class WaterSimulationTest {
                         "lake water at (" + x + ",6," + z + ") evaporated");
             }
         }
+    }
+
+    @Test
+    void generatedWaterSpillsOverAnAdjacentCaveLedge() {
+        WorldChunk lake = chunk(0, 0);
+        lake.blocks[WorldChunk.blockIndex(4, 5, 4)] = (byte) Block.STONE;
+        lake.blocks[WorldChunk.blockIndex(5, 3, 4)] = (byte) Block.STONE;
+        lake.setWaterLevel(4, 6, 4, 1);
+
+        lake.enqueueGeneratedWaterOutlets();
+        World.processWaterUpdates(200);
+
+        assertEquals(0, lake.waterLevel(4, 6, 4),
+                "terrain water stayed frozen at the exposed lake edge");
+        int remaining = 0;
+        int lowest = WorldChunk.sizeY;
+        for (int x = 0; x < WorldChunk.sizeX; x++) {
+            for (int y = 0; y < WorldChunk.sizeY; y++) {
+                for (int z = 0; z < WorldChunk.sizeZ; z++) {
+                    if (lake.waterLevel(x, y, z) == 1) {
+                        remaining++;
+                        lowest = Math.min(lowest, y);
+                    }
+                }
+            }
+        }
+        assertEquals(1, remaining, "terrain water multiplied or vanished while spilling");
+        assertTrue(lowest < 6, "terrain water did not descend into the cave");
     }
 
     /**

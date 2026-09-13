@@ -258,6 +258,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             this.isModified = true;
             this.isGenerated = true;
             this.isBuilt = false;
+            enqueueGeneratedWaterOutlets();
             return;
         }
 
@@ -480,6 +481,58 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
 
         this.isGenerated = true;
         this.isBuilt = false;
+        enqueueGeneratedWaterOutlets();
+    }
+
+    /**
+     * Seeds only generated-water cells that can immediately fall or spill over
+     * a ledge. Bulk-queueing every sea voxel would swamp the deliberately slow
+     * simulation; settled basin water needs no update. Boundary outlets whose
+     * neighbour is not generated yet are picked up by replayBoundaryColumns()
+     * when that neighbour becomes publishable.
+     */
+    void enqueueGeneratedWaterOutlets() {
+        int ceiling = Math.min(maxHeight, sizeY);
+        for (int x = 0; x < sizeX; x++) {
+            for (int y = 1; y < ceiling; y++) {
+                for (int z = 0; z < sizeZ; z++) {
+                    if (waterLevels[blockIndex(x, y, z)] != 1) {
+                        continue;
+                    }
+                    if (isWaterReplaceableAt(x, y - 1, z)
+                            || isGeneratedWaterLedge(x, y, z)) {
+                        World.enqueueWaterUpdate(worldPosX + x, y, worldPosY + z);
+                    }
+                }
+            }
+        }
+    }
+
+    private boolean isGeneratedWaterLedge(int x, int y, int z) {
+        return isOpenDropAt(x - 1, y, z)
+                || isOpenDropAt(x + 1, y, z)
+                || isOpenDropAt(x, y, z - 1)
+                || isOpenDropAt(x, y, z + 1);
+    }
+
+    private boolean isOpenDropAt(int x, int y, int z) {
+        return isWaterReplaceableAt(x, y, z)
+                && isWaterReplaceableAt(x, y - 1, z);
+    }
+
+    private boolean isWaterReplaceableAt(int x, int y, int z) {
+        if (y < 0 || y >= sizeY) {
+            return false;
+        }
+        WorldChunk chunk = World.getChunk(
+                Math.floorDiv(worldPosX + x, sizeX),
+                Math.floorDiv(worldPosY + z, sizeZ));
+        if (chunk == null || !chunk.isGenerated) {
+            return false;
+        }
+        return Block.isWaterReplaceable(chunk.getBlock(
+                Math.floorMod(worldPosX + x, sizeX), y,
+                Math.floorMod(worldPosY + z, sizeZ)));
     }
 
     private void carveCaves(int[][][] data, int[][] heightMap) {

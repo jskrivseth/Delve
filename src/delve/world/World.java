@@ -30,6 +30,7 @@ import java.awt.image.BufferedImage;
 
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ConcurrentLinkedQueue;
 
 import java.util.*;
 import java.io.*;
@@ -86,7 +87,13 @@ public class World {
     public static ArrayList<WorldChunk> chunks = new ArrayList<WorldChunk>();
     public static ArrayList<WorldChunk> destroyChunks = new ArrayList<WorldChunk>();
     public static ArrayList<WorldChunk> generateChunks = new ArrayList<WorldChunk>();
-    private static final ArrayDeque<Long> waterQueue = new ArrayDeque<Long>();
+    /**
+     * Generation and mesh workers seed water while the main thread drains it.
+     * A concurrent queue prevents those legitimate publish-time additions from
+     * corrupting ArrayDeque's internal state.
+     */
+    private static final ConcurrentLinkedQueue<Long> waterQueue =
+            new ConcurrentLinkedQueue<Long>();
     /**
      * Wavefront of cells to reclaim after water was removed. Kept separate from
      * {@link #waterQueue} because it answers a different question: not "where
@@ -264,7 +271,7 @@ public class World {
 
     public static void enqueueWaterUpdate(int x, int y, int z) {
         if (y >= 0 && y < WorldChunk.sizeY) {
-            waterQueue.addLast(waterKey(x, y, z));
+            waterQueue.add(waterKey(x, y, z));
         }
     }
 
@@ -372,7 +379,7 @@ public class World {
         processWaterDrains(MAX_WATER_DRAINS);
         int processed = 0;
         while (processed++ < budget && !waterQueue.isEmpty()) {
-            long key = waterQueue.removeFirst();
+            long key = waterQueue.remove();
             int x = waterX(key), y = waterY(key), z = waterZ(key);
                 WorldChunk source = getChunk(Math.floorDiv(x, WorldChunk.sizeX),
                         Math.floorDiv(z, WorldChunk.sizeZ));
@@ -393,7 +400,19 @@ public class World {
             if (level == 1) {
                 if (Block.isWaterReplaceable(blockTypeAtWorld(x, y - 1, z))
                         && spreadWater(x, y - 1, z, 1)) {
-                    clearWaterCell(x, y, z);
+                    finishTerrainWaterMove(x, y, z);
+                    continue;
+                }
+                // Generated lakes normally sit in terrain-filled basins, but a
+                // cave mouth or cliff can expose an adjacent column whose next
+                // cell down is also open. Move one conserved level-1 cell over
+                // that lip; its queued destination then falls normally. Requiring
+                // open space below the neighbour prevents terrain water from
+                // spreading sideways across ordinary flat ground.
+                if (!moveTerrainWaterOverDrop(x, y, z, x - 1, z)
+                        && !moveTerrainWaterOverDrop(x, y, z, x + 1, z)
+                        && !moveTerrainWaterOverDrop(x, y, z, x, z - 1)) {
+                    moveTerrainWaterOverDrop(x, y, z, x, z + 1);
                 }
                 continue;
             }
@@ -456,6 +475,25 @@ public class World {
 
         }
         return Math.min(processed, budget);
+    }
+
+    private static boolean moveTerrainWaterOverDrop(int x, int y, int z,
+                                                    int outletX, int outletZ) {
+        if (!Block.isWaterReplaceable(blockTypeAtWorld(outletX, y, outletZ))
+                || !Block.isWaterReplaceable(blockTypeAtWorld(outletX, y - 1, outletZ))
+                || !spreadWater(outletX, y, outletZ, 1)) {
+            return false;
+        }
+        finishTerrainWaterMove(x, y, z);
+        return true;
+    }
+
+    private static void finishTerrainWaterMove(int x, int y, int z) {
+        clearWaterCell(x, y, z);
+        enqueueWaterUpdate(x - 1, y, z);
+        enqueueWaterUpdate(x + 1, y, z);
+        enqueueWaterUpdate(x, y, z - 1);
+        enqueueWaterUpdate(x, y, z + 1);
     }
 
     private static boolean hasStrongerSupport(int x, int y, int z, int level) {
