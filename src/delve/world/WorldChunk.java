@@ -1700,6 +1700,11 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         return grid[cx * (sizeZ + 1) + cz];
     }
 
+    @Override
+    public int plantVariationAt(int x, int y, int z) {
+        return hash(worldPosX + x, worldPosY + z, y, 1571);
+    }
+
     private static int hash(int a, int b, int c, int salt) {
         int h = a * 73856093 ^ b * 19349663 ^ c * 83492791 ^ salt * 374761393;
         h ^= (h >>> 13);
@@ -2160,13 +2165,21 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             this.pendingOpaqueVerts = buffer.position() / Renderer.FLOATS_PER_VERTEX;
             this.pendingOpaqueIndices = indices.position();
 
+            float[] waterTopHeights = new float[4];
             for (int i = 0; i < sizeX; i++) {
                 for (int j = 0; j < ceiling; j++) {
                     for (int k = 0; k < sizeZ; k++) {
                         int type = voxels[blockIndex(i, j, k)] & 0xFF;
                         if (type != 0 && Block.isTranslucent(type)
                                 && computeExposedFaces(voxels, i, j, k, EXPOSED_FACES) > 0) {
-                            Block.writeCube(buffer, indices, i, j, k, EXPOSED_FACES, type, this);
+                            if (isGeneratedWaterSurface(i, j, k)) {
+                                fillWaterCornerHeights(i, j, k, waterTopHeights);
+                                Block.writeWaterCube(buffer, indices, i, j, k,
+                                        EXPOSED_FACES, this, waterTopHeights);
+                            } else {
+                                Block.writeCube(buffer, indices, i, j, k,
+                                        EXPOSED_FACES, type, this);
+                            }
                         }
                     }
                 }
@@ -2243,6 +2256,38 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             }
         }
         return count;
+    }
+
+    private boolean isGeneratedWaterSurface(int x, int y, int z) {
+        return waterLevelAt(x, y, z) == 1 && waterLevelAt(x, y + 1, z) == 0;
+    }
+
+    /**
+     * Four shared lattice-corner heights in (-x,-z), (+x,-z), (-x,+z),
+     * (+x,+z) order. Every adjacent voxel samples the same four columns for a
+     * shared corner, so slopes meet without cracks across blocks or chunks.
+     */
+    private void fillWaterCornerHeights(int x, int y, int z, float[] out) {
+        out[0] = waterCornerHeight(x, y, z);
+        out[1] = waterCornerHeight(x + 1, y, z);
+        out[2] = waterCornerHeight(x, y, z + 1);
+        out[3] = waterCornerHeight(x + 1, y, z + 1);
+    }
+
+    float waterCornerHeight(int cornerX, int y, int cornerZ) {
+        int generatedSurfaces = 0;
+        for (int dx = -1; dx <= 0; dx++) {
+            for (int dz = -1; dz <= 0; dz++) {
+                int level = waterLevelAt(cornerX + dx, y, cornerZ + dz);
+                if (level > 1 && waterLevelAt(cornerX + dx, y + 1, cornerZ + dz) == 0) {
+                    return 1.0f;
+                }
+                if (level == 1 && waterLevelAt(cornerX + dx, y + 1, cornerZ + dz) == 0) {
+                    generatedSurfaces++;
+                }
+            }
+        }
+        return 0.55f + generatedSurfaces * 0.10f;
     }
 
     private int waterLevelAt(int x, int y, int z) {

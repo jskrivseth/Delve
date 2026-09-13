@@ -110,6 +110,28 @@ class WaterSimulationTest {
         assertEquals(7, right.waterLevel(0, 4, 2));
     }
 
+    @Test
+    void generatedWaterSlopesTowardTheShore() {
+        WorldChunk chunk = chunk(0, 0);
+        chunk.setWaterLevel(4, 6, 4, 1);
+        chunk.setWaterLevel(5, 6, 4, 1);
+
+        float sharedEdge = chunk.waterCornerHeight(5, 6, 4);
+        float shoreline = chunk.waterCornerHeight(4, 6, 4);
+
+        assertTrue(sharedEdge < 1.0f);
+        assertTrue(sharedEdge > shoreline);
+    }
+
+    @Test
+    void sourceWaterKeepsSharedCornerAtFullHeight() {
+        WorldChunk chunk = chunk(0, 0);
+        chunk.setWaterLevel(4, 6, 4, 1);
+        chunk.setWaterLevel(5, 6, 4, 8);
+
+        assertEquals(1.0f, chunk.waterCornerHeight(5, 6, 4));
+    }
+
     /**
      * Lakes are held by the bowl they fill, not by a source at the top. Once the
      * simulation looks at them they must settle rather than slowly evaporate.

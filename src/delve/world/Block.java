@@ -40,6 +40,13 @@ public class Block implements Serializable {
         default float tintAt(int cornerX, int cornerZ, boolean ground) {
             return NO_TINT;
         }
+
+        /** Stable world-position variation used by generated plant geometry. */
+        default int plantVariationAt(int x, int y, int z) {
+            int h = x * 73856093 ^ y * 19349663 ^ z * 83492791;
+            h ^= h >>> 13;
+            return h & 0x7fffffff;
+        }
     }
 
     /** Packed neutral tint, i.e. a 1.0 multiplier on every channel. */
@@ -511,6 +518,21 @@ public class Block implements Serializable {
     public static void writeCube(FloatBuffer buffer, IntBuffer indices, int x, int y, int z,
                                  boolean[] faces, int type, SolidityLookup solid,
                                  float bottom, float height) {
+        writeCube(buffer, indices, x, y, z, faces, type, solid, bottom, height, null);
+    }
+
+    public static void writeWaterCube(FloatBuffer buffer, IntBuffer indices,
+                                      int x, int y, int z, boolean[] faces,
+                                      SolidityLookup solid, float[] topHeights) {
+        if (topHeights == null || topHeights.length != 4) {
+            throw new IllegalArgumentException("Water cube requires four corner heights");
+        }
+        writeCube(buffer, indices, x, y, z, faces, WATER, solid, 0.0f, 1.0f, topHeights);
+    }
+
+    private static void writeCube(FloatBuffer buffer, IntBuffer indices, int x, int y, int z,
+                                  boolean[] faces, int type, SolidityLookup solid,
+                                  float bottom, float height, float[] topHeights) {
         if (buffer == null || faces == null || faces.length == 0) {
             return;
         }
@@ -589,12 +611,25 @@ public class Block implements Serializable {
             // Four corner vertices, then the same two triangles (0-1-2, 2-3-0)
             // spelled as indices -- the repeats were written twice before.
             int vi = buffer.position() / FLOATS_PER_VERTEX;
-            putVertex(buffer, corners[0], n, x, y, z, r, g, b, ao0, u0, u1, v0, v1, light, t0, bottom, height);
-            putVertex(buffer, corners[1], n, x, y, z, r, g, b, ao1, u0, u1, v0, v1, light, t1v, bottom, height);
-            putVertex(buffer, corners[2], n, x, y, z, r, g, b, ao2, u0, u1, v0, v1, light, t2v, bottom, height);
-            putVertex(buffer, corners[3], n, x, y, z, r, g, b, ao3, u0, u1, v0, v1, light, t3v, bottom, height);
+            putVertex(buffer, corners[0], n, x, y, z, r, g, b, ao0, u0, u1, v0, v1,
+                    light, t0, bottom, cornerHeight(corners[0], height, topHeights));
+            putVertex(buffer, corners[1], n, x, y, z, r, g, b, ao1, u0, u1, v0, v1,
+                    light, t1v, bottom, cornerHeight(corners[1], height, topHeights));
+            putVertex(buffer, corners[2], n, x, y, z, r, g, b, ao2, u0, u1, v0, v1,
+                    light, t2v, bottom, cornerHeight(corners[2], height, topHeights));
+            putVertex(buffer, corners[3], n, x, y, z, r, g, b, ao3, u0, u1, v0, v1,
+                    light, t3v, bottom, cornerHeight(corners[3], height, topHeights));
             indices.put(vi).put(vi + 1).put(vi + 2).put(vi + 2).put(vi + 3).put(vi);
         }
+    }
+
+    private static float cornerHeight(float[] corner, float fallback, float[] topHeights) {
+        if (topHeights == null || corner[1] == 0.0f) {
+            return fallback;
+        }
+        int index = (corner[0] == 0.0f ? 0 : 1) + (corner[2] == 0.0f ? 0 : 2);
+        // Array order is (-x,-z), (+x,-z), (-x,+z), (+x,+z).
+        return topHeights[index];
     }
 
     private static float adjustLeafTint(int type, float packed) {
@@ -746,11 +781,17 @@ public class Block implements Serializable {
         float v1 = (tileRow + 1) / ATLAS_TILES - UV_INSET;
 
         float light = solid.lightAt(x, y + 1, z) / 15.0f;
+        int variation = solid.plantVariationAt(x, y, z);
         float baseY = y;
-        float topY = y + 1.0f;
+        float height = plantHeight(type, variation);
+        float topY = y + height;
         float cx = x + 0.5f;
         float cz = z + 0.5f;
-        float h = 0.45f;
+        float halfWidth = plantHalfWidth(type, variation);
+        float angle = ((variation >>> 8) & 0xFF) * ((float) Math.PI / 128.0f);
+        float lean = (((variation >>> 16) & 0xFF) / 255.0f - 0.5f) * 0.18f;
+        float leanX = (float) Math.cos(angle + Math.PI * 0.5) * lean;
+        float leanZ = (float) Math.sin(angle + Math.PI * 0.5) * lean;
         // Sprites are a single block wide, so one tint sample at the column
         // centre is enough; averaging the four corners keeps it consistent with
         // the tinted cube faces around it.
@@ -761,34 +802,68 @@ public class Block implements Serializable {
                 || type == BROWN_GRASS;
         float tint = biomeTintKind(type) != TINT_NONE
                 ? solid.tintAt(x, z, groundTint) : NO_TINT;
+        if (groundTint) {
+            tint = grassTint(tint, variation);
+        }
 
-        // Quad A: (\) diagonal.
-        putSpriteQuad(buffer, indices,
-                cx - h, baseY, cz - h,
-                cx + h, baseY, cz + h,
-                cx + h, topY, cz + h,
-                cx - h, topY, cz - h,
-                r, g, b, ao, u0, u1, v0, v1, light, 0f, 1f, 0f, tint);
-        putSpriteQuad(buffer, indices,
-                cx + h, baseY, cz + h,
-                cx - h, baseY, cz - h,
-                cx - h, topY, cz - h,
-                cx + h, topY, cz + h,
-                r, g, b, ao, u0, u1, v0, v1, light, 0f, 1f, 0f, tint);
+        writePlantPlane(buffer, indices, cx, baseY, cz, topY, halfWidth,
+                angle, leanX, leanZ, r, g, b, ao, u0, u1, v0, v1, light, tint);
+        writePlantPlane(buffer, indices, cx, baseY, cz, topY, halfWidth,
+                angle + (float) Math.PI * 0.5f, leanX, leanZ,
+                r, g, b, ao, u0, u1, v0, v1, light, tint);
+    }
 
-        // Quad B: (/) diagonal.
+    private static void writePlantPlane(FloatBuffer buffer, IntBuffer indices,
+                                        float cx, float baseY, float cz, float topY,
+                                        float halfWidth, float angle, float leanX, float leanZ,
+                                        float r, float g, float b, float ao,
+                                        float u0, float u1, float v0, float v1,
+                                        float light, float tint) {
+        float dx = (float) Math.cos(angle) * halfWidth;
+        float dz = (float) Math.sin(angle) * halfWidth;
+        float bx0 = cx - dx, bz0 = cz - dz;
+        float bx1 = cx + dx, bz1 = cz + dz;
+        float tx0 = bx0 + leanX, tz0 = bz0 + leanZ;
+        float tx1 = bx1 + leanX, tz1 = bz1 + leanZ;
+
         putSpriteQuad(buffer, indices,
-                cx - h, baseY, cz + h,
-                cx + h, baseY, cz - h,
-                cx + h, topY, cz - h,
-                cx - h, topY, cz + h,
+                bx0, baseY, bz0, bx1, baseY, bz1,
+                tx1, topY, tz1, tx0, topY, tz0,
                 r, g, b, ao, u0, u1, v0, v1, light, 0f, 1f, 0f, tint);
         putSpriteQuad(buffer, indices,
-                cx + h, baseY, cz - h,
-                cx - h, baseY, cz + h,
-                cx - h, topY, cz + h,
-                cx + h, topY, cz - h,
+                bx1, baseY, bz1, bx0, baseY, bz0,
+                tx0, topY, tz0, tx1, topY, tz1,
                 r, g, b, ao, u0, u1, v0, v1, light, 0f, 1f, 0f, tint);
+    }
+
+    static float plantHeight(int type, int variation) {
+        float random = (variation & 0xFF) / 255.0f;
+        if (type == FERN) return 0.38f + random * 0.34f;
+        if (type == REED_GRASS) return 0.68f + random * 0.32f;
+        if (type == BROWN_GRASS) return 0.42f + random * 0.38f;
+        if (type == TALL_GRASS) return 0.48f + random * 0.48f;
+        return 0.72f + random * 0.28f;
+    }
+
+    static float plantHalfWidth(int type, int variation) {
+        float random = ((variation >>> 4) & 0xFF) / 255.0f;
+        if (type == FERN) return 0.34f + random * 0.14f;
+        if (type == REED_GRASS) return 0.20f + random * 0.12f;
+        return 0.24f + random * 0.18f;
+    }
+
+    static float grassTint(float packed, int variation) {
+        int bits = Math.round(packed);
+        float r = ((bits >>> 16) & 0xFF) / 127.5f;
+        float g = ((bits >>> 8) & 0xFF) / 127.5f;
+        float b = (bits & 0xFF) / 127.5f;
+        switch ((variation >>> 24) & 3) {
+            case 0 -> { r *= 1.08f; g *= 0.94f; b *= 0.86f; }
+            case 1 -> { r *= 1.13f; g *= 0.98f; b *= 0.76f; }
+            case 2 -> { r *= 0.96f; g *= 1.02f; b *= 0.91f; }
+            default -> { r *= 1.04f; g *= 0.96f; b *= 0.82f; }
+        }
+        return packTint(r, g, b);
     }
 
     private static void putSpriteQuad(FloatBuffer buffer, IntBuffer indices,
