@@ -28,7 +28,7 @@ public class TerrainGenerator {
      * foundation intact; water and bedrock are filtered by the caller.
      */
     static boolean isCave(int worldX, int y, int worldZ, int surfaceY) {
-        if (y <= CAVE_MIN_Y || y >= surfaceY - CAVE_SURFACE_BUFFER) {
+        if (y <= CAVE_MIN_Y || y >= surfaceY) {
             return false;
         }
         double body = Math.abs(PerlinNoiseGenerator.getNoise(
@@ -39,7 +39,15 @@ public class TerrainGenerator {
                 (worldX + 173) / CAVE_DETAIL_SCALE_XZ,
                 (y - 67) / CAVE_DETAIL_SCALE_Y,
                 (worldZ - 251) / CAVE_DETAIL_SCALE_XZ));
-        double depth = Math.min(1.0, Math.max(0.0, (surfaceY - y - CAVE_SURFACE_BUFFER) / 72.0));
+        int depthBelowSurface = surfaceY - y;
+        // Most caves remain behind a four-block roof, but an unusually quiet
+        // noise pocket may open through the last few blocks. This makes rare
+        // entrances possible on hillsides without turning the surface porous.
+        if (depthBelowSurface <= CAVE_SURFACE_BUFFER) {
+            double entranceThreshold = depthBelowSurface <= 2 ? 0.065 : 0.045;
+            return body * 0.72 + detail * 0.28 < entranceThreshold;
+        }
+        double depth = Math.min(1.0, Math.max(0.0, (depthBelowSurface - CAVE_SURFACE_BUFFER) / 72.0));
         double threshold = 0.16 + depth * 0.08;
         return body * 0.72 + detail * 0.28 < threshold;
     }
