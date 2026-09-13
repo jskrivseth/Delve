@@ -270,6 +270,20 @@ public class World {
             if (level == 0) {
                 continue;
             }
+            if (level < 8 && !hasStrongerSupport(x, y, z, level)) {
+                BLOCK_LOCK.writeLock().lock();
+                try {
+                    source.setWaterLevel(lx, y, lz, level - 1);
+                } finally {
+                    BLOCK_LOCK.writeLock().unlock();
+                }
+                enqueueWaterUpdate(x, y, z);
+                enqueueWaterUpdate(x - 1, y, z);
+                enqueueWaterUpdate(x + 1, y, z);
+                enqueueWaterUpdate(x, y, z - 1);
+                enqueueWaterUpdate(x, y, z + 1);
+                continue;
+            }
             spreadWater(x, y - 1, z, level == 8 ? 7 : level);
             if (level > 1) {
                 spreadWater(x - 1, y, z, level - 1);
@@ -277,8 +291,27 @@ public class World {
                 spreadWater(x, y, z - 1, level - 1);
                 spreadWater(x, y, z + 1, level - 1);
             }
+
         }
         return Math.min(processed, budget);
+    }
+
+    private static boolean hasStrongerSupport(int x, int y, int z, int level) {
+        int[][] neighbors = {{x - 1, y, z}, {x + 1, y, z},
+            {x, y, z - 1}, {x, y, z + 1}, {x, y + 1, z}};
+        for (int[] neighbor : neighbors) {
+            WorldChunk chunk = getChunk(Math.floorDiv(neighbor[0], WorldChunk.sizeX),
+                    Math.floorDiv(neighbor[2], WorldChunk.sizeZ));
+            if (chunk == null || !chunk.isGenerated) continue;
+            int neighborLevel = chunk.waterLevel(
+                    Math.floorMod(neighbor[0], WorldChunk.sizeX), neighbor[1],
+                    Math.floorMod(neighbor[2], WorldChunk.sizeZ));
+            if (neighborLevel > level
+                    || (neighbor[1] == y + 1 && neighborLevel >= level)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static void spreadWater(int x, int y, int z, int level) {

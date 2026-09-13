@@ -36,6 +36,7 @@ public class BlockFinder {
         if (localX >= 0 && localX < WorldChunk.sizeX) {
             if (localY >= 0 && localY < WorldChunk.sizeY) {
                 if (localZ >= 0 && localZ < WorldChunk.sizeZ) {
+                    boolean wasWater = chunk.getBlock(localX, localY, localZ) == Block.WATER;
                     World.BLOCK_LOCK.writeLock().lock();
                     try {
                         chunk.blocks[WorldChunk.blockIndex(localX, localY, localZ)] = (byte) type;
@@ -51,6 +52,8 @@ public class BlockFinder {
                     }
                     invalidateSeam(chunkX, chunkZ, localX, localZ);
                     if (type == Block.WATER) {
+                        World.enqueueWaterUpdate(x, y, z);
+                    } else if (wasWater) {
                         World.enqueueWaterUpdate(x, y, z);
                     }
                     return;
@@ -118,6 +121,7 @@ public class BlockFinder {
         if (x >= 0 && x < WorldChunk.sizeX) {
             if (y >= 0 && y < WorldChunk.sizeY) {
                 if (z >= 0 && z < WorldChunk.sizeZ) {
+                    boolean wasWater = chunk.getBlock(x, y, z) == Block.WATER;
                     World.BLOCK_LOCK.writeLock().lock();
                     try {
                         chunk.blocks[WorldChunk.blockIndex(x, y, z)] = (byte) type;
@@ -137,6 +141,8 @@ public class BlockFinder {
                     int localZ = z;
                     invalidateSeam(chunkX, chunkZ, localX, localZ);
                     if (type == Block.WATER) {
+                        World.enqueueWaterUpdate(chunk.worldPosX + x, y, chunk.worldPosY + z);
+                    } else if (wasWater) {
                         World.enqueueWaterUpdate(chunk.worldPosX + x, y, chunk.worldPosY + z);
                     }
                     return;
