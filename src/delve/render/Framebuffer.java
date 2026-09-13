@@ -18,6 +18,7 @@ public class Framebuffer {
     private int width;
     private int height;
     private final boolean floatColor;
+    private boolean complete;
 
     public Framebuffer(int width, int height) {
         this(width, height, false);
@@ -62,7 +63,8 @@ public class Framebuffer {
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, depthTexture, 0);
 
         int status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-        if (status != GL_FRAMEBUFFER_COMPLETE) {
+        complete = status == GL_FRAMEBUFFER_COMPLETE;
+        if (!complete) {
             System.err.println("Framebuffer incomplete: 0x" + Integer.toHexString(status));
         }
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -99,6 +101,11 @@ public class Framebuffer {
     /** Raw handle, needed for framebuffer-to-framebuffer blits. */
     public int getFbo() {
         return fbo;
+    }
+
+    /** False when the driver refused a complete attachment set (e.g. RGBA16F color-renderable absent). */
+    public boolean isComplete() {
+        return complete;
     }
 
     public int getWidth() {
