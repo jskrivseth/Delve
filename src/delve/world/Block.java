@@ -80,7 +80,7 @@ public class Block implements Serializable {
             // The side texture is mostly soil, so only the top takes leaf colour.
             return TINT_GRASS_BLOCK;
         }
-        if (type == LEAVES || type == TALL_GRASS
+        if (isLeaf(type) || type == TALL_GRASS
                 || type == FERN || type == REED_GRASS || type == RED_FLOWER
                 || type == PURPLE_FLOWER || type == BLUE_FLOWER) {
             return TINT_FOLIAGE;
@@ -174,21 +174,27 @@ public class Block implements Serializable {
         new float[]{0.77f, 0.66f, 0.32f, 1.0f},
         //37 - Frost boulder
         new float[]{0.66f, 0.82f, 0.89f, 1.0f},
-        //38 - Peat
+        //38 - Dark leaves
+        new float[]{0.16f, 0.40f, 0.12f, 1.0f},
+        //39 - Golden leaves
+        new float[]{0.72f, 0.58f, 0.14f, 1.0f},
+        //40 - Pale leaves
+        new float[]{0.42f, 0.66f, 0.28f, 1.0f},
+        //41 - Peat
         new float[]{0.20f, 0.15f, 0.10f, 1.0f},
-        //39 - Limestone
+        //42 - Limestone
         new float[]{0.72f, 0.70f, 0.61f, 1.0f},
-        //40 - Red clay
+        //43 - Red clay
         new float[]{0.62f, 0.25f, 0.16f, 1.0f},
-        //41 - Fern
+        //44 - Fern
         new float[]{0.22f, 0.58f, 0.18f, 1.0f},
-        //42 - Reed grass
+        //45 - Reed grass
         new float[]{0.30f, 0.68f, 0.20f, 1.0f},
-        //43 - Red flower
+        //46 - Red flower
         new float[]{0.88f, 0.16f, 0.12f, 1.0f},
-        //44 - Purple flower
+        //47 - Purple flower
         new float[]{0.62f, 0.18f, 0.82f, 1.0f},
-        //45 - Blue flower
+        //48 - Blue flower
         new float[]{0.18f, 0.36f, 0.92f, 1.0f},
     };
 
@@ -200,10 +206,11 @@ public class Block implements Serializable {
             DEEPSLATE = 23, TALL_GRASS = 24, FLOWER = 25, MUSHROOM = 26,
             BROWN_GRASS = 27, MUD = 28, SLUSH = 29, BASALT = 30,
             SULFUR_STONE = 31, FROST_ICE = 32, THOLIN = 33, VOLCANIC_ASH = 34,
-            BASALT_BOULDER = 35, SULFUR_BOULDER = 36, FROST_BOULDER = 37;
-    public static final int PEAT = 38, LIMESTONE = 39, RED_CLAY = 40,
-            FERN = 41, REED_GRASS = 42, RED_FLOWER = 43, PURPLE_FLOWER = 44,
-            BLUE_FLOWER = 45;
+            BASALT_BOULDER = 35, SULFUR_BOULDER = 36, FROST_BOULDER = 37,
+            DARK_LEAVES = 38, GOLDEN_LEAVES = 39, PALE_LEAVES = 40;
+    public static final int PEAT = 41, LIMESTONE = 42, RED_CLAY = 43,
+            FERN = 44, REED_GRASS = 45, RED_FLOWER = 46, PURPLE_FLOWER = 47,
+            BLUE_FLOWER = 48;
 
     /** Human readable names, indexed by block type. */
     public static final String[] BLOCK_NAMES = {
@@ -213,7 +220,8 @@ public class Block implements Serializable {
         "Granite", "Mossy Cobblestone", "Deepslate", "Tall Grass", "Flower",
         "Mushroom", "Brown Grass", "Mud", "Slush", "Basalt", "Sulfur Stone",
         "Frost Ice", "Tholin", "Volcanic Ash", "Basalt Boulder",
-        "Sulfur Boulder", "Frost Boulder", "Peat", "Limestone", "Red Clay",
+        "Sulfur Boulder", "Frost Boulder", "Dark Leaves", "Golden Leaves",
+        "Pale Leaves", "Peat", "Limestone", "Red Clay",
         "Fern", "Reed Grass",
         "Red Flower", "Purple Flower", "Blue Flower",
     };
@@ -225,7 +233,9 @@ public class Block implements Serializable {
         RED_SANDSTONE, ANDESITE, DIORITE, GRANITE, MOSSY_COBBLESTONE, DEEPSLATE,
         TALL_GRASS, FLOWER, MUSHROOM, BROWN_GRASS, MUD, SLUSH,
         BASALT, SULFUR_STONE, FROST_ICE, THOLIN, VOLCANIC_ASH,
-        BASALT_BOULDER, SULFUR_BOULDER, FROST_BOULDER, PEAT, LIMESTONE, RED_CLAY,
+        BASALT_BOULDER, SULFUR_BOULDER, FROST_BOULDER,
+        DARK_LEAVES, GOLDEN_LEAVES, PALE_LEAVES,
+        PEAT, LIMESTONE, RED_CLAY,
         FERN, REED_GRASS,
         RED_FLOWER, PURPLE_FLOWER, BLUE_FLOWER,
     };
@@ -280,14 +290,17 @@ public class Block implements Serializable {
         {15, 2, 15, 2, 15, 2},       //35 basalt boulder
         {15, 3, 15, 3, 15, 3},       //36 sulfur boulder
         {15, 5, 15, 5, 15, 5},       //37 frost boulder
-        {8, 8, 8, 8, 8, 8},          //38 peat
-        {9, 8, 9, 8, 9, 8},          //39 limestone
-        {10, 8, 10, 8, 10, 8},       //40 red clay
-        {11, 8, 11, 8, 11, 8},       //41 fern
-        {12, 8, 12, 8, 12, 8},       //42 reed grass
-        {13, 8, 13, 8, 13, 8},       //43 red flower
-        {14, 8, 14, 8, 14, 8},       //44 purple flower
-        {15, 8, 15, 8, 15, 8},       //45 blue flower
+        {4, 3, 4, 3, 4, 3},          //38 dark leaves
+        {4, 3, 4, 3, 4, 3},          //39 golden leaves
+        {4, 3, 4, 3, 4, 3},          //40 pale leaves
+        {8, 8, 8, 8, 8, 8},          //41 peat
+        {9, 8, 9, 8, 9, 8},          //42 limestone
+        {10, 8, 10, 8, 10, 8},       //43 red clay
+        {11, 8, 11, 8, 11, 8},       //44 fern
+        {12, 8, 12, 8, 12, 8},       //45 reed grass
+        {13, 8, 13, 8, 13, 8},       //46 red flower
+        {14, 8, 14, 8, 14, 8},       //47 purple flower
+        {15, 8, 15, 8, 15, 8},       //48 blue flower
     };
 
     /** Atlas tiles per row/column, exposed so the HUD can slice block icons. */
@@ -303,7 +316,7 @@ public class Block implements Serializable {
 
     /** Types that do not fully occlude the neighbouring face. */
     public static boolean isTransparent(int type) {
-        return type == AIR || type == LEAVES || type == GLASS || type == WATER
+        return type == AIR || isLeaf(type) || type == GLASS || type == WATER
                 || type == TALL_GRASS || type == FLOWER || type == MUSHROOM
                 || type == BROWN_GRASS || type == FERN || type == REED_GRASS
                 || type == RED_FLOWER || type == PURPLE_FLOWER || type == BLUE_FLOWER;
@@ -333,7 +346,7 @@ public class Block implements Serializable {
 
     /** Whether sky light passes through this block at all. */
     public static boolean transmitsLight(int type) {
-        return type == AIR || type == WATER || type == LEAVES || type == GLASS
+        return type == AIR || type == WATER || isLeaf(type) || type == GLASS
                 || type == TALL_GRASS || type == FLOWER || type == MUSHROOM
                 || type == BROWN_GRASS || type == FERN || type == REED_GRASS
                 || type == RED_FLOWER || type == PURPLE_FLOWER || type == BLUE_FLOWER;
@@ -347,13 +360,18 @@ public class Block implements Serializable {
         if (type == WATER) {
             return 3;
         }
-        if (type == LEAVES) {
+        if (isLeaf(type)) {
             return 2;
         }
         if (type == TALL_GRASS || type == FLOWER || type == MUSHROOM || type == BROWN_GRASS) {
             return 2;
         }
         return 1;
+    }
+
+    public static boolean isLeaf(int type) {
+        return type == LEAVES || type == DARK_LEAVES
+                || type == GOLDEN_LEAVES || type == PALE_LEAVES;
     }
 
     /** Tiles per atlas row/column. */
@@ -545,6 +563,12 @@ public class Block implements Serializable {
                 t2v = solid.tintAt(x + (int) corners[2][0], z + (int) corners[2][2], ground);
                 t3v = solid.tintAt(x + (int) corners[3][0], z + (int) corners[3][2], ground);
             }
+            if (isLeaf(type)) {
+                t0 = adjustLeafTint(type, t0);
+                t1v = adjustLeafTint(type, t1v);
+                t2v = adjustLeafTint(type, t2v);
+                t3v = adjustLeafTint(type, t3v);
+            }
 
             // Four corner vertices, then the same two triangles (0-1-2, 2-3-0)
             // spelled as indices -- the repeats were written twice before.
@@ -555,6 +579,26 @@ public class Block implements Serializable {
             putVertex(buffer, corners[3], n, x, y, z, r, g, b, ao3, u0, u1, v0, v1, light, t3v);
             indices.put(vi).put(vi + 1).put(vi + 2).put(vi + 2).put(vi + 3).put(vi);
         }
+    }
+
+    private static float adjustLeafTint(int type, float packed) {
+        float r = (float) Math.floor(packed / 65536.0f) / 127.5f;
+        float g = (float) Math.floor((packed % 65536.0f) / 256.0f) / 127.5f;
+        float b = (packed % 256.0f) / 127.5f;
+        if (type == DARK_LEAVES) {
+            r *= 0.68f;
+            g *= 0.84f;
+            b *= 0.62f;
+        } else if (type == GOLDEN_LEAVES) {
+            r *= 1.35f;
+            g *= 1.08f;
+            b *= 0.52f;
+        } else if (type == PALE_LEAVES) {
+            r *= 1.08f;
+            g *= 1.20f;
+            b *= 0.82f;
+        }
+        return packTint(r, g, b);
     }
 
     /**
