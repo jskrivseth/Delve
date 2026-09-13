@@ -1660,7 +1660,9 @@ public class Renderer {
 
     /**
      * Draws water after all opaque geometry with depth writes disabled, so the
-     * terrain behind it shows through.
+     * terrain behind it shows through. Back faces stay culled: rendering both
+     * sides of a translucent water surface causes adjacent cells to compound
+     * the blend and appear as dark seams.
      *
      * Chunks are submitted in the world's near-to-far spiral order rather than
      * sorted back-to-front, which is adequate for flat lake surfaces but would
@@ -1672,7 +1674,7 @@ public class Renderer {
         }
         glEnable(GL_BLEND);
         glDepthMask(false);
-        glDisable(GL_CULL_FACE);
+        glEnable(GL_CULL_FACE);
         for (int i = translucentQueue.size() - 1; i >= 0; i--) {
             WorldChunk chunk = translucentQueue.get(i);
             if (chunk.vaoHandle == 0) {

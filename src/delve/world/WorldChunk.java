@@ -439,7 +439,10 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             for (int y = 0; y < sizeY; y++) {
                 for (int z = 0; z < sizeZ; z++) {
                     if (data[x][y][z] == Block.WATER) {
-                        waterLevels[blockIndex(x, y, z)] = (byte) (y == SEA_LEVEL ? 8 : 1);
+                        // Generated water is flowing/stable terrain water, not
+                        // a player-created source. Only explicit placement
+                        // writes level 8.
+                        waterLevels[blockIndex(x, y, z)] = 1;
                     }
                 }
             }
@@ -2191,24 +2194,28 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     }
 
     private int computeWaterStripFaces(int x, int y, int z) {
-        int level = waterLevel(x, y, z);
+        float height = waterHeight(x, y, z);
         int count = 0;
-        if (level > waterLevelAt(x, y, z + 1) && waterLevelAt(x, y, z + 1) > 0) count++;
-        if (level > waterLevelAt(x + 1, y, z) && waterLevelAt(x + 1, y, z) > 0) count++;
-        if (level > waterLevelAt(x - 1, y, z) && waterLevelAt(x - 1, y, z) > 0) count++;
-        if (level > waterLevelAt(x, y, z - 1) && waterLevelAt(x, y, z - 1) > 0) count++;
+        if (height > waterHeightAt(x, y, z + 1)) count++;
+        if (height > waterHeightAt(x + 1, y, z)) count++;
+        if (height > waterHeightAt(x - 1, y, z)) count++;
+        if (height > waterHeightAt(x, y, z - 1)) count++;
         return count;
     }
 
     private void writeWaterStrips(FloatBuffer buffer, IntBuffer indices, int x, int y, int z) {
-        int level = waterLevel(x, y, z);
+        float height = waterHeight(x, y, z);
         int[] dx = {0, 1, -1, 0};
         int[] dz = {1, 0, 0, -1};
         int[] faces = {0, 1, 3, 5};
         boolean[] strip = new boolean[6];
         for (int n = 0; n < faces.length; n++) {
             int neighborLevel = waterLevelAt(x + dx[n], y, z + dz[n]);
-            if (level <= neighborLevel || neighborLevel == 0) {
+            if (neighborLevel == 0) {
+                continue;
+            }
+            float neighborHeight = waterHeight(x + dx[n], y, z + dz[n]);
+            if (height <= neighborHeight) {
                 continue;
             }
             for (int i = 0; i < strip.length; i++) {
@@ -2216,8 +2223,12 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             }
             strip[faces[n]] = true;
             Block.writeCube(buffer, indices, x, y, z, strip, Block.WATER, this,
-                    neighborLevel / 8.0f, (level - neighborLevel) / 8.0f);
+                    neighborHeight, height - neighborHeight);
         }
+    }
+
+    private float waterHeightAt(int x, int y, int z) {
+        return waterLevelAt(x, y, z) == 0 ? 0.0f : waterHeight(x, y, z);
     }
 
     private int computeExposedFaces(byte[] voxels, int i, int j, int k, boolean[] out) {
