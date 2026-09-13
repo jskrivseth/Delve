@@ -321,7 +321,7 @@ public class World {
         if (target == null || !target.isGenerated) return;
         int lx = Math.floorMod(x, WorldChunk.sizeX), lz = Math.floorMod(z, WorldChunk.sizeZ);
         int type = target.getBlock(lx, y, lz);
-        if (type != Block.AIR && type != Block.WATER) return;
+        if (type != Block.WATER && !Block.isWaterReplaceable(type)) return;
         int old = target.waterLevel(lx, y, lz);
         if (old >= 8 || old >= level) return;
         BLOCK_LOCK.writeLock().lock();

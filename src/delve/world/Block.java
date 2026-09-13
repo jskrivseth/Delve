@@ -285,6 +285,11 @@ public class Block implements Serializable {
                 || type == BROWN_GRASS;
     }
 
+    /** Blocks that flowing water may wash away. */
+    public static boolean isWaterReplaceable(int type) {
+        return type == AIR || type == LEAVES || isSpritePlant(type);
+    }
+
     /** Blocks rendered with smoothed marching-cube-like faces. */
     public static boolean isMarchingRock(int type) {
         return false;

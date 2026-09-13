@@ -49,6 +49,19 @@ class WaterSimulationTest {
     }
 
     @Test
+    void flowingWaterTramplesVegetation() {
+        WorldChunk chunk = chunk(0, 0);
+        chunk.blocks[WorldChunk.blockIndex(4, 7, 4)] = (byte) Block.TALL_GRASS;
+        chunk.setWaterLevel(4, 8, 4, 8);
+        World.enqueueWaterUpdate(4, 8, 4);
+
+        World.processWaterUpdates(200);
+
+        assertEquals(Block.WATER, chunk.getBlock(4, 7, 4));
+        assertEquals(7, chunk.waterLevel(4, 7, 4));
+    }
+
+    @Test
     void unsupportedFlowDrainsAfterSourceRemoval() {
         WorldChunk chunk = chunk(0, 0);
         chunk.setWaterLevel(4, 8, 4, 8);
