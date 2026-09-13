@@ -1990,24 +1990,23 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         out[5] = (k == 0) ? showsFace(type, neighborY) : showsFace(type, voxels[blockIndex(i, j, k - 1)] & 0xFF);          //Back   -z
 
         if (type == Block.WATER) {
-            int level = waterLevel(i, j, k);
             if (waterLevelAt(i, j, k + 1) > 0) {
-                out[0] = level > waterLevelAt(i, j, k + 1);
+                out[0] = false;
             }
             if (waterLevelAt(i + 1, j, k) > 0) {
-                out[1] = level > waterLevelAt(i + 1, j, k);
+                out[1] = false;
             }
             if (waterLevelAt(i, j + 1, k) > 0) {
-                out[2] = level > waterLevelAt(i, j + 1, k);
+                out[2] = false;
             }
             if (waterLevelAt(i - 1, j, k) > 0) {
-                out[3] = level > waterLevelAt(i - 1, j, k);
+                out[3] = false;
             }
             if (waterLevelAt(i, j - 1, k) > 0) {
-                out[4] = level > waterLevelAt(i, j - 1, k);
+                out[4] = false;
             }
             if (waterLevelAt(i, j, k - 1) > 0) {
-                out[5] = level > waterLevelAt(i, j, k - 1);
+                out[5] = false;
             }
         }
 
