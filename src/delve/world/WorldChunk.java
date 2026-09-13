@@ -1167,7 +1167,9 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                 }
                 int h = hash(wx, wz, y, 911);
 
-                float plantChance = 0.05f + forestW * 0.22f + grassyW * 0.16f + wet * 0.22f;
+                float foliagePatch = sample01(wx, wz, 19.0, 143, -557);
+                float plantChance = 0.09f + forestW * 0.30f + grassyW * 0.25f + wet * 0.28f;
+                plantChance *= lerp(0.62f, 1.55f, foliagePatch);
                 // Ground cover follows the dithered biome, so a contested column
                 // is not still suppressed by the climate weights around it.
                 plantChance = lerp(plantChance, Math.max(plantChance, 0.16f), border);
@@ -1209,6 +1211,22 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                 }
 
                 data[x][y + 1][z] = type;
+                // A nearby companion makes foliage read as a natural patch
+                // rather than evenly scattered single voxels. The candidate
+                // stays inside the chunk's protected interior.
+                if (foliagePatch > 0.57f && (h & 7) == 0) {
+                    int dx = (h & 1) == 0 ? 1 : -1;
+                    int dz = (h & 2) == 0 ? 0 : (h & 4) == 0 ? 1 : -1;
+                    int nx = x + dx;
+                    int nz = z + dz;
+                    if (nx >= 2 && nx <= sizeX - 3 && nz >= 2 && nz <= sizeZ - 3) {
+                        int neighborY = heightMap[nx][nz];
+                        if (neighborY == y && data[nx][neighborY + 1][nz] == Block.AIR) {
+                            data[nx][neighborY + 1][nz] = type;
+                            highest = Math.max(highest, neighborY + 2);
+                        }
+                    }
+                }
                 if (y + 2 > highest) {
                     highest = y + 2;
                 }
