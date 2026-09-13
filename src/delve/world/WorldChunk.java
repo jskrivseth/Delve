@@ -2185,9 +2185,13 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
      */
     private float waterHeight(int x, int y, int z) {
         int level = waterLevel(x, y, z);
+        return waterHeightForLevel(level, waterLevelAt(x, y + 1, z) > 0);
+    }
+
+    private float waterHeightForLevel(int level, boolean hasWaterAbove) {
         // The top cell keeps its partial surface. Cells below it form the
         // waterfall and need full-height side faces to avoid textured gaps.
-        if (waterLevelAt(x, y + 1, z) > 0) {
+        if (hasWaterAbove) {
             return 1.0f;
         }
         return level >= 8 ? 1.0f : Math.max(0.5f, level / 8.0f);
@@ -2228,7 +2232,9 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     }
 
     private float waterHeightAt(int x, int y, int z) {
-        return waterLevelAt(x, y, z) == 0 ? 0.0f : waterHeight(x, y, z);
+        int level = waterLevelAt(x, y, z);
+        return level == 0 ? 0.0f
+                : waterHeightForLevel(level, waterLevelAt(x, y + 1, z) > 0);
     }
 
     private int computeExposedFaces(byte[] voxels, int i, int j, int k, boolean[] out) {
