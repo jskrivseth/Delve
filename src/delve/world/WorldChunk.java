@@ -1012,31 +1012,33 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                 && base != Block.RED_SAND && base != Block.MUD && base != Block.CLAY) {
             return base;
         }
-        float patch = sample01(worldX, worldZ, 23.0, 587, -941);
+        // A second, smaller field keeps biome interiors from reading as one
+        // uninterrupted material sheet while remaining coherent at chunk edges.
+        float patch = sample01(worldX, worldZ, 17.0, 587, -941);
         int roll = hash(worldX, worldZ, biomeType, 1207) % 100;
         if (biomeType == EarthBiome.HOT_DESERT) {
-            return patch > 0.70f && roll < 26 ? Block.SANDSTONE : base;
+            return patch > 0.62f && roll < 38 ? Block.SANDSTONE : base;
         }
         if (biomeType == EarthBiome.WETLAND) {
-            return patch > 0.76f && roll < 18 ? Block.GRAVEL : base;
+            return patch > 0.68f && roll < 28 ? Block.GRAVEL : base;
         }
         if (biomeType == EarthBiome.TUNDRA || biomeType == EarthBiome.BOREAL_FOREST) {
-            return patch > 0.78f && roll < 16 ? Block.GRAVEL : base;
+            return patch > 0.70f && roll < 26 ? Block.GRAVEL : base;
         }
         if (biomeType == EarthBiome.SAVANNA || biomeType == EarthBiome.SHRUBLAND) {
-            return patch > 0.66f && roll < (18 + (int) (ruggedness * 18f))
+            return patch > 0.58f && roll < (28 + (int) (ruggedness * 24f))
                     ? Block.GRAVEL : base;
         }
         if (biomeType == EarthBiome.ALPINE) {
-            return patch > 0.62f && roll < (18 + (int) (ruggedness * 24f))
+            return patch > 0.56f && roll < (28 + (int) (ruggedness * 30f))
                     ? Block.STONE : base;
         }
         if (biomeType == EarthBiome.TEMPERATE_FOREST
                 || biomeType == EarthBiome.TROPICAL_RAINFOREST) {
-            return patch > 0.82f && roll < 12 && wetland < 0.55f
+            return patch > 0.68f && roll < 24 && wetland < 0.60f
                     ? Block.MOSSY_COBBLESTONE : base;
         }
-        return patch > 0.74f && roll < (10 + (int) (ruggedness * 12f))
+        return patch > 0.62f && roll < (22 + (int) (ruggedness * 20f))
                 ? Block.GRAVEL : base;
     }
 
