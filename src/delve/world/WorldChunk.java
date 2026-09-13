@@ -1166,6 +1166,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                     continue;
                 }
                 int h = hash(wx, wz, y, 911);
+                float flowerCluster = sample01(wx, wz, 58.0, -283, 719);
 
                 float foliagePatch = sample01(wx, wz, 19.0, 143, -557);
                 float plantChance = 0.18f + forestW * 0.46f + grassyW * 0.42f + wet * 0.38f;
@@ -1206,6 +1207,12 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                         }
                     }
                 }
+                // Flowers occupy coherent meadows rather than appearing
+                // uniformly across every grassy column. Outside a meadow,
+                // keep the same candidate as a grass variant.
+                if (type == Block.FLOWER && flowerCluster < 0.63f) {
+                    type = grassVariantForBiome(biomeType, pick);
+                }
                 if (surface == Block.SNOW && type == Block.FLOWER) {
                     type = tundraW > 0.45f ? Block.BROWN_GRASS : Block.TALL_GRASS;
                 } else if (type == Block.FLOWER) {
@@ -1216,7 +1223,8 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                 // A nearby companion makes foliage read as a natural patch
                 // rather than evenly scattered single voxels. The candidate
                 // stays inside the chunk's protected interior.
-                if (foliagePatch > 0.57f && (h & 7) == 0) {
+                if (foliagePatch > 0.57f && (h & 7) == 0
+                        && (!isFlowerVariant(type) || flowerCluster > 0.67f)) {
                     int dx = (h & 1) == 0 ? 1 : -1;
                     int dz = (h & 2) == 0 ? 0 : (h & 4) == 0 ? 1 : -1;
                     int nx = x + dx;
@@ -1246,6 +1254,24 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             return pick == 0 ? Block.RED_FLOWER : (pick == 1 ? Block.FLOWER : Block.BLUE_FLOWER);
         }
         return pick == 0 ? Block.FLOWER : (pick == 1 ? Block.RED_FLOWER : Block.PURPLE_FLOWER);
+    }
+
+    private static int grassVariantForBiome(int biomeType, int pick) {
+        if (biomeType == EarthBiome.WETLAND || biomeType == EarthBiome.TROPICAL_RAINFOREST) {
+            return pick < 92 ? Block.FERN : Block.REED_GRASS;
+        }
+        if (biomeType == EarthBiome.SAVANNA || biomeType == EarthBiome.SHRUBLAND) {
+            return pick < 62 ? Block.REED_GRASS : (pick < 88 ? Block.BROWN_GRASS : Block.TALL_GRASS);
+        }
+        if (biomeType == EarthBiome.TUNDRA || biomeType == EarthBiome.ALPINE) {
+            return pick < 58 ? Block.BROWN_GRASS : (pick < 88 ? Block.FERN : Block.TALL_GRASS);
+        }
+        return pick < 46 ? Block.TALL_GRASS : (pick < 78 ? Block.FERN : Block.BROWN_GRASS);
+    }
+
+    private static boolean isFlowerVariant(int type) {
+        return type == Block.FLOWER || type == Block.RED_FLOWER
+                || type == Block.PURPLE_FLOWER || type == Block.BLUE_FLOWER;
     }
 
     /**
