@@ -1981,10 +1981,6 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
      */
     private int computeExposedFaces(byte[] voxels, int i, int j, int k, boolean[] out) {
         int type = voxels[blockIndex(i, j, k)] & 0xFF;
-        if (Block.isLeaf(type)) {
-            java.util.Arrays.fill(out, true);
-            return 6;
-        }
         int neighborX = 0, neighborY = 0;
         if (i == 0) {  // Look down
             neighborX = World.chunkNeighbor(2, i, j, k, posX, posY);
@@ -2016,9 +2012,13 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     /**
      * A face is drawn when its neighbour does not fully occlude it. Two adjacent
      * blocks of the same see-through type (glass against glass) hide the shared
-     * face so the interior of a pane or a tree canopy is not meshed.
+     * face so the interior of a pane or a tree canopy is not meshed. Leaf
+     * variants are treated as the same transparent surface for this purpose.
      */
     private static boolean showsFace(int type, int neighborType) {
+        if (Block.isLeaf(type) && Block.isLeaf(neighborType)) {
+            return false;
+        }
         return Block.isTransparent(neighborType) && neighborType != type;
     }
 
