@@ -1886,6 +1886,9 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                                 }
                             } else {
                                 faceCount += computeExposedFaces(voxels, i, j, k, EXPOSED_FACES);
+                                if (type == Block.WATER) {
+                                    faceCount += computeWaterStripFaces(i, j, k);
+                                }
                             }
                             blockCount++;
                         }
@@ -1940,6 +1943,9 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                                 && computeExposedFaces(voxels, i, j, k, EXPOSED_FACES) > 0) {
                             Block.writeCube(buffer, indices, i, j, k, EXPOSED_FACES, type, this,
                                     waterHeight(i, j, k));
+                            if (type == Block.WATER) {
+                                writeWaterStrips(buffer, indices, i, j, k);
+                            }
                         }
                     }
                 }
@@ -1966,6 +1972,36 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     private float waterHeight(int x, int y, int z) {
         int level = waterLevel(x, y, z);
         return level >= 8 ? 1.0f : Math.max(0.5f, level / 8.0f);
+    }
+
+    private int computeWaterStripFaces(int x, int y, int z) {
+        int level = waterLevel(x, y, z);
+        int count = 0;
+        if (level > waterLevelAt(x, y, z + 1) && waterLevelAt(x, y, z + 1) > 0) count++;
+        if (level > waterLevelAt(x + 1, y, z) && waterLevelAt(x + 1, y, z) > 0) count++;
+        if (level > waterLevelAt(x - 1, y, z) && waterLevelAt(x - 1, y, z) > 0) count++;
+        if (level > waterLevelAt(x, y, z - 1) && waterLevelAt(x, y, z - 1) > 0) count++;
+        return count;
+    }
+
+    private void writeWaterStrips(FloatBuffer buffer, IntBuffer indices, int x, int y, int z) {
+        int level = waterLevel(x, y, z);
+        int[] dx = {0, 1, -1, 0};
+        int[] dz = {1, 0, 0, -1};
+        int[] faces = {0, 1, 3, 5};
+        boolean[] strip = new boolean[6];
+        for (int n = 0; n < faces.length; n++) {
+            int neighborLevel = waterLevelAt(x + dx[n], y, z + dz[n]);
+            if (level <= neighborLevel || neighborLevel == 0) {
+                continue;
+            }
+            for (int i = 0; i < strip.length; i++) {
+                strip[i] = false;
+            }
+            strip[faces[n]] = true;
+            Block.writeCube(buffer, indices, x, y, z, strip, Block.WATER, this,
+                    neighborLevel / 8.0f, (level - neighborLevel) / 8.0f);
+        }
     }
 
     private int computeExposedFaces(byte[] voxels, int i, int j, int k, boolean[] out) {
