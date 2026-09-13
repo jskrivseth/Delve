@@ -280,7 +280,7 @@ public class BlockFinder {
      * Block type at world coordinates, or air when the chunk is not loaded.
      * The caller holds the read lock.
      */
-    private static int blockAt(int worldX, int worldY, int worldZ) {
+    public static int blockTypeAt(int worldX, int worldY, int worldZ) {
         if (worldY < 0 || worldY >= WorldChunk.sizeY) {
             return Block.AIR;
         }
@@ -299,5 +299,8 @@ public class BlockFinder {
                 Math.floorMod(worldX, WorldChunk.sizeX), worldY,
                 Math.floorMod(worldZ, WorldChunk.sizeZ))] & 0xFF;
     }
-}
 
+    private static int blockAt(int worldX, int worldY, int worldZ) {
+        return blockTypeAt(worldX, worldY, worldZ);
+    }
+}

@@ -80,7 +80,8 @@ public class Block implements Serializable {
             // The side texture is mostly soil, so only the top takes leaf colour.
             return TINT_GRASS_BLOCK;
         }
-        if (type == LEAVES || type == TALL_GRASS || type == BROWN_GRASS) {
+        if (type == LEAVES || type == TALL_GRASS || type == BROWN_GRASS
+                || type == FERN || type == REED_GRASS) {
             return TINT_FOLIAGE;
         }
         if (type == DIRT || type == MUD || type == SAND || type == RED_SAND
@@ -178,6 +179,10 @@ public class Block implements Serializable {
         new float[]{0.72f, 0.70f, 0.61f, 1.0f},
         //40 - Red clay
         new float[]{0.62f, 0.25f, 0.16f, 1.0f},
+        //41 - Fern
+        new float[]{0.22f, 0.58f, 0.18f, 1.0f},
+        //42 - Reed grass
+        new float[]{0.30f, 0.68f, 0.20f, 1.0f},
     };
 
     public static final int AIR = 0, GRASS = 1, WATER = 2, SAND = 3, SNOW = 4,
@@ -189,7 +194,8 @@ public class Block implements Serializable {
             BROWN_GRASS = 27, MUD = 28, SLUSH = 29, BASALT = 30,
             SULFUR_STONE = 31, FROST_ICE = 32, THOLIN = 33, VOLCANIC_ASH = 34,
             BASALT_BOULDER = 35, SULFUR_BOULDER = 36, FROST_BOULDER = 37;
-    public static final int PEAT = 38, LIMESTONE = 39, RED_CLAY = 40;
+    public static final int PEAT = 38, LIMESTONE = 39, RED_CLAY = 40,
+            FERN = 41, REED_GRASS = 42;
 
     /** Human readable names, indexed by block type. */
     public static final String[] BLOCK_NAMES = {
@@ -200,6 +206,7 @@ public class Block implements Serializable {
         "Mushroom", "Brown Grass", "Mud", "Slush", "Basalt", "Sulfur Stone",
         "Frost Ice", "Tholin", "Volcanic Ash", "Basalt Boulder",
         "Sulfur Boulder", "Frost Boulder", "Peat", "Limestone", "Red Clay",
+        "Fern", "Reed Grass",
     };
 
     /** Types a player may place, in block-picker order. */
@@ -210,6 +217,7 @@ public class Block implements Serializable {
         TALL_GRASS, FLOWER, MUSHROOM, BROWN_GRASS, MUD, SLUSH,
         BASALT, SULFUR_STONE, FROST_ICE, THOLIN, VOLCANIC_ASH,
         BASALT_BOULDER, SULFUR_BOULDER, FROST_BOULDER, PEAT, LIMESTONE, RED_CLAY,
+        FERN, REED_GRASS,
     };
 
     public static String nameOf(int type) {
@@ -265,6 +273,8 @@ public class Block implements Serializable {
         {8, 8, 8, 8, 8, 8},          //38 peat
         {9, 8, 9, 8, 9, 8},          //39 limestone
         {10, 8, 10, 8, 10, 8},       //40 red clay
+        {11, 8, 11, 8, 11, 8},       //41 fern
+        {12, 8, 12, 8, 12, 8},       //42 reed grass
     };
 
     /** Atlas tiles per row/column, exposed so the HUD can slice block icons. */
@@ -282,7 +292,7 @@ public class Block implements Serializable {
     public static boolean isTransparent(int type) {
         return type == AIR || type == LEAVES || type == GLASS || type == WATER
                 || type == TALL_GRASS || type == FLOWER || type == MUSHROOM
-                || type == BROWN_GRASS;
+                || type == BROWN_GRASS || type == FERN || type == REED_GRASS;
     }
 
     /** Types drawn in the blended pass after all opaque geometry. */
@@ -293,7 +303,7 @@ public class Block implements Serializable {
     /** Plant-like blocks rendered as crossed cutout sprites instead of cubes. */
     public static boolean isSpritePlant(int type) {
         return type == TALL_GRASS || type == FLOWER || type == MUSHROOM
-                || type == BROWN_GRASS;
+                || type == BROWN_GRASS || type == FERN || type == REED_GRASS;
     }
 
     /** Blocks rendered with smoothed marching-cube-like faces. */
@@ -310,7 +320,7 @@ public class Block implements Serializable {
     public static boolean transmitsLight(int type) {
         return type == AIR || type == WATER || type == LEAVES || type == GLASS
                 || type == TALL_GRASS || type == FLOWER || type == MUSHROOM
-                || type == BROWN_GRASS;
+                || type == BROWN_GRASS || type == FERN || type == REED_GRASS;
     }
 
     /**

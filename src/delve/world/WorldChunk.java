@@ -1168,7 +1168,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                 int h = hash(wx, wz, y, 911);
 
                 float foliagePatch = sample01(wx, wz, 19.0, 143, -557);
-                float plantChance = 0.09f + forestW * 0.30f + grassyW * 0.25f + wet * 0.28f;
+                float plantChance = 0.18f + forestW * 0.46f + grassyW * 0.42f + wet * 0.38f;
                 plantChance *= lerp(0.62f, 1.55f, foliagePatch);
                 // Ground cover follows the dithered biome, so a contested column
                 // is not still suppressed by the climate weights around it.
@@ -1189,13 +1189,13 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                 int type;
                 int pick = (h >>> 16) & 0xFF;
                 switch (biomeType) {
-                    case EarthBiome.TUNDRA -> type = pick < 86 ? Block.BROWN_GRASS : (pick < 96 ? Block.MUSHROOM : Block.TALL_GRASS);
-                    case EarthBiome.BOREAL_FOREST -> type = pick < 72 ? Block.BROWN_GRASS : (pick < 92 ? Block.MUSHROOM : Block.TALL_GRASS);
-                    case EarthBiome.SAVANNA -> type = pick < 80 ? Block.BROWN_GRASS : (pick < 94 ? Block.TALL_GRASS : Block.FLOWER);
-                    case EarthBiome.SHRUBLAND -> type = pick < 74 ? Block.BROWN_GRASS : (pick < 92 ? Block.MUSHROOM : Block.FLOWER);
-                    case EarthBiome.TROPICAL_RAINFOREST -> type = pick < 66 ? Block.TALL_GRASS : (pick < 86 ? Block.FLOWER : Block.MUSHROOM);
-                    case EarthBiome.WETLAND -> type = pick < 70 ? Block.TALL_GRASS : (pick < 82 ? Block.FLOWER : Block.MUSHROOM);
-                    case EarthBiome.ALPINE -> type = pick < 88 ? Block.BROWN_GRASS : Block.MUSHROOM;
+                    case EarthBiome.TUNDRA -> type = pick < 70 ? Block.BROWN_GRASS : (pick < 86 ? Block.FERN : Block.MUSHROOM);
+                    case EarthBiome.BOREAL_FOREST -> type = pick < 54 ? Block.FERN : (pick < 78 ? Block.BROWN_GRASS : Block.MUSHROOM);
+                    case EarthBiome.SAVANNA -> type = pick < 56 ? Block.REED_GRASS : (pick < 82 ? Block.BROWN_GRASS : Block.FLOWER);
+                    case EarthBiome.SHRUBLAND -> type = pick < 48 ? Block.REED_GRASS : (pick < 76 ? Block.BROWN_GRASS : Block.FLOWER);
+                    case EarthBiome.TROPICAL_RAINFOREST -> type = pick < 52 ? Block.FERN : (pick < 78 ? Block.TALL_GRASS : Block.FLOWER);
+                    case EarthBiome.WETLAND -> type = pick < 52 ? Block.REED_GRASS : (pick < 76 ? Block.FERN : Block.FLOWER);
+                    case EarthBiome.ALPINE -> type = pick < 62 ? Block.BROWN_GRASS : (pick < 86 ? Block.FERN : Block.MUSHROOM);
                     default -> {
                         if (wet > 0.62f) {
                             type = pick < 74 ? Block.TALL_GRASS : (pick < 90 ? Block.FLOWER : Block.MUSHROOM);
