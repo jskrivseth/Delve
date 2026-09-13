@@ -1208,6 +1208,8 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                 }
                 if (surface == Block.SNOW && type == Block.FLOWER) {
                     type = tundraW > 0.45f ? Block.BROWN_GRASS : Block.TALL_GRASS;
+                } else if (type == Block.FLOWER) {
+                    type = flowerTypeForBiome(biomeType, h);
                 }
 
                 data[x][y + 1][z] = type;
@@ -1233,6 +1235,17 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             }
         }
         return highest;
+    }
+
+    private static int flowerTypeForBiome(int biomeType, int hash) {
+        int pick = (hash >>> 8) % 3;
+        if (biomeType == EarthBiome.TROPICAL_RAINFOREST || biomeType == EarthBiome.WETLAND) {
+            return pick == 0 ? Block.BLUE_FLOWER : (pick == 1 ? Block.PURPLE_FLOWER : Block.FLOWER);
+        }
+        if (biomeType == EarthBiome.SAVANNA || biomeType == EarthBiome.HOT_DESERT) {
+            return pick == 0 ? Block.RED_FLOWER : (pick == 1 ? Block.FLOWER : Block.BLUE_FLOWER);
+        }
+        return pick == 0 ? Block.FLOWER : (pick == 1 ? Block.RED_FLOWER : Block.PURPLE_FLOWER);
     }
 
     /**
