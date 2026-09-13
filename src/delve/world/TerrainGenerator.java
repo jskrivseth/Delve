@@ -20,6 +20,7 @@ public class TerrainGenerator {
     private static final double CAVE_BODY_SCALE_Y = 24.0;
     private static final double CAVE_DETAIL_SCALE_XZ = 13.0;
     private static final double CAVE_DETAIL_SCALE_Y = 10.0;
+    private static final int CAVE_ENTRANCE_DEPTH = 9;
 
     /**
      * Tests a world-space cave voxel. Coordinates are absolute block
@@ -28,22 +29,22 @@ public class TerrainGenerator {
      * foundation intact; water and bedrock are filtered by the caller.
      */
     static boolean isCave(int worldX, int y, int worldZ, int surfaceY) {
-        if (y <= CAVE_MIN_Y || y >= surfaceY) {
+        if (y <= CAVE_MIN_Y || y > surfaceY) {
             return false;
         }
-        double body = Math.abs(PerlinNoiseGenerator.getNoise(
-                worldX / CAVE_BODY_SCALE_XZ,
-                y / CAVE_BODY_SCALE_Y,
-                worldZ / CAVE_BODY_SCALE_XZ));
-        double detail = Math.abs(PerlinNoiseGenerator.getNoise(
-                (worldX + 173) / CAVE_DETAIL_SCALE_XZ,
-                (y - 67) / CAVE_DETAIL_SCALE_Y,
-                (worldZ - 251) / CAVE_DETAIL_SCALE_XZ));
+        double body = caveBody(worldX, y, worldZ);
+        double detail = caveDetail(worldX, y, worldZ);
         int depthBelowSurface = surfaceY - y;
+        if (depthBelowSurface <= CAVE_ENTRANCE_DEPTH
+                && isErodedEntrance(worldX, y, worldZ, surfaceY)) {
+            return true;
+        }
+        if (depthBelowSurface == 0) {
+            return false;
+        }
         // Taper the ordinary cave field through the last four underground
         // blocks. The broad component dominates here so entrances form useful
-        // openings rather than isolated pinholes, while the surface voxel itself
-        // remains protected by the guard above.
+        // openings rather than isolated pinholes.
         if (depthBelowSurface <= CAVE_SURFACE_BUFFER) {
             double entranceThreshold = depthBelowSurface <= 2 ? 0.13 : 0.12;
             return body * 0.85 + detail * 0.15 < entranceThreshold;
@@ -51,6 +52,42 @@ public class TerrainGenerator {
         double depth = Math.min(1.0, Math.max(0.0, (depthBelowSurface - CAVE_SURFACE_BUFFER) / 72.0));
         double threshold = 0.16 + depth * 0.08;
         return body * 0.72 + detail * 0.28 < threshold;
+    }
+
+    private static boolean isErodedEntrance(int worldX, int y, int worldZ, int surfaceY) {
+        int depth = surfaceY - y;
+        // Require an underground cave body beneath the mouth so erosion never
+        // creates an isolated surface pit.
+        double anchor = caveBody(worldX, surfaceY - CAVE_ENTRANCE_DEPTH, worldZ) * 0.72
+                + caveDetail(worldX, surfaceY - CAVE_ENTRANCE_DEPTH, worldZ) * 0.28;
+        if (anchor >= 0.23) {
+            return false;
+        }
+        double broad = Math.abs(PerlinNoiseGenerator.getNoise(
+                (worldX + 401) / 56.0,
+                (surfaceY - 19) / 38.0,
+                (worldZ - 337) / 56.0));
+        double edge = Math.abs(PerlinNoiseGenerator.getNoise(
+                (worldX - 149) / 21.0,
+                (worldZ + 263) / 21.0));
+        // Narrow at the exposed lip, widening rapidly below it. Fine noise
+        // roughens the boundary so mouths read as eroded rock rather than tubes.
+        double aperture = 0.13 + depth * 0.017;
+        return broad * 0.82 + edge * 0.18 < aperture;
+    }
+
+    private static double caveBody(int worldX, int y, int worldZ) {
+        return Math.abs(PerlinNoiseGenerator.getNoise(
+                worldX / CAVE_BODY_SCALE_XZ,
+                y / CAVE_BODY_SCALE_Y,
+                worldZ / CAVE_BODY_SCALE_XZ));
+    }
+
+    private static double caveDetail(int worldX, int y, int worldZ) {
+        return Math.abs(PerlinNoiseGenerator.getNoise(
+                (worldX + 173) / CAVE_DETAIL_SCALE_XZ,
+                (y - 67) / CAVE_DETAIL_SCALE_Y,
+                (worldZ - 251) / CAVE_DETAIL_SCALE_XZ));
     }
 
     static float[][] terrain;

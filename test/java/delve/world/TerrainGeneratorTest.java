@@ -17,10 +17,10 @@ public class TerrainGeneratorTest {
     }
 
     @Test
-    public void cavePredicateProtectsSurfaceAndFoundation() {
+    public void cavePredicateProtectsFoundationAndNeverCarvesAboveSurface() {
         PerlinNoiseGenerator.reseed(91423L);
         assertFalse(TerrainGenerator.isCave(37, 8, -19, 96));
-        assertFalse(TerrainGenerator.isCave(37, 96, -19, 96));
+        assertFalse(TerrainGenerator.isCave(37, 97, -19, 96));
     }
 
     @Test
@@ -67,5 +67,25 @@ public class TerrainGeneratorTest {
         }
         assertTrue(entranceColumns >= 12, "Entrances should occur often enough along a hillside");
         assertTrue(adjacentPairs >= 6, "Entrances should span multiple adjacent columns");
+    }
+
+    @Test
+    public void erodedSurfaceBreachesAreLargeConnectedClusters() {
+        PerlinNoiseGenerator.reseed(91423L);
+        int breached = 0;
+        int largestRun = 0;
+        int run = 0;
+        for (int x = -256; x < 256; x++) {
+            if (TerrainGenerator.isCave(x, 96, 0, 96)) {
+                breached++;
+                largestRun = Math.max(largestRun, ++run);
+                assertTrue(TerrainGenerator.isCave(x, 90, 0, 96),
+                        "A surface breach must widen into the cave below");
+            } else {
+                run = 0;
+            }
+        }
+        assertTrue(breached >= 10, "Surface cave mouths should be discoverable");
+        assertTrue(largestRun >= 4, "Surface cave mouths should be several blocks wide");
     }
 }

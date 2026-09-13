@@ -424,7 +424,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                 int worldX = worldPosX + x;
                 int worldZ = worldPosY + z;
                 int surfaceY = heightMap[x][z];
-                for (int y = TerrainGenerator.CAVE_MIN_Y; y < surfaceY; y++) {
+                for (int y = TerrainGenerator.CAVE_MIN_Y; y <= surfaceY; y++) {
                     int type = data[x][y][z];
                     if (type != Block.AIR && type != Block.WATER && type != Block.BEDROCK
                             && TerrainGenerator.isCave(worldX, y, worldZ, surfaceY)) {
@@ -799,6 +799,9 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                 if (y < 2 || y >= sizeY - 6) {
                     continue;
                 }
+                if (data[x][y][z] == Block.AIR) {
+                    continue;
+                }
                 int worldX = worldPosX + x;
                 int worldZ = worldPosY + z;
                 float rugged = ruggednessMap[x][z];
@@ -1065,6 +1068,9 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                     continue;
                 }
                 int surface = surfaceMap[x][z];
+                if (data[x][y][z] != surface) {
+                    continue;
+                }
                 if (surface != Block.GRASS && surface != Block.CLAY && surface != Block.SNOW
                         && surface != Block.DIRT && surface != Block.MUD && surface != Block.SLUSH) {
                     continue;
@@ -1164,6 +1170,9 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             for (int z = 2; z < sizeZ - 2; z++) {
                 int y = heightMap[x][z];
                 int surface = surfaceMap[x][z];
+                if (data[x][y][z] != surface) {
+                    continue;
+                }
                 if ((surface != Block.GRASS && surface != Block.DIRT && surface != Block.MUD)
                         || y <= SEA_LEVEL + 1 || y >= sizeY - 10) {
                     continue;

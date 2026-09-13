@@ -80,10 +80,10 @@ window title reports the biome under the player.
 ## Caves
 
 Terrain generation carves deterministic 3D-noise caves in absolute world
-coordinates, so tunnels continue cleanly across chunk seams. Bedrock and the
-surface voxel are protected; the cave field tapers through the final four
-underground blocks to create discoverable multi-block entrances without making
-the terrain surface generally porous.
+coordinates, so tunnels continue cleanly across chunk seams. Bedrock is
+protected. A separate broad erosion field connects selected cave bodies to the
+surface with rough, funnel-shaped mouths that widen below the exposed lip;
+ordinary caves still taper beneath intact terrain.
 
 ## Texture packs
 
