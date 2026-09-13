@@ -889,6 +889,14 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     private static int surfaceTypeFor(int height, BiomeBlend biome, float ruggedness,
                                       float temperature, float highlands, float wetland,
                                       int worldX, int worldZ, int biomeType) {
+        int base = baseSurfaceTypeFor(height, biome, ruggedness, temperature, highlands,
+                wetland, worldX, worldZ, biomeType);
+        return earthSurfacePatch(base, biomeType, ruggedness, wetland, worldX, worldZ);
+    }
+
+    private static int baseSurfaceTypeFor(int height, BiomeBlend biome, float ruggedness,
+                                      float temperature, float highlands, float wetland,
+                                      int worldX, int worldZ, int biomeType) {
         float desertW = biome.weight(BiomeDefinition.DESERT);
         float tundraW = biome.weight(BiomeDefinition.TUNDRA);
         float forestW = biome.weight(BiomeDefinition.FOREST);
@@ -992,6 +1000,46 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         return Block.GRASS;
     }
 
+    /**
+     * Sparse exposed patches break up otherwise uniform biome interiors while
+     * remaining a pure function of absolute coordinates. Patches are limited
+     * to compatible ground types so snow, water, and wetland silhouettes stay
+     * unchanged.
+     */
+    static int earthSurfacePatch(int base, int biomeType, float ruggedness,
+                                 float wetland, int worldX, int worldZ) {
+        if (base != Block.GRASS && base != Block.DIRT && base != Block.SAND
+                && base != Block.RED_SAND && base != Block.MUD && base != Block.CLAY) {
+            return base;
+        }
+        float patch = sample01(worldX, worldZ, 23.0, 587, -941);
+        int roll = hash(worldX, worldZ, biomeType, 1207) % 100;
+        if (biomeType == EarthBiome.HOT_DESERT) {
+            return patch > 0.70f && roll < 26 ? Block.SANDSTONE : base;
+        }
+        if (biomeType == EarthBiome.WETLAND) {
+            return patch > 0.76f && roll < 18 ? Block.GRAVEL : base;
+        }
+        if (biomeType == EarthBiome.TUNDRA || biomeType == EarthBiome.BOREAL_FOREST) {
+            return patch > 0.78f && roll < 16 ? Block.GRAVEL : base;
+        }
+        if (biomeType == EarthBiome.SAVANNA || biomeType == EarthBiome.SHRUBLAND) {
+            return patch > 0.66f && roll < (18 + (int) (ruggedness * 18f))
+                    ? Block.GRAVEL : base;
+        }
+        if (biomeType == EarthBiome.ALPINE) {
+            return patch > 0.62f && roll < (18 + (int) (ruggedness * 24f))
+                    ? Block.STONE : base;
+        }
+        if (biomeType == EarthBiome.TEMPERATE_FOREST
+                || biomeType == EarthBiome.TROPICAL_RAINFOREST) {
+            return patch > 0.82f && roll < 12 && wetland < 0.55f
+                    ? Block.MOSSY_COBBLESTONE : base;
+        }
+        return patch > 0.74f && roll < (10 + (int) (ruggedness * 12f))
+                ? Block.GRAVEL : base;
+    }
+
     private static int fillerTypeFor(int surface, BiomeBlend biome, int y, int height,
                                      int worldX, int worldZ, float wetland) {
         int depth = height - y;
@@ -1000,6 +1048,12 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         }
         if (surface == Block.RED_SAND) {
             return depth >= 3 ? Block.RED_SANDSTONE : Block.RED_SAND;
+        }
+        if (surface == Block.SANDSTONE) {
+            return depth >= 3 ? Block.SANDSTONE : Block.SAND;
+        }
+        if (surface == Block.GRAVEL) {
+            return depth >= 3 ? Block.STONE : Block.GRAVEL;
         }
         if (surface == Block.CLAY) {
             return Block.CLAY;
@@ -1018,6 +1072,9 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         }
         if (surface == Block.STONE) {
             return Block.ANDESITE;
+        }
+        if (surface == Block.MOSSY_COBBLESTONE) {
+            return depth >= 3 ? Block.STONE : Block.MOSSY_COBBLESTONE;
         }
         // Damp, low columns can lay clay under shallow lake water.
         if (wetland > 0.48f || height <= SEA_LEVEL + 2) {
