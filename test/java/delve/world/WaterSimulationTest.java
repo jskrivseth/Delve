@@ -49,6 +49,23 @@ class WaterSimulationTest {
     }
 
     @Test
+    void unsupportedFlowDrainsAfterSourceRemoval() {
+        WorldChunk chunk = chunk(0, 0);
+        chunk.setWaterLevel(4, 8, 4, 8);
+        chunk.setWaterLevel(4, 7, 4, 7);
+        chunk.setWaterLevel(3, 7, 4, 6);
+        chunk.setWaterLevel(4, 8, 4, 0);
+        World.enqueueWaterUpdate(4, 8, 4);
+        World.enqueueWaterUpdate(4, 7, 4);
+        World.enqueueWaterUpdate(3, 7, 4);
+
+        World.processWaterUpdates(500);
+
+        assertEquals(0, chunk.waterLevel(4, 7, 4));
+        assertEquals(0, chunk.waterLevel(3, 7, 4));
+    }
+
+    @Test
     void propagationCrossesChunkBoundaryDeterministically() {
         WorldChunk left = chunk(0, 0);
         WorldChunk right = chunk(1, 0);
