@@ -1205,8 +1205,19 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                 }
 
                 int style = selectTreeArchetype(worldPosX + x, y, worldPosY + z);
+                TreeArchetype archetype = TreeArchetype.values()[style];
                 int trunk = 4 + hash(worldPosX + x, y, worldPosY + z, 173) % 4; // 4..7
                 int crownR = 1 + hash(worldPosX + x, y, worldPosY + z, 241) % 2; // 1..2
+                if (archetype == TreeArchetype.PALM) {
+                    trunk = 7 + hash(worldPosX + x, y, worldPosY + z, 174) % 4;
+                    crownR = 1;
+                } else if (archetype == TreeArchetype.GIANT) {
+                    trunk = 8 + hash(worldPosX + x, y, worldPosY + z, 175) % 5;
+                    crownR = 2 + hash(worldPosX + x, y, worldPosY + z, 242) % 2;
+                } else if (archetype == TreeArchetype.BUSH) {
+                    trunk = 2 + hash(worldPosX + x, y, worldPosY + z, 176) % 2;
+                    crownR = 2;
+                }
                 int foliage = selectTreeFoliage(worldPosX + x, y, worldPosY + z, style);
                 highest = Math.max(highest, placeTree(data, x, y, z, trunk, crownR, style, foliage));
             }
@@ -1289,7 +1300,11 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         UMBRELLA,
         OPEN_BRANCHING,
         COLUMNAR,
-        COMPACT
+        COMPACT,
+        PALM,
+        WILLOW,
+        GIANT,
+        BUSH
     }
 
     static int placeTree(int[][][] data, int x, int groundY, int z,
@@ -1326,8 +1341,14 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                 r = (y <= crownCenterY - 1) ? crownRadius + 1 : crownRadius;
             } else if (archetype == TreeArchetype.COLUMNAR) {
                 r = 1;
-            } else {
+            } else if (archetype == TreeArchetype.COMPACT || archetype == TreeArchetype.BUSH) {
                 r = y == crownCenterY ? 1 : Math.min(crownRadius, 1);
+            } else if (archetype == TreeArchetype.PALM) {
+                r = y == crownCenterY ? 1 : 0;
+            } else if (archetype == TreeArchetype.WILLOW) {
+                r = y <= crownCenterY ? crownRadius + 1 : crownRadius;
+            } else {
+                r = crownRadius + (y == crownCenterY ? 1 : 0);
             }
             if (r < 1) {
                 r = 1;
@@ -1337,7 +1358,9 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                     if (Math.abs(dx) + Math.abs(dz) > r + 1) {
                         continue;
                     }
-                    if (archetype == TreeArchetype.OPEN_BRANCHING
+                    if ((archetype == TreeArchetype.OPEN_BRANCHING
+                            || archetype == TreeArchetype.PALM
+                            || archetype == TreeArchetype.WILLOW)
                             && ((hash(x + dx, y, z + dz, 99) % 100) < 28)) {
                         continue;
                     }
@@ -1362,8 +1385,12 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         // Occasional side branches for variety.
         if (archetype == TreeArchetype.TAPERED_CONIFER
                 || archetype == TreeArchetype.UMBRELLA
-                || archetype == TreeArchetype.OPEN_BRANCHING) {
-            int by = groundY + 2 + hash(x, z, trunkHeight, 58) % Math.max(1, trunkHeight - 1);
+                || archetype == TreeArchetype.OPEN_BRANCHING
+                || archetype == TreeArchetype.PALM
+                || archetype == TreeArchetype.WILLOW) {
+            int by = groundY + (archetype == TreeArchetype.PALM
+                    ? Math.max(2, trunkHeight - 1)
+                    : 2 + hash(x, z, trunkHeight, 58) % Math.max(1, trunkHeight - 1));
             if (by < topY - 1) {
                 int dir = hash(x, z, groundY, 121) % 4;
                 int bx = x + (dir == 0 ? 1 : dir == 1 ? -1 : 0);
