@@ -17,8 +17,15 @@ public class Framebuffer {
     private int depthTexture;
     private int width;
     private int height;
+    private final boolean floatColor;
 
     public Framebuffer(int width, int height) {
+        this(width, height, false);
+    }
+
+    /** @param floatColor true for an RGBA16F colour attachment (HDR history buffers) */
+    public Framebuffer(int width, int height, boolean floatColor) {
+        this.floatColor = floatColor;
         create(width, height);
     }
 
@@ -31,7 +38,14 @@ public class Framebuffer {
 
         colorTexture = glGenTextures();
         glBindTexture(GL_TEXTURE_2D, colorTexture);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, this.width, this.height, 0, GL_RGBA, GL_UNSIGNED_BYTE, (java.nio.ByteBuffer) null);
+        if (floatColor) {
+            // RGBA16F is colour-renderable in core 3.3, which is what the TAA
+            // history ping-pong needs: 8-bit history quantizes the sub-step
+            // residuals the whole trick relies on cancelling out.
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, this.width, this.height, 0, GL_RGBA, GL_HALF_FLOAT, (java.nio.ByteBuffer) null);
+        } else {
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, this.width, this.height, 0, GL_RGBA, GL_UNSIGNED_BYTE, (java.nio.ByteBuffer) null);
+        }
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);

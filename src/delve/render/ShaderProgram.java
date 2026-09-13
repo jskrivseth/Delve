@@ -195,6 +195,13 @@ public class ShaderProgram {
         }
     }
 
+    public void setVector2f(String name, float x, float y) {
+        int loc = location(name);
+        if (loc >= 0) {
+            glUniform2f(loc, x, y);
+        }
+    }
+
     public void setVector3f(String name, Vector3f value) {
         int loc = location(name);
         if (loc >= 0) {

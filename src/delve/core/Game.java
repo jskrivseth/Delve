@@ -152,6 +152,27 @@ public class Game {
     /** Whether to enable volumetric clouds (distinct from fog). */
     public static boolean OPT_CLOUDS = true;
     /**
+     * Temporal step reduction for the cloud march. When on, each frame marches
+     * only {@link #OPT_CLOUD_TAA_SAMPLES} of the usual step budget with the
+     * march phase jittered per frame, and a screen-space history buffer
+     * accumulates the frames back into a smooth image (box-clipped against the
+     * current frame, and dropped while the camera moves fast enough for screen
+     * space to be the wrong buffer to trust). Reprojection is deliberately not
+     * attempted: motion raises the history-rejection scalar instead, per the
+     * no-velocity-buffers mandate. Ships on; toggled (with the step fraction
+     * and response knobs) in the F9 dev menu, or via -Ddelve.cloudtaa /
+     * -Ddelve.taafraction for repeatable A/B runs.
+     */
+    public static boolean OPT_CLOUD_TAA = true;
+    /** Fraction of the per-frame march step budget used while TAA is on. */
+    public static float OPT_CLOUD_TAA_SAMPLES = 0.50f;
+    /**
+     * Static-camera blend weight toward the current frame in the TAA
+     * accumulation (raised toward 1 by camera motion). Lower accumulates
+     * longer (smoother, more ghost-prone); default converges in ~3 frames.
+     */
+    public static float OPT_CLOUD_TAA_RESPONSE = 0.35f;
+    /**
      * Divisor for the resolution the sky and volumetric clouds are marched at.
      * The march is the most expensive per-pixel work in the renderer and the sky
      * is low frequency, so halving resolution quarters the cost for little
@@ -339,6 +360,13 @@ public class Game {
                 && flag("delve.fullscreen") != WINDOW.isFullscreen()) {
             WINDOW.toggleFullscreen();
         }
+        // Headroom measurements: vsync turns the CPU into the frame pacemaker
+        // at 60/75 Hz, hiding every millisecond of GPU savings behind its
+        // sleep. Unlock it to measure GPU-bound behaviour honestly.
+        if (flag("delve.novsync")) {
+            OPT_VSYNC = false;
+            WINDOW.setVSync(false);
+        }
         // Establishes OPT_CLOUD_QUALITY/OPT_SKY_RESOLUTION_DIV/OPT_CLOUD_VOL_STEPS
         // from the single player-facing OPT_CLOUD_DETAIL setting; the explicit
         // -Ddelve.skydiv/-Ddelve.cloudquality overrides below still take
@@ -367,6 +395,18 @@ public class Game {
         OPT_CLOUD_VOL_STEPS = new int[] { 0, 10, 18, 32 }[OPT_CLOUD_QUALITY];
         OPT_CLOUD_OPACITY_SCALE = 1.0f;
         OPT_CLOUD_SHADOW_SCALE = 1.0f;
+        if (System.getProperty("delve.cloudtaa") != null) {
+            OPT_CLOUD_TAA = flag("delve.cloudtaa");
+        }
+        String taaFraction = System.getProperty("delve.taafraction");
+        if (taaFraction != null) {
+            try {
+                OPT_CLOUD_TAA_SAMPLES = Math.max(0.2f,
+                        Math.min(1.0f, Float.parseFloat(taaFraction.trim())));
+            } catch (NumberFormatException e) {
+                System.err.println("Ignoring bad delve.taafraction value: " + taaFraction);
+            }
+        }
         // Profiling runs need to be repeatable, and stopping at the title screen
         // to click through to a world makes that awkward.
         if (flag("delve.autoplay")) {

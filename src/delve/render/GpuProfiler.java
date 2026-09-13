@@ -30,6 +30,7 @@ public final class GpuProfiler {
      */
     public enum Zone {
         SKY      ("Sky + clouds", "skygradient.frag"),
+        CLOUD_TAA("Cloud TAA",    "cloudtaa.frag"),
         CELESTIAL("Sun / moon",   "sky.frag"),
         TERRAIN  ("Terrain",      "chunk.frag"),
         WATER    ("Water",        "chunk.frag"),
