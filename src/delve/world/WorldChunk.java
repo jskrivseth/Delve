@@ -114,6 +114,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     /** Water volume per voxel: 0 is dry, 1..7 is flowing, 8 is a source. */
     public volatile byte[] waterLevels;
     public volatile int numVerts;
+    public volatile boolean containsTransparentBlocks;
     /** Vertices in the leading opaque range; the remainder is translucent. */
     public volatile int opaqueVerts;
     /** Index counts mirroring {@link #numVerts}/{@link #opaqueVerts}. */
@@ -920,6 +921,14 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     private static int surfaceTypeFor(int height, BiomeBlend biome, float ruggedness,
                                       float temperature, float highlands, float wetland,
                                       int worldX, int worldZ, int biomeType) {
+        int base = baseSurfaceTypeFor(height, biome, ruggedness, temperature, highlands,
+                wetland, worldX, worldZ, biomeType);
+        return earthSurfacePatch(base, biomeType, ruggedness, wetland, worldX, worldZ);
+    }
+
+    private static int baseSurfaceTypeFor(int height, BiomeBlend biome, float ruggedness,
+                                      float temperature, float highlands, float wetland,
+                                      int worldX, int worldZ, int biomeType) {
         float desertW = biome.weight(BiomeDefinition.DESERT);
         float tundraW = biome.weight(BiomeDefinition.TUNDRA);
         float forestW = biome.weight(BiomeDefinition.FOREST);
@@ -1023,6 +1032,48 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         return Block.GRASS;
     }
 
+    /**
+     * Sparse exposed patches break up otherwise uniform biome interiors while
+     * remaining a pure function of absolute coordinates. Patches are limited
+     * to compatible ground types so snow, water, and wetland silhouettes stay
+     * unchanged.
+     */
+    static int earthSurfacePatch(int base, int biomeType, float ruggedness,
+                                 float wetland, int worldX, int worldZ) {
+        if (base != Block.GRASS && base != Block.DIRT && base != Block.SAND
+                && base != Block.RED_SAND && base != Block.MUD && base != Block.CLAY) {
+            return base;
+        }
+        // A second, smaller field keeps biome interiors from reading as one
+        // uninterrupted material sheet while remaining coherent at chunk edges.
+        float patch = sample01(worldX, worldZ, 17.0, 587, -941);
+        int roll = hash(worldX, worldZ, biomeType, 1207) % 100;
+        if (biomeType == EarthBiome.HOT_DESERT) {
+            return patch > 0.62f && roll < 38 ? Block.SANDSTONE : base;
+        }
+        if (biomeType == EarthBiome.WETLAND) {
+            return patch > 0.58f && roll < 34 ? Block.PEAT : base;
+        }
+        if (biomeType == EarthBiome.TUNDRA || biomeType == EarthBiome.BOREAL_FOREST) {
+            return patch > 0.70f && roll < 26 ? Block.GRAVEL : base;
+        }
+        if (biomeType == EarthBiome.SAVANNA || biomeType == EarthBiome.SHRUBLAND) {
+            return patch > 0.58f && roll < (28 + (int) (ruggedness * 24f))
+                    ? Block.RED_CLAY : base;
+        }
+        if (biomeType == EarthBiome.ALPINE) {
+            return patch > 0.56f && roll < (28 + (int) (ruggedness * 30f))
+                    ? Block.STONE : base;
+        }
+        if (biomeType == EarthBiome.TEMPERATE_FOREST
+                || biomeType == EarthBiome.TROPICAL_RAINFOREST) {
+            return patch > 0.68f && roll < 24 && wetland < 0.60f
+                    ? Block.PEAT : base;
+        }
+        return patch > 0.62f && roll < (22 + (int) (ruggedness * 20f))
+                ? Block.LIMESTONE : base;
+    }
+
     private static int fillerTypeFor(int surface, BiomeBlend biome, int y, int height,
                                      int worldX, int worldZ, float wetland) {
         int depth = height - y;
@@ -1031,6 +1082,21 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         }
         if (surface == Block.RED_SAND) {
             return depth >= 3 ? Block.RED_SANDSTONE : Block.RED_SAND;
+        }
+        if (surface == Block.SANDSTONE) {
+            return depth >= 3 ? Block.SANDSTONE : Block.SAND;
+        }
+        if (surface == Block.GRAVEL) {
+            return depth >= 3 ? Block.STONE : Block.GRAVEL;
+        }
+        if (surface == Block.PEAT) {
+            return depth >= 3 ? Block.DIRT : Block.PEAT;
+        }
+        if (surface == Block.LIMESTONE) {
+            return depth >= 3 ? Block.STONE : Block.LIMESTONE;
+        }
+        if (surface == Block.RED_CLAY) {
+            return depth >= 3 ? Block.DIRT : Block.RED_CLAY;
         }
         if (surface == Block.CLAY) {
             return Block.CLAY;
@@ -1049,6 +1115,9 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         }
         if (surface == Block.STONE) {
             return Block.ANDESITE;
+        }
+        if (surface == Block.MOSSY_COBBLESTONE) {
+            return depth >= 3 ? Block.STONE : Block.MOSSY_COBBLESTONE;
         }
         // Damp, low columns can lay clay under shallow lake water.
         if (wetland > 0.48f || height <= SEA_LEVEL + 2) {
@@ -1103,7 +1172,8 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                     continue;
                 }
                 if (surface != Block.GRASS && surface != Block.CLAY && surface != Block.SNOW
-                        && surface != Block.DIRT && surface != Block.MUD && surface != Block.SLUSH) {
+                        && surface != Block.DIRT && surface != Block.MUD && surface != Block.SLUSH
+                        && surface != Block.PEAT && surface != Block.RED_CLAY) {
                     continue;
                 }
                 if (data[x][y + 1][z] != Block.AIR) {
@@ -1128,8 +1198,11 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                     continue;
                 }
                 int h = hash(wx, wz, y, 911);
+                float flowerCluster = sample01(wx, wz, 58.0, -283, 719);
 
-                float plantChance = 0.05f + forestW * 0.22f + grassyW * 0.16f + wet * 0.22f;
+                float foliagePatch = sample01(wx, wz, 19.0, 143, -557);
+                float plantChance = 0.18f + forestW * 0.46f + grassyW * 0.42f + wet * 0.38f;
+                plantChance *= lerp(0.62f, 1.55f, foliagePatch);
                 // Ground cover follows the dithered biome, so a contested column
                 // is not still suppressed by the climate weights around it.
                 plantChance = lerp(plantChance, Math.max(plantChance, 0.16f), border);
@@ -1149,34 +1222,95 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                 int type;
                 int pick = (h >>> 16) & 0xFF;
                 switch (biomeType) {
-                    case EarthBiome.TUNDRA -> type = pick < 86 ? Block.BROWN_GRASS : (pick < 96 ? Block.MUSHROOM : Block.TALL_GRASS);
-                    case EarthBiome.BOREAL_FOREST -> type = pick < 72 ? Block.BROWN_GRASS : (pick < 92 ? Block.MUSHROOM : Block.TALL_GRASS);
-                    case EarthBiome.SAVANNA -> type = pick < 80 ? Block.BROWN_GRASS : (pick < 94 ? Block.TALL_GRASS : Block.FLOWER);
-                    case EarthBiome.SHRUBLAND -> type = pick < 74 ? Block.BROWN_GRASS : (pick < 92 ? Block.MUSHROOM : Block.FLOWER);
-                    case EarthBiome.TROPICAL_RAINFOREST -> type = pick < 66 ? Block.TALL_GRASS : (pick < 86 ? Block.FLOWER : Block.MUSHROOM);
-                    case EarthBiome.WETLAND -> type = pick < 70 ? Block.TALL_GRASS : (pick < 82 ? Block.FLOWER : Block.MUSHROOM);
-                    case EarthBiome.ALPINE -> type = pick < 88 ? Block.BROWN_GRASS : Block.MUSHROOM;
+                    case EarthBiome.TUNDRA -> type = pick < 70 ? Block.BROWN_GRASS : (pick < 95 ? Block.FERN : Block.MUSHROOM);
+                    case EarthBiome.BOREAL_FOREST -> type = pick < 54 ? Block.FERN : (pick < 95 ? Block.BROWN_GRASS : Block.MUSHROOM);
+                    case EarthBiome.SAVANNA -> type = pick < 56 ? Block.REED_GRASS : (pick < 82 ? Block.BROWN_GRASS : Block.FLOWER);
+                    case EarthBiome.SHRUBLAND -> type = pick < 48 ? Block.REED_GRASS : (pick < 76 ? Block.BROWN_GRASS : Block.FLOWER);
+                    case EarthBiome.TROPICAL_RAINFOREST -> type = pick < 52 ? Block.FERN : (pick < 78 ? Block.TALL_GRASS : Block.FLOWER);
+                    case EarthBiome.WETLAND -> type = pick < 52 ? Block.REED_GRASS : (pick < 76 ? Block.FERN : Block.FLOWER);
+                    case EarthBiome.ALPINE -> type = pick < 62 ? Block.BROWN_GRASS : (pick < 95 ? Block.FERN : Block.MUSHROOM);
                     default -> {
                         if (wet > 0.62f) {
-                            type = pick < 74 ? Block.TALL_GRASS : (pick < 90 ? Block.FLOWER : Block.MUSHROOM);
+                            type = pick < 74 ? Block.TALL_GRASS : (pick < 95 ? Block.FLOWER : Block.MUSHROOM);
                         } else if (forestW > 0.58f) {
-                            type = pick < 62 ? Block.TALL_GRASS : (pick < 82 ? Block.FLOWER : Block.MUSHROOM);
+                            type = pick < 62 ? Block.TALL_GRASS : (pick < 95 ? Block.FLOWER : Block.MUSHROOM);
                         } else {
                             type = pick < 76 ? Block.TALL_GRASS : Block.FLOWER;
                         }
                     }
                 }
+                // Flowers occupy coherent meadows rather than appearing
+                // uniformly across every grassy column. Outside a meadow,
+                // keep the same candidate as a grass variant.
+                if (type == Block.FLOWER && flowerCluster < 0.63f) {
+                    type = grassVariantForBiome(biomeType, pick);
+                }
                 if (surface == Block.SNOW && type == Block.FLOWER) {
                     type = tundraW > 0.45f ? Block.BROWN_GRASS : Block.TALL_GRASS;
+                } else if (type == Block.FLOWER) {
+                    type = flowerTypeForBiome(biomeType, h);
+                }
+                // Red-clay patches are intentionally warm and high-contrast;
+                // keep bright green strands out of them so the ground patch
+                // remains readable instead of looking like a neon outline.
+                if (surface == Block.RED_CLAY
+                        && (type == Block.TALL_GRASS || type == Block.FERN || type == Block.REED_GRASS)) {
+                    type = Block.BROWN_GRASS;
                 }
 
                 data[x][y + 1][z] = type;
+                // A nearby companion makes foliage read as a natural patch
+                // rather than evenly scattered single voxels. The candidate
+                // stays inside the chunk's protected interior.
+                if (foliagePatch > 0.57f && (h & 7) == 0
+                        && (!isFlowerVariant(type) || flowerCluster > 0.67f)) {
+                    int dx = (h & 1) == 0 ? 1 : -1;
+                    int dz = (h & 2) == 0 ? 0 : (h & 4) == 0 ? 1 : -1;
+                    int nx = x + dx;
+                    int nz = z + dz;
+                    if (nx >= 2 && nx <= sizeX - 3 && nz >= 2 && nz <= sizeZ - 3) {
+                        int neighborY = heightMap[nx][nz];
+                        if (neighborY == y && data[nx][neighborY + 1][nz] == Block.AIR) {
+                            data[nx][neighborY + 1][nz] = type;
+                            highest = Math.max(highest, neighborY + 2);
+                        }
+                    }
+                }
                 if (y + 2 > highest) {
                     highest = y + 2;
                 }
             }
         }
         return highest;
+    }
+
+    private static int flowerTypeForBiome(int biomeType, int hash) {
+        int pick = (hash >>> 8) % 3;
+        if (biomeType == EarthBiome.TROPICAL_RAINFOREST || biomeType == EarthBiome.WETLAND) {
+            return pick == 0 ? Block.BLUE_FLOWER : (pick == 1 ? Block.PURPLE_FLOWER : Block.FLOWER);
+        }
+        if (biomeType == EarthBiome.SAVANNA || biomeType == EarthBiome.HOT_DESERT) {
+            return pick == 0 ? Block.RED_FLOWER : (pick == 1 ? Block.FLOWER : Block.BLUE_FLOWER);
+        }
+        return pick == 0 ? Block.FLOWER : (pick == 1 ? Block.RED_FLOWER : Block.PURPLE_FLOWER);
+    }
+
+    private static int grassVariantForBiome(int biomeType, int pick) {
+        if (biomeType == EarthBiome.WETLAND || biomeType == EarthBiome.TROPICAL_RAINFOREST) {
+            return pick < 92 ? Block.FERN : Block.REED_GRASS;
+        }
+        if (biomeType == EarthBiome.SAVANNA || biomeType == EarthBiome.SHRUBLAND) {
+            return pick < 62 ? Block.REED_GRASS : (pick < 88 ? Block.BROWN_GRASS : Block.TALL_GRASS);
+        }
+        if (biomeType == EarthBiome.TUNDRA || biomeType == EarthBiome.ALPINE) {
+            return pick < 58 ? Block.BROWN_GRASS : (pick < 88 ? Block.FERN : Block.TALL_GRASS);
+        }
+        return pick < 46 ? Block.TALL_GRASS : (pick < 78 ? Block.FERN : Block.BROWN_GRASS);
+    }
+
+    private static boolean isFlowerVariant(int type) {
+        return type == Block.FLOWER || type == Block.RED_FLOWER
+                || type == Block.PURPLE_FLOWER || type == Block.BLUE_FLOWER;
     }
 
     /**
@@ -1204,7 +1338,8 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                 if (data[x][y][z] != surface) {
                     continue;
                 }
-                if ((surface != Block.GRASS && surface != Block.DIRT && surface != Block.MUD)
+                if ((surface != Block.GRASS && surface != Block.DIRT && surface != Block.MUD
+                        && surface != Block.PEAT && surface != Block.RED_CLAY)
                         || y <= SEA_LEVEL + 1 || y >= sizeY - 10) {
                     continue;
                 }
@@ -1234,10 +1369,22 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                     continue;
                 }
 
-                int style = hash(worldPosX + x, y, worldPosY + z, 71) % 4;
+                int style = selectTreeArchetype(worldPosX + x, y, worldPosY + z);
+                TreeArchetype archetype = TreeArchetype.values()[style];
                 int trunk = 4 + hash(worldPosX + x, y, worldPosY + z, 173) % 4; // 4..7
                 int crownR = 1 + hash(worldPosX + x, y, worldPosY + z, 241) % 2; // 1..2
-                highest = Math.max(highest, placeTree(data, x, y, z, trunk, crownR, style));
+                if (archetype == TreeArchetype.PALM) {
+                    trunk = 7 + hash(worldPosX + x, y, worldPosY + z, 174) % 4;
+                    crownR = 1;
+                } else if (archetype == TreeArchetype.GIANT) {
+                    trunk = 8 + hash(worldPosX + x, y, worldPosY + z, 175) % 5;
+                    crownR = 2 + hash(worldPosX + x, y, worldPosY + z, 242) % 2;
+                } else if (archetype == TreeArchetype.BUSH) {
+                    trunk = 2 + hash(worldPosX + x, y, worldPosY + z, 176) % 2;
+                    crownR = 2;
+                }
+                int foliage = selectTreeFoliage(worldPosX + x, y, worldPosY + z, style);
+                highest = Math.max(highest, placeTree(data, x, y, z, trunk, crownR, style, foliage));
             }
         }
         return highest;
@@ -1297,30 +1444,76 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         return true;
     }
 
-    private static int placeTree(int[][][] data, int x, int groundY, int z,
-                                 int trunkHeight, int crownRadius, int style) {
+    static int selectTreeArchetype(int worldX, int groundY, int worldZ) {
+        return hash(worldX, groundY, worldZ, 71) % TreeArchetype.values().length;
+    }
+
+    static int selectTreeFoliage(int worldX, int groundY, int worldZ, int archetype) {
+        int roll = hash(worldX, groundY, worldZ, 307) % 100;
+        if (archetype == TreeArchetype.TAPERED_CONIFER.ordinal()) {
+            return roll < 72 ? Block.DARK_LEAVES : Block.LEAVES;
+        }
+        if (archetype == TreeArchetype.OPEN_BRANCHING.ordinal()) {
+            return roll < 44 ? Block.GOLDEN_LEAVES : Block.LEAVES;
+        }
+        return roll < 18 ? Block.PALE_LEAVES : Block.LEAVES;
+    }
+
+    enum TreeArchetype {
+        ROUND_CANOPY,
+        TAPERED_CONIFER,
+        UMBRELLA,
+        OPEN_BRANCHING,
+        COLUMNAR,
+        COMPACT,
+        PALM,
+        WILLOW,
+        GIANT,
+        BUSH
+    }
+
+    static int placeTree(int[][][] data, int x, int groundY, int z,
+                         int trunkHeight, int crownRadius, int style) {
+        return placeTree(data, x, groundY, z, trunkHeight, crownRadius, style, Block.LEAVES);
+    }
+
+    static int placeTree(int[][][] data, int x, int groundY, int z,
+                         int trunkHeight, int crownRadius, int style, int foliage) {
+        TreeArchetype archetype = TreeArchetype.values()[Math.floorMod(style, TreeArchetype.values().length)];
         int topY = Math.min(sizeY - 2, groundY + trunkHeight);
         for (int y = groundY + 1; y <= topY; y++) {
-            data[x][y][z] = Block.WOOD;
+            if (isReplaceableTreeSpace(data[x][y][z])) {
+                data[x][y][z] = Block.WOOD;
+            }
         }
 
         int crownCenterY = Math.min(sizeY - 2, topY);
         int maxPlacedY = topY;
-        int lower = (style == 2) ? -2 : -1;
-        int upper = (style == 1) ? 2 : 1;
+        int lower = archetype == TreeArchetype.UMBRELLA ? -2 : -1;
+        int upper = archetype == TreeArchetype.TAPERED_CONIFER ? 2 : 1;
         for (int y = crownCenterY + lower; y <= crownCenterY + upper; y++) {
             if (y < 1 || y >= sizeY - 1) {
                 continue;
             }
             int r = crownRadius;
-            if (style == 0) {
+            if (archetype == TreeArchetype.ROUND_CANOPY) {
                 r = (y >= crownCenterY) ? Math.max(1, crownRadius - 1) : crownRadius;
-            } else if (style == 1) {
+            } else if (archetype == TreeArchetype.TAPERED_CONIFER) {
                 r = (y == crownCenterY + 2) ? 1 : crownRadius + 1;
-            } else if (style == 3) {
+            } else if (archetype == TreeArchetype.OPEN_BRANCHING) {
                 r = (y == crownCenterY + 1) ? 1 : crownRadius;
-            } else {
+            } else if (archetype == TreeArchetype.UMBRELLA) {
                 r = (y <= crownCenterY - 1) ? crownRadius + 1 : crownRadius;
+            } else if (archetype == TreeArchetype.COLUMNAR) {
+                r = 1;
+            } else if (archetype == TreeArchetype.COMPACT || archetype == TreeArchetype.BUSH) {
+                r = y == crownCenterY ? 1 : Math.min(crownRadius, 1);
+            } else if (archetype == TreeArchetype.PALM) {
+                r = y == crownCenterY ? 1 : 0;
+            } else if (archetype == TreeArchetype.WILLOW) {
+                r = y <= crownCenterY ? crownRadius + 1 : crownRadius;
+            } else {
+                r = crownRadius + (y == crownCenterY ? 1 : 0);
             }
             if (r < 1) {
                 r = 1;
@@ -1330,16 +1523,19 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                     if (Math.abs(dx) + Math.abs(dz) > r + 1) {
                         continue;
                     }
-                    if (style == 3 && ((hash(x + dx, y, z + dz, 99) % 100) < 28)) {
+                    if ((archetype == TreeArchetype.OPEN_BRANCHING
+                            || archetype == TreeArchetype.PALM
+                            || archetype == TreeArchetype.WILLOW)
+                            && ((hash(x + dx, y, z + dz, 99) % 100) < 28)) {
                         continue;
                     }
                     int px = x + dx;
                     int pz = z + dz;
-                    if (px < 0 || px >= sizeX || pz < 0 || pz >= sizeZ) {
+                    if (px <= 0 || px >= sizeX - 1 || pz <= 0 || pz >= sizeZ - 1) {
                         continue;
                     }
-                    if (data[px][y][pz] == Block.AIR || data[px][y][pz] == Block.LEAVES) {
-                        data[px][y][pz] = Block.LEAVES;
+                    if (isReplaceableTreeSpace(data[px][y][pz])) {
+                        data[px][y][pz] = foliage;
                         if (y > maxPlacedY) {
                             maxPlacedY = y;
                         }
@@ -1348,26 +1544,38 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             }
         }
         if (topY + 1 < sizeY - 1 && data[x][topY + 1][z] == Block.AIR) {
-            data[x][topY + 1][z] = Block.LEAVES;
+            data[x][topY + 1][z] = foliage;
             maxPlacedY = Math.max(maxPlacedY, topY + 1);
         }
         // Occasional side branches for variety.
-        if (style == 1 || style == 2) {
-            int by = groundY + 2 + hash(x, z, trunkHeight, 58) % Math.max(1, trunkHeight - 1);
+        if (archetype == TreeArchetype.TAPERED_CONIFER
+                || archetype == TreeArchetype.UMBRELLA
+                || archetype == TreeArchetype.OPEN_BRANCHING
+                || archetype == TreeArchetype.PALM
+                || archetype == TreeArchetype.WILLOW) {
+            int by = groundY + (archetype == TreeArchetype.PALM
+                    ? Math.max(2, trunkHeight - 1)
+                    : 2 + hash(x, z, trunkHeight, 58) % Math.max(1, trunkHeight - 1));
             if (by < topY - 1) {
                 int dir = hash(x, z, groundY, 121) % 4;
                 int bx = x + (dir == 0 ? 1 : dir == 1 ? -1 : 0);
                 int bz = z + (dir == 2 ? 1 : dir == 3 ? -1 : 0);
                 if (bx > 0 && bx < sizeX - 1 && bz > 0 && bz < sizeZ - 1) {
-                    data[bx][by][bz] = Block.WOOD;
-                    if (data[bx][by + 1][bz] == Block.AIR) {
-                        data[bx][by + 1][bz] = Block.LEAVES;
+                    if (isReplaceableTreeSpace(data[bx][by][bz])) {
+                        data[bx][by][bz] = Block.WOOD;
+                    }
+                    if (isReplaceableTreeSpace(data[bx][by + 1][bz])) {
+                        data[bx][by + 1][bz] = foliage;
                         maxPlacedY = Math.max(maxPlacedY, by + 1);
                     }
                 }
             }
         }
         return maxPlacedY + 1;
+    }
+
+    private static boolean isReplaceableTreeSpace(int block) {
+        return block == Block.AIR || Block.isLeaf(block);
     }
 
     /**
@@ -1873,11 +2081,13 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             // writer -- shared quads and unrolled triangle pairs alike.
             int faceCount = 0;
             int blockCount = 0;
+            boolean transparentBlocks = false;
             for (int i = 0; i < sizeX; i++) {
                 for (int j = 0; j < ceiling; j++) {
                     for (int k = 0; k < sizeZ; k++) {
                         int type = voxels[blockIndex(i, j, k)] & 0xFF;
                         if (type != 0) {
+                            transparentBlocks |= Block.isTransparent(type);
                             if (Block.isSpritePlant(type)) {
                                 faceCount += 4; // two crossed quads, double sided
                             } else if (Block.isMarchingRock(type)) {
@@ -1898,6 +2108,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
 
             BLOCK_COUNT = blockCount;
             FACE_COUNT = faceCount;
+            this.containsTransparentBlocks = transparentBlocks;
 
             if (faceCount == 0) {
                 this.pendingVerts = 0;
@@ -2073,9 +2284,13 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     /**
      * A face is drawn when its neighbour does not fully occlude it. Two adjacent
      * blocks of the same see-through type (glass against glass) hide the shared
-     * face so the interior of a pane or a tree canopy is not meshed.
+     * face so the interior of a pane or a tree canopy is not meshed. Leaf
+     * variants are treated as the same transparent surface for this purpose.
      */
     private static boolean showsFace(int type, int neighborType) {
+        if (Block.isLeaf(type) && Block.isLeaf(neighborType)) {
+            return false;
+        }
         return Block.isTransparent(neighborType) && neighborType != type;
     }
 

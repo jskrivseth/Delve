@@ -88,15 +88,12 @@ public class Texture {
             glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w.get(0), h.get(0), 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
 
-            // Nearest filtering keeps the voxel/pixel-art look crisp. Mip levels are
-            // capped because deep mips average whole atlas tiles together and bleed
-            // neighbouring textures into each face.
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_LINEAR);
+            // Atlas cutouts must not be averaged with transparent pixels or
+            // neighbouring tiles: that turns thin foliage into muddy cards.
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-            glGenerateMipmap(GL_TEXTURE_2D);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 2);
 
             STBImage.stbi_image_free(pixels);
             glBindTexture(GL_TEXTURE_2D, 0);
@@ -108,7 +105,7 @@ public class Texture {
      * Uploads an already-decoded image. Used by the texture pack loader, which
      * has to assemble atlases in memory before they reach the GPU.
      *
-     * @param pixelArt nearest filtering and clamped mips, for block textures
+     * @param pixelArt nearest filtering for crisp block and cutout atlas pixels
      */
     public static Texture fromImage(java.awt.image.BufferedImage image, boolean pixelArt) {
         int w = image.getWidth();
@@ -133,11 +130,9 @@ public class Texture {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         if (pixelArt) {
-            // Mip levels are capped because deep mips average whole atlas tiles
-            // together and bleed neighbouring textures into each face.
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_LINEAR);
-            glGenerateMipmap(GL_TEXTURE_2D);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 2);
+            // Atlas cutouts must remain hard-edged; mipmaps blend transparent
+            // foliage with neighbouring tiles and make strands look like cards.
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         } else {
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         }

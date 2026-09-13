@@ -80,12 +80,15 @@ public class Block implements Serializable {
             // The side texture is mostly soil, so only the top takes leaf colour.
             return TINT_GRASS_BLOCK;
         }
-        if (type == LEAVES || type == TALL_GRASS || type == BROWN_GRASS) {
+        if (isLeaf(type) || type == TALL_GRASS
+                || type == FERN || type == REED_GRASS || type == RED_FLOWER
+                || type == PURPLE_FLOWER || type == BLUE_FLOWER) {
             return TINT_FOLIAGE;
         }
         if (type == DIRT || type == MUD || type == SAND || type == RED_SAND
                 || type == CLAY || type == GRAVEL || type == SANDSTONE
-                || type == RED_SANDSTONE) {
+                || type == RED_SANDSTONE || type == PEAT || type == LIMESTONE
+                || type == RED_CLAY) {
             return TINT_GROUND;
         }
         return TINT_NONE;
@@ -171,6 +174,28 @@ public class Block implements Serializable {
         new float[]{0.77f, 0.66f, 0.32f, 1.0f},
         //37 - Frost boulder
         new float[]{0.66f, 0.82f, 0.89f, 1.0f},
+        //38 - Dark leaves
+        new float[]{0.16f, 0.40f, 0.12f, 1.0f},
+        //39 - Golden leaves
+        new float[]{0.72f, 0.58f, 0.14f, 1.0f},
+        //40 - Pale leaves
+        new float[]{0.42f, 0.66f, 0.28f, 1.0f},
+        //41 - Peat
+        new float[]{0.20f, 0.15f, 0.10f, 1.0f},
+        //42 - Limestone
+        new float[]{0.72f, 0.70f, 0.61f, 1.0f},
+        //43 - Red clay
+        new float[]{0.62f, 0.25f, 0.16f, 1.0f},
+        //44 - Fern
+        new float[]{0.22f, 0.58f, 0.18f, 1.0f},
+        //45 - Reed grass
+        new float[]{0.30f, 0.68f, 0.20f, 1.0f},
+        //46 - Red flower
+        new float[]{0.88f, 0.16f, 0.12f, 1.0f},
+        //47 - Purple flower
+        new float[]{0.62f, 0.18f, 0.82f, 1.0f},
+        //48 - Blue flower
+        new float[]{0.18f, 0.36f, 0.92f, 1.0f},
     };
 
     public static final int AIR = 0, GRASS = 1, WATER = 2, SAND = 3, SNOW = 4,
@@ -181,7 +206,11 @@ public class Block implements Serializable {
             DEEPSLATE = 23, TALL_GRASS = 24, FLOWER = 25, MUSHROOM = 26,
             BROWN_GRASS = 27, MUD = 28, SLUSH = 29, BASALT = 30,
             SULFUR_STONE = 31, FROST_ICE = 32, THOLIN = 33, VOLCANIC_ASH = 34,
-            BASALT_BOULDER = 35, SULFUR_BOULDER = 36, FROST_BOULDER = 37;
+            BASALT_BOULDER = 35, SULFUR_BOULDER = 36, FROST_BOULDER = 37,
+            DARK_LEAVES = 38, GOLDEN_LEAVES = 39, PALE_LEAVES = 40;
+    public static final int PEAT = 41, LIMESTONE = 42, RED_CLAY = 43,
+            FERN = 44, REED_GRASS = 45, RED_FLOWER = 46, PURPLE_FLOWER = 47,
+            BLUE_FLOWER = 48;
 
     /** Human readable names, indexed by block type. */
     public static final String[] BLOCK_NAMES = {
@@ -191,7 +220,10 @@ public class Block implements Serializable {
         "Granite", "Mossy Cobblestone", "Deepslate", "Tall Grass", "Flower",
         "Mushroom", "Brown Grass", "Mud", "Slush", "Basalt", "Sulfur Stone",
         "Frost Ice", "Tholin", "Volcanic Ash", "Basalt Boulder",
-        "Sulfur Boulder", "Frost Boulder",
+        "Sulfur Boulder", "Frost Boulder", "Dark Leaves", "Golden Leaves",
+        "Pale Leaves", "Peat", "Limestone", "Red Clay",
+        "Fern", "Reed Grass",
+        "Red Flower", "Purple Flower", "Blue Flower",
     };
 
     /** Types a player may place, in block-picker order. */
@@ -202,6 +234,10 @@ public class Block implements Serializable {
         TALL_GRASS, FLOWER, MUSHROOM, BROWN_GRASS, MUD, SLUSH,
         BASALT, SULFUR_STONE, FROST_ICE, THOLIN, VOLCANIC_ASH,
         BASALT_BOULDER, SULFUR_BOULDER, FROST_BOULDER,
+        DARK_LEAVES, GOLDEN_LEAVES, PALE_LEAVES,
+        PEAT, LIMESTONE, RED_CLAY,
+        FERN, REED_GRASS,
+        RED_FLOWER, PURPLE_FLOWER, BLUE_FLOWER,
     };
 
     public static String nameOf(int type) {
@@ -240,10 +276,10 @@ public class Block implements Serializable {
         {1, 0, 1, 0, 1, 0},          //21 granite: opaque stone fallback
         {4, 2, 4, 2, 4, 2},          //22 mossy cobblestone
         {1, 2, 1, 2, 1, 2},          //23 deepslate
-        {7, 2, 7, 2, 7, 2},          //24 tall grass
+        {11, 8, 11, 8, 11, 8},       //24 tall grass: transparent strands
         {13, 0, 13, 0, 13, 0},       //25 flower
         {12, 1, 12, 1, 12, 1},       //26 mushroom
-        {14, 2, 14, 2, 14, 2},       //27 brown grass
+        {12, 8, 12, 8, 12, 8},       //27 brown grass: transparent strands
         {14, 3, 14, 3, 14, 3},       //28 mud
         {14, 4, 15, 4, 14, 3},       //29 slush
         {15, 2, 15, 2, 15, 2},       //30 basalt
@@ -254,6 +290,17 @@ public class Block implements Serializable {
         {15, 2, 15, 2, 15, 2},       //35 basalt boulder
         {15, 3, 15, 3, 15, 3},       //36 sulfur boulder
         {15, 5, 15, 5, 15, 5},       //37 frost boulder
+        {4, 3, 4, 3, 4, 3},          //38 dark leaves
+        {4, 3, 4, 3, 4, 3},          //39 golden leaves
+        {4, 3, 4, 3, 4, 3},          //40 pale leaves
+        {8, 8, 8, 8, 8, 8},          //41 peat
+        {9, 8, 9, 8, 9, 8},          //42 limestone
+        {10, 8, 10, 8, 10, 8},       //43 red clay
+        {11, 8, 11, 8, 11, 8},       //44 fern
+        {12, 8, 12, 8, 12, 8},       //45 reed grass
+        {13, 8, 13, 8, 13, 8},       //46 red flower
+        {14, 8, 14, 8, 14, 8},       //47 purple flower
+        {15, 8, 15, 8, 15, 8},       //48 blue flower
     };
 
     /** Atlas tiles per row/column, exposed so the HUD can slice block icons. */
@@ -269,9 +316,10 @@ public class Block implements Serializable {
 
     /** Types that do not fully occlude the neighbouring face. */
     public static boolean isTransparent(int type) {
-        return type == AIR || type == LEAVES || type == GLASS || type == WATER
+        return type == AIR || isLeaf(type) || type == GLASS || type == WATER
                 || type == TALL_GRASS || type == FLOWER || type == MUSHROOM
-                || type == BROWN_GRASS;
+                || type == BROWN_GRASS || type == FERN || type == REED_GRASS
+                || type == RED_FLOWER || type == PURPLE_FLOWER || type == BLUE_FLOWER;
     }
 
     /** Types drawn in the blended pass after all opaque geometry. */
@@ -282,7 +330,8 @@ public class Block implements Serializable {
     /** Plant-like blocks rendered as crossed cutout sprites instead of cubes. */
     public static boolean isSpritePlant(int type) {
         return type == TALL_GRASS || type == FLOWER || type == MUSHROOM
-                || type == BROWN_GRASS;
+                || type == BROWN_GRASS || type == FERN || type == REED_GRASS
+                || type == RED_FLOWER || type == PURPLE_FLOWER || type == BLUE_FLOWER;
     }
 
     /** Blocks that flowing water may wash away. */
@@ -302,9 +351,10 @@ public class Block implements Serializable {
 
     /** Whether sky light passes through this block at all. */
     public static boolean transmitsLight(int type) {
-        return type == AIR || type == WATER || type == LEAVES || type == GLASS
+        return type == AIR || type == WATER || isLeaf(type) || type == GLASS
                 || type == TALL_GRASS || type == FLOWER || type == MUSHROOM
-                || type == BROWN_GRASS;
+                || type == BROWN_GRASS || type == FERN || type == REED_GRASS
+                || type == RED_FLOWER || type == PURPLE_FLOWER || type == BLUE_FLOWER;
     }
 
     /**
@@ -315,13 +365,18 @@ public class Block implements Serializable {
         if (type == WATER) {
             return 3;
         }
-        if (type == LEAVES) {
+        if (isLeaf(type)) {
             return 2;
         }
         if (type == TALL_GRASS || type == FLOWER || type == MUSHROOM || type == BROWN_GRASS) {
             return 2;
         }
         return 1;
+    }
+
+    public static boolean isLeaf(int type) {
+        return type == LEAVES || type == DARK_LEAVES
+                || type == GOLDEN_LEAVES || type == PALE_LEAVES;
     }
 
     /** Tiles per atlas row/column. */
@@ -524,6 +579,12 @@ public class Block implements Serializable {
                 t2v = solid.tintAt(x + (int) corners[2][0], z + (int) corners[2][2], ground);
                 t3v = solid.tintAt(x + (int) corners[3][0], z + (int) corners[3][2], ground);
             }
+            if (isLeaf(type)) {
+                t0 = adjustLeafTint(type, t0);
+                t1v = adjustLeafTint(type, t1v);
+                t2v = adjustLeafTint(type, t2v);
+                t3v = adjustLeafTint(type, t3v);
+            }
 
             // Four corner vertices, then the same two triangles (0-1-2, 2-3-0)
             // spelled as indices -- the repeats were written twice before.
@@ -534,6 +595,26 @@ public class Block implements Serializable {
             putVertex(buffer, corners[3], n, x, y, z, r, g, b, ao3, u0, u1, v0, v1, light, t3v, bottom, height);
             indices.put(vi).put(vi + 1).put(vi + 2).put(vi + 2).put(vi + 3).put(vi);
         }
+    }
+
+    private static float adjustLeafTint(int type, float packed) {
+        float r = (float) Math.floor(packed / 65536.0f) / 127.5f;
+        float g = (float) Math.floor((packed % 65536.0f) / 256.0f) / 127.5f;
+        float b = (packed % 256.0f) / 127.5f;
+        if (type == DARK_LEAVES) {
+            r *= 0.68f;
+            g *= 0.84f;
+            b *= 0.62f;
+        } else if (type == GOLDEN_LEAVES) {
+            r *= 1.35f;
+            g *= 1.08f;
+            b *= 0.52f;
+        } else if (type == PALE_LEAVES) {
+            r *= 1.08f;
+            g *= 1.20f;
+            b *= 0.82f;
+        }
+        return packTint(r, g, b);
     }
 
     /**
@@ -673,7 +754,13 @@ public class Block implements Serializable {
         // Sprites are a single block wide, so one tint sample at the column
         // centre is enough; averaging the four corners keeps it consistent with
         // the tinted cube faces around it.
-        float tint = biomeTintKind(type) != TINT_NONE ? solid.tintAt(x, z, false) : NO_TINT;
+        // Grass sits directly against the block below it, so use the restrained
+        // ground tint rather than the stronger foliage tint. This keeps vivid
+        // biome greens from vibrating against clay, red clay, and stone patches.
+        boolean groundTint = type == TALL_GRASS || type == FERN || type == REED_GRASS
+                || type == BROWN_GRASS;
+        float tint = biomeTintKind(type) != TINT_NONE
+                ? solid.tintAt(x, z, groundTint) : NO_TINT;
 
         // Quad A: (\) diagonal.
         putSpriteQuad(buffer, indices,

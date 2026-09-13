@@ -74,6 +74,7 @@ public class World {
     /** Set by {@link Input} when the player clicks; consumed during update. */
     public static volatile boolean BREAK_BLOCK_REQUESTED = false;
     public static volatile boolean PLACE_BLOCK_REQUESTED = false;
+    public static volatile boolean PICK_BLOCK_REQUESTED = false;
     public static boolean REBUILD_CHUNKS = false;
     public static int CURRENT_BOUND_XL = 0;
     public static int CURRENT_BOUND_XU = 0;
@@ -117,6 +118,7 @@ public class World {
         WAKE_SWEEPER = true;
         BREAK_BLOCK_REQUESTED = false;
         PLACE_BLOCK_REQUESTED = false;
+        PICK_BLOCK_REQUESTED = false;
         WORLD_SEED = seed;
         WORLD_PRESET = WorldPreset.clamp(worldPreset);
         // Reseeding the noise generator is what actually makes a seed mean
@@ -361,7 +363,16 @@ public class World {
         if (hit == null) {
             BREAK_BLOCK_REQUESTED = false;
             PLACE_BLOCK_REQUESTED = false;
+            PICK_BLOCK_REQUESTED = false;
             return;
+        }
+        if (PICK_BLOCK_REQUESTED) {
+            PICK_BLOCK_REQUESTED = false;
+            int type = BlockFinder.blockTypeAt(hit.x, hit.y, hit.z);
+            if (type != Block.AIR && type < Block.BLOCK_NAMES.length) {
+                Game.SELECTED_BLOCK_TYPE = type;
+                Game.consoleMsg("Picked " + Block.nameOf(type));
+            }
         }
         if (PLACE_BLOCK_REQUESTED) {
             PLACE_BLOCK_REQUESTED = false;
