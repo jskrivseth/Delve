@@ -184,9 +184,9 @@ public class BlockFinder {
         int typeAt(int x, int y, int z);
     }
 
-    /** Blocks the ray stops on. Water is see-through so a lake bed stays reachable. */
+    /** Every rendered block is targetable so water sources can be broken. */
     private static boolean isTargetable(int type) {
-        return type != Block.AIR && type != Block.WATER;
+        return type != Block.AIR;
     }
 
     /**
