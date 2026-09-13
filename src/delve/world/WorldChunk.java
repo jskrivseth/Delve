@@ -2006,7 +2006,14 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     /** Wireframe cube around the block currently under the crosshair. */
     private void drawSelectionBox() {
         Vector b = Block.openGLCoordinatesForBlock(this.selectedBlock);
-        float x = b.x, y = b.y, z = b.z;
+        // chunkModelMatrix() translates by the chunk origin (minus camera), so
+        // its vertices must be CHUNK-LOCAL like drawBoundingBox()'s. Feeding it
+        // the block's absolute world position double-translates and strands the
+        // box ~one chunk-origin away -- invisible ever since the camera-relative
+        // renderer landed.
+        float x = b.x - worldPosX;
+        float y = b.y;
+        float z = b.z - worldPosY;
 
         float[] v = {
             // bottom loop
