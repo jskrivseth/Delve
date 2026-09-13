@@ -185,22 +185,31 @@ class WaterSimulationTest {
         lake.enqueueGeneratedWaterOutlets();
         World.processWaterUpdates(200);
 
-        assertEquals(0, lake.waterLevel(4, 6, 4),
-                "terrain water stayed frozen at the exposed lake edge");
-        int remaining = 0;
-        int lowest = WorldChunk.sizeY;
-        for (int x = 0; x < WorldChunk.sizeX; x++) {
-            for (int y = 0; y < WorldChunk.sizeY; y++) {
-                for (int z = 0; z < WorldChunk.sizeZ; z++) {
-                    if (lake.waterLevel(x, y, z) == 1) {
-                        remaining++;
-                        lowest = Math.min(lowest, y);
-                    }
-                }
-            }
-        }
-        assertEquals(1, remaining, "terrain water multiplied or vanished while spilling");
-        assertTrue(lowest < 6, "terrain water did not descend into the cave");
+        assertEquals(1, lake.waterLevel(4, 6, 4),
+                "generated lake cell was consumed instead of acting as a source");
+        assertTrue(lake.waterLevel(5, 4, 4) > 1,
+                "generated lake did not emit flow into the adjacent cave");
+    }
+
+    @Test
+    void diggingIntoGeneratedLakeFromBelowCreatesAContinuousSource() {
+        WorldChunk lake = chunk(0, 0);
+        lake.blocks[WorldChunk.blockIndex(4, 5, 4)] = (byte) Block.STONE;
+        lake.blocks[WorldChunk.blockIndex(4, 2, 4)] = (byte) Block.STONE;
+        lake.setWaterLevel(4, 6, 4, 1);
+
+        // Simulate breaking the lake bed and the neighborhood update issued by
+        // BlockFinder after the edit.
+        lake.blocks[WorldChunk.blockIndex(4, 5, 4)] = (byte) Block.AIR;
+        World.enqueueWaterUpdate(4, 6, 4);
+        World.processWaterUpdates(200);
+
+        assertEquals(1, lake.waterLevel(4, 6, 4),
+                "the generated lake source disappeared after its bed was dug");
+        assertEquals(7, lake.waterLevel(4, 5, 4),
+                "the lake did not emit source-strength flow through the breach");
+        assertTrue(lake.waterLevel(4, 3, 4) > 1,
+                "the emitted flow did not descend to the cave floor");
     }
 
     /**

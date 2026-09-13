@@ -393,14 +393,15 @@ public class World {
             }
             /*
              * Level 1 is terrain water: the basin it fills holds it, so it keeps
-             * its level and only leaves when the ground underneath gives way.
-             * It moves rather than copies, so a breached lake drains instead of
-             * multiplying itself into the cave below.
+             * its level. When terrain underneath or beside it opens, it behaves
+             * as an anchored reservoir source: emit reclaimable level-7 flow
+             * without consuming the lake cell. This keeps generated lakes full
+             * when dug into from below, while the emitted water still drains
+             * normally after the breach is plugged.
              */
             if (level == 1) {
                 if (Block.isWaterReplaceable(blockTypeAtWorld(x, y - 1, z))
-                        && spreadWater(x, y - 1, z, 1)) {
-                    finishTerrainWaterMove(x, y, z);
+                        && spreadWater(x, y - 1, z, 7)) {
                     continue;
                 }
                 // Generated lakes normally sit in terrain-filled basins, but a
@@ -409,10 +410,10 @@ public class World {
                 // that lip; its queued destination then falls normally. Requiring
                 // open space below the neighbour prevents terrain water from
                 // spreading sideways across ordinary flat ground.
-                if (!moveTerrainWaterOverDrop(x, y, z, x - 1, z)
-                        && !moveTerrainWaterOverDrop(x, y, z, x + 1, z)
-                        && !moveTerrainWaterOverDrop(x, y, z, x, z - 1)) {
-                    moveTerrainWaterOverDrop(x, y, z, x, z + 1);
+                if (!emitTerrainWaterOverDrop(x, y, z, x - 1, z)
+                        && !emitTerrainWaterOverDrop(x, y, z, x + 1, z)
+                        && !emitTerrainWaterOverDrop(x, y, z, x, z - 1)) {
+                    emitTerrainWaterOverDrop(x, y, z, x, z + 1);
                 }
                 continue;
             }
@@ -477,23 +478,14 @@ public class World {
         return Math.min(processed, budget);
     }
 
-    private static boolean moveTerrainWaterOverDrop(int x, int y, int z,
+    private static boolean emitTerrainWaterOverDrop(int x, int y, int z,
                                                     int outletX, int outletZ) {
         if (!Block.isWaterReplaceable(blockTypeAtWorld(outletX, y, outletZ))
                 || !Block.isWaterReplaceable(blockTypeAtWorld(outletX, y - 1, outletZ))
-                || !spreadWater(outletX, y, outletZ, 1)) {
+                || !spreadWater(outletX, y, outletZ, 7)) {
             return false;
         }
-        finishTerrainWaterMove(x, y, z);
         return true;
-    }
-
-    private static void finishTerrainWaterMove(int x, int y, int z) {
-        clearWaterCell(x, y, z);
-        enqueueWaterUpdate(x - 1, y, z);
-        enqueueWaterUpdate(x + 1, y, z);
-        enqueueWaterUpdate(x, y, z - 1);
-        enqueueWaterUpdate(x, y, z + 1);
     }
 
     private static boolean hasStrongerSupport(int x, int y, int z, int level) {
@@ -501,7 +493,8 @@ public class World {
             {x, y, z - 1}, {x, y, z + 1}, {x, y + 1, z}};
         for (int[] neighbor : neighbors) {
             int neighborLevel = waterLevelAtWorld(neighbor[0], neighbor[1], neighbor[2]);
-            if (neighborLevel > level
+            if (neighborLevel == 1
+                    || neighborLevel > level
                     || (neighbor[1] == y + 1 && neighborLevel >= level)) {
                 return true;
             }
