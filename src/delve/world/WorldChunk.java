@@ -2015,22 +2015,31 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         float y = b.y;
         float z = b.z - worldPosY;
 
+        // Inflate past the block's faces: edges lying exactly in a face plane
+        // z-fight with the terrain and speckle/shimmer as the camera moves.
+        final float eps = 0.004f;
+        float x0 = x - eps, x1 = x + 1f + eps;
+        float y0 = y - eps, y1 = y + 1f + eps;
+        // openGLCoordinatesForBlock pre-added 1 to z, so the old cube spanned
+        // [z-1, z]; keep that span and inflate both ends.
+        float z0 = z - 1f - eps, z1 = z + eps;
+
         float[] v = {
             // bottom loop
-            x, y, z - 1,  x + 1, y, z - 1,
-            x + 1, y, z - 1,  x + 1, y, z,
-            x + 1, y, z,  x, y, z,
-            x, y, z,  x, y, z - 1,
+            x0, y0, z0,  x1, y0, z0,
+            x1, y0, z0,  x1, y0, z1,
+            x1, y0, z1,  x0, y0, z1,
+            x0, y0, z1,  x0, y0, z0,
             // top loop
-            x, y + 1, z - 1,  x + 1, y + 1, z - 1,
-            x + 1, y + 1, z - 1,  x + 1, y + 1, z,
-            x + 1, y + 1, z,  x, y + 1, z,
-            x, y + 1, z,  x, y + 1, z - 1,
+            x0, y1, z0,  x1, y1, z0,
+            x1, y1, z0,  x1, y1, z1,
+            x1, y1, z1,  x0, y1, z1,
+            x0, y1, z1,  x0, y1, z0,
             // verticals
-            x, y, z - 1,  x, y + 1, z - 1,
-            x + 1, y, z - 1,  x + 1, y + 1, z - 1,
-            x + 1, y, z,  x + 1, y + 1, z,
-            x, y, z,  x, y + 1, z,
+            x0, y0, z0,  x0, y1, z0,
+            x1, y0, z0,  x1, y1, z0,
+            x1, y0, z1,  x1, y1, z1,
+            x0, y0, z1,  x0, y1, z1,
         };
 
         Renderer.drawDebugGeometry(GL_LINES, v, v.length / 3, chunkModelMatrix(), 1f, 1f, 1f, 1f);
