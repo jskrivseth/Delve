@@ -286,8 +286,8 @@ public class World {
                 enqueueWaterUpdate(x, y, z + 1);
                 continue;
             }
-            spreadWater(x, y - 1, z, level == 8 ? 7 : level);
-            if (level > 1) {
+            boolean flowedDown = spreadWater(x, y - 1, z, level == 8 ? 7 : level);
+            if (!flowedDown && level > 1) {
                 spreadWater(x - 1, y, z, level - 1);
                 spreadWater(x + 1, y, z, level - 1);
                 spreadWater(x, y, z - 1, level - 1);
@@ -316,16 +316,16 @@ public class World {
         return false;
     }
 
-    private static void spreadWater(int x, int y, int z, int level) {
-        if (y < 0 || y >= WorldChunk.sizeY) return;
+    private static boolean spreadWater(int x, int y, int z, int level) {
+        if (y < 0 || y >= WorldChunk.sizeY) return false;
         WorldChunk target = getChunk(Math.floorDiv(x, WorldChunk.sizeX),
                 Math.floorDiv(z, WorldChunk.sizeZ));
-        if (target == null || !target.isGenerated) return;
+        if (target == null || !target.isGenerated) return false;
         int lx = Math.floorMod(x, WorldChunk.sizeX), lz = Math.floorMod(z, WorldChunk.sizeZ);
         int type = target.getBlock(lx, y, lz);
-        if (type != Block.WATER && !Block.isWaterReplaceable(type)) return;
+        if (type != Block.WATER && !Block.isWaterReplaceable(type)) return false;
         int old = target.waterLevel(lx, y, lz);
-        if (old >= 8 || old >= level) return;
+        if (old >= 8 || old >= level) return false;
         BLOCK_LOCK.writeLock().lock();
         try {
             if (target.setWaterLevel(lx, y, lz, level)) {
@@ -334,10 +334,12 @@ public class World {
                 enqueueWaterUpdate(x + 1, y, z);
                 enqueueWaterUpdate(x, y, z - 1);
                 enqueueWaterUpdate(x, y, z + 1);
+                return true;
             }
         } finally {
             BLOCK_LOCK.writeLock().unlock();
         }
+        return false;
     }
 
     private void pickSelectedBlock() {

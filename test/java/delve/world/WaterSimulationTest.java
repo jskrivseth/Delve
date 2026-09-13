@@ -26,14 +26,15 @@ class WaterSimulationTest {
     }
 
     @Test
-    void sourceFlowsDownAndSidewaysWithAttenuation() {
+    void sourceFlowsDownAndSpreadsSidewaysWhenBlocked() {
         WorldChunk chunk = chunk(0, 0);
+        chunk.blocks[WorldChunk.blockIndex(4, 7, 4)] = (byte) Block.STONE;
         chunk.setWaterLevel(4, 8, 4, 8);
         World.enqueueWaterUpdate(4, 8, 4);
 
         World.processWaterUpdates(200);
 
-        assertEquals(7, chunk.waterLevel(4, 7, 4));
+        assertEquals(0, chunk.waterLevel(4, 7, 4));
         assertEquals(7, chunk.waterLevel(3, 8, 4));
         assertEquals(8, chunk.waterLevel(4, 8, 4));
     }
@@ -82,6 +83,7 @@ class WaterSimulationTest {
     void propagationCrossesChunkBoundaryDeterministically() {
         WorldChunk left = chunk(0, 0);
         WorldChunk right = chunk(1, 0);
+        left.blocks[WorldChunk.blockIndex(WorldChunk.sizeX - 1, 3, 2)] = (byte) Block.STONE;
         left.setWaterLevel(WorldChunk.sizeX - 1, 4, 2, 8);
         World.enqueueWaterUpdate(WorldChunk.sizeX - 1, 4, 2);
 
@@ -93,6 +95,7 @@ class WaterSimulationTest {
     @Test
     void identicalQueueProducesIdenticalLevels() {
         WorldChunk first = chunk(2, 0);
+        first.blocks[WorldChunk.blockIndex(4, 7, 4)] = (byte) Block.STONE;
         first.setWaterLevel(4, 8, 4, 8);
         World.enqueueWaterUpdate(2 * WorldChunk.sizeX + 4, 8, 4);
         World.processWaterUpdates(40);
@@ -101,6 +104,7 @@ class WaterSimulationTest {
         World.unregisterChunk(first);
         chunks.remove(first);
         WorldChunk second = chunk(2, 0);
+        second.blocks[WorldChunk.blockIndex(4, 7, 4)] = (byte) Block.STONE;
         second.setWaterLevel(4, 8, 4, 8);
         World.clearWaterUpdates();
         World.enqueueWaterUpdate(2 * WorldChunk.sizeX + 4, 8, 4);
