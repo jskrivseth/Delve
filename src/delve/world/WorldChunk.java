@@ -1604,7 +1604,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
      * than leaf colour does, and the terrain already signals biome through the
      * block type it picks.
      */
-    private static final float FOLIAGE_TINT_STRENGTH = 0.45f;
+    private static final float FOLIAGE_TINT_STRENGTH = 0.25f;
     private static final float GROUND_TINT_STRENGTH = 0.20f;
 
     private static void biomeTintRgbAt(int worldX, int worldZ, float[] out) {
@@ -2182,6 +2182,9 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
      */
     private float waterHeight(int x, int y, int z) {
         int level = waterLevel(x, y, z);
+        if (waterLevelAt(x, y - 1, z) > 0) {
+            return 1.0f;
+        }
         return level >= 8 ? 1.0f : Math.max(0.5f, level / 8.0f);
     }
 
