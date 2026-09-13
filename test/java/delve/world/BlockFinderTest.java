@@ -41,4 +41,36 @@ class BlockFinderTest {
         assertEquals(Block.AIR, chunk.getBlock(4, 8, 4));
         assertEquals(0, chunk.waterLevel(4, 8, 4));
     }
+
+    @Test
+    void breakingFlowingWaterDoesNotDrainThePuddle() {
+        chunk = new WorldChunk(0, 0);
+        chunk.isGenerated = true;
+        World.registerChunk(chunk);
+        chunk.setWaterLevel(4, 8, 4, 8);
+        chunk.setWaterLevel(5, 8, 4, 7);
+        chunk.setWaterLevel(6, 8, 4, 6);
+
+        BlockFinder.setBlockType(chunk, 5, 8, 4, Block.AIR);
+        World.processWaterUpdates(200);
+
+        assertEquals(8, chunk.waterLevel(4, 8, 4));
+        assertEquals(Block.WATER, chunk.getBlock(6, 8, 4));
+    }
+
+    @Test
+    void breakingSourceDrainsItsFlowingWater() {
+        chunk = new WorldChunk(0, 0);
+        chunk.isGenerated = true;
+        World.registerChunk(chunk);
+        chunk.setWaterLevel(4, 8, 4, 8);
+        chunk.setWaterLevel(5, 8, 4, 7);
+        chunk.setWaterLevel(6, 8, 4, 6);
+
+        BlockFinder.setBlockType(chunk, 4, 8, 4, Block.AIR);
+        World.processWaterUpdates(200);
+
+        assertEquals(0, chunk.waterLevel(5, 8, 4));
+        assertEquals(0, chunk.waterLevel(6, 8, 4));
+    }
 }

@@ -37,6 +37,8 @@ public class BlockFinder {
             if (localY >= 0 && localY < WorldChunk.sizeY) {
                 if (localZ >= 0 && localZ < WorldChunk.sizeZ) {
                     boolean wasWater = chunk.getBlock(localX, localY, localZ) == Block.WATER;
+                    int removedWaterLevel = wasWater
+                            ? chunk.waterLevel(localX, localY, localZ) : 0;
                     World.BLOCK_LOCK.writeLock().lock();
                     try {
                         chunk.blocks[WorldChunk.blockIndex(localX, localY, localZ)] = (byte) type;
@@ -56,7 +58,9 @@ public class BlockFinder {
                         World.processWaterUpdates(World.MAX_WATER_DROP_DISTANCE + 1);
                     } else if (wasWater) {
                         enqueueWaterNeighborhood(x, y, z);
-                        World.enqueueWaterDrainNeighborhood(x, y, z);
+                        if (removedWaterLevel == 8) {
+                            World.enqueueWaterDrainNeighborhood(x, y, z);
+                        }
                     }
                     return;
                 }
@@ -124,6 +128,7 @@ public class BlockFinder {
             if (y >= 0 && y < WorldChunk.sizeY) {
                 if (z >= 0 && z < WorldChunk.sizeZ) {
                     boolean wasWater = chunk.getBlock(x, y, z) == Block.WATER;
+                    int removedWaterLevel = wasWater ? chunk.waterLevel(x, y, z) : 0;
                     World.BLOCK_LOCK.writeLock().lock();
                     try {
                         chunk.blocks[WorldChunk.blockIndex(x, y, z)] = (byte) type;
@@ -147,8 +152,10 @@ public class BlockFinder {
                         World.processWaterUpdates(World.MAX_WATER_DROP_DISTANCE + 1);
                     } else if (wasWater) {
                         enqueueWaterNeighborhood(chunk.worldPosX + x, y, chunk.worldPosY + z);
-                        World.enqueueWaterDrainNeighborhood(chunk.worldPosX + x, y,
-                                chunk.worldPosY + z);
+                        if (removedWaterLevel == 8) {
+                            World.enqueueWaterDrainNeighborhood(chunk.worldPosX + x, y,
+                                    chunk.worldPosY + z);
+                        }
                     }
 
                     return;
