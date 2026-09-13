@@ -36,8 +36,14 @@ void main() {
     fragSkyLight = inSkyLight;
     fragViewPos = viewPos.xyz;
     // model is camera-relative for precision; add the camera back so world-
-    // space effects (cloud shadows, fog noise) stay fixed to terrain.
-    fragWorldPos = worldPos.xyz + cameraWorldPos;
+    // space effects (cloud shadows, fog noise) stay fixed to terrain. Only XZ
+    // were shifted by the model matrix -- vertex Y is absolute world height --
+    // so adding the camera's Y back too (it used to be) inflated terrain height
+    // by the flight altitude: the ray-to-clouds solve slid the sampled cloud
+    // column sideways as the player climbed, dragging shadows across the
+    // ground, and skewed the fog height falloff.
+    fragWorldPos = vec3(worldPos.x + cameraWorldPos.x, worldPos.y,
+                        worldPos.z + cameraWorldPos.z);
     fragViewDistance = length(viewPos.xyz);
 
     // Biome tint arrives as three 8-bit channels packed into one float, each
