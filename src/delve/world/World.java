@@ -435,6 +435,11 @@ public class World {
             }
             //If the chunk is done (ready to render) and is immediately within the proximity of the current chunk or is otherwise within the frustum, render
             if (thisChunk.isReady()) {
+                // Keep a visible ring coherent while neighbouring meshes catch
+                // up; otherwise newly carved terrain exposes checkerboard holes.
+                if (innerRadius < outerRadius - 1 && !allNeighborsReady(thisChunk)) {
+                    return;
+                }
                 // Frustum culling must only skip DRAWING. Gating mesh generation on
                 // visibility leaves permanent holes, because a chunk that was once
                 // off-screen never builds and so never becomes drawable.
@@ -520,6 +525,22 @@ public class World {
         }
 
         return (generated[0] && generated[1] && generated[2] && generated[3]);
+    }
+
+    private static boolean allNeighborsReady(WorldChunk chunk) {
+        int x = chunk.posX;
+        int z = chunk.posY;
+        return neighborReady(x + 1, z) && neighborReady(x - 1, z)
+                && neighborReady(x, z + 1) && neighborReady(x, z - 1);
+    }
+
+    private static boolean neighborReady(int x, int z) {
+        if (x < CURRENT_BOUND_XL || x > CURRENT_BOUND_XU
+                || z < CURRENT_BOUND_YL || z > CURRENT_BOUND_YU) {
+            return true;
+        }
+        WorldChunk neighbor = getChunk(x, z);
+        return neighbor != null && neighbor.isReady() && !neighbor.vboIsStale;
     }
 
     /**
