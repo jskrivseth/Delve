@@ -54,7 +54,7 @@ public class BlockFinder {
                     if (type == Block.WATER) {
                         World.enqueueWaterUpdate(x, y, z);
                     } else if (wasWater) {
-                        World.enqueueWaterUpdate(x, y, z);
+                        enqueueWaterNeighborhood(x, y, z);
                     }
                     return;
                 }
@@ -143,13 +143,24 @@ public class BlockFinder {
                     if (type == Block.WATER) {
                         World.enqueueWaterUpdate(chunk.worldPosX + x, y, chunk.worldPosY + z);
                     } else if (wasWater) {
-                        World.enqueueWaterUpdate(chunk.worldPosX + x, y, chunk.worldPosY + z);
+                        enqueueWaterNeighborhood(chunk.worldPosX + x, y, chunk.worldPosY + z);
                     }
+
                     return;
                 }
             }
         }
         Game.consoleMsg("Failed to set a block @ (" + chunk.worldPosX + "," + chunk.worldPosY + "} using (" + x + "," + y + "," + z + ")");
+    }
+
+    private static void enqueueWaterNeighborhood(int x, int y, int z) {
+        World.enqueueWaterUpdate(x, y, z);
+        World.enqueueWaterUpdate(x - 1, y, z);
+        World.enqueueWaterUpdate(x + 1, y, z);
+        World.enqueueWaterUpdate(x, y - 1, z);
+        World.enqueueWaterUpdate(x, y + 1, z);
+        World.enqueueWaterUpdate(x, y, z - 1);
+        World.enqueueWaterUpdate(x, y, z + 1);
     }
 
     /**

@@ -440,6 +440,11 @@ public class Block implements Serializable {
      */
     public static void writeCube(FloatBuffer buffer, IntBuffer indices, int x, int y, int z,
                                  boolean[] faces, int type, SolidityLookup solid) {
+        writeCube(buffer, indices, x, y, z, faces, type, solid, 1.0f);
+    }
+
+    public static void writeCube(FloatBuffer buffer, IntBuffer indices, int x, int y, int z,
+                                 boolean[] faces, int type, SolidityLookup solid, float height) {
         if (buffer == null || faces == null || faces.length == 0) {
             return;
         }
@@ -512,10 +517,10 @@ public class Block implements Serializable {
             // Four corner vertices, then the same two triangles (0-1-2, 2-3-0)
             // spelled as indices -- the repeats were written twice before.
             int vi = buffer.position() / FLOATS_PER_VERTEX;
-            putVertex(buffer, corners[0], n, x, y, z, r, g, b, ao0, u0, u1, v0, v1, light, t0);
-            putVertex(buffer, corners[1], n, x, y, z, r, g, b, ao1, u0, u1, v0, v1, light, t1v);
-            putVertex(buffer, corners[2], n, x, y, z, r, g, b, ao2, u0, u1, v0, v1, light, t2v);
-            putVertex(buffer, corners[3], n, x, y, z, r, g, b, ao3, u0, u1, v0, v1, light, t3v);
+            putVertex(buffer, corners[0], n, x, y, z, r, g, b, ao0, u0, u1, v0, v1, light, t0, height);
+            putVertex(buffer, corners[1], n, x, y, z, r, g, b, ao1, u0, u1, v0, v1, light, t1v, height);
+            putVertex(buffer, corners[2], n, x, y, z, r, g, b, ao2, u0, u1, v0, v1, light, t2v, height);
+            putVertex(buffer, corners[3], n, x, y, z, r, g, b, ao3, u0, u1, v0, v1, light, t3v, height);
             indices.put(vi).put(vi + 1).put(vi + 2).put(vi + 2).put(vi + 3).put(vi);
         }
     }
@@ -751,8 +756,17 @@ public class Block implements Serializable {
                                   float r, float g, float b, float ao,
                                   float u0, float u1, float v0, float v1,
                                   float light, float tint) {
+        putVertex(buffer, corner, n, x, y, z, r, g, b, ao,
+                u0, u1, v0, v1, light, tint, 1.0f);
+    }
+
+    private static void putVertex(FloatBuffer buffer, float[] corner, int[] n,
+                                  int x, int y, int z,
+                                  float r, float g, float b, float ao,
+                                  float u0, float u1, float v0, float v1,
+                                  float light, float tint, float height) {
         buffer.put(x + corner[0]);
-        buffer.put(y + corner[1]);
+        buffer.put(y + corner[1] * height);
         buffer.put(z + corner[2]);
         buffer.put(n[0]);
         buffer.put(n[1]);

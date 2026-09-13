@@ -1921,8 +1921,10 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                             } else if (Block.isMarchingRock(type) && computeExposedFaces(voxels, i, j, k, EXPOSED_FACES) > 0) {
                                 Block.writeMarchingRock(buffer, indices, i, j, k, EXPOSED_FACES, type, this);
                             } else if (computeExposedFaces(voxels, i, j, k, EXPOSED_FACES) > 0) {
-                                Block.writeCube(buffer, indices, i, j, k, EXPOSED_FACES, type, this);
+                                Block.writeCube(buffer, indices, i, j, k, EXPOSED_FACES, type, this,
+                                        type == Block.WATER ? waterHeight(i, j, k) : 1.0f);
                             }
+
                         }
                     }
                 }
@@ -1936,7 +1938,8 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                         int type = voxels[blockIndex(i, j, k)] & 0xFF;
                         if (type != 0 && Block.isTranslucent(type)
                                 && computeExposedFaces(voxels, i, j, k, EXPOSED_FACES) > 0) {
-                            Block.writeCube(buffer, indices, i, j, k, EXPOSED_FACES, type, this);
+                            Block.writeCube(buffer, indices, i, j, k, EXPOSED_FACES, type, this,
+                                    waterHeight(i, j, k));
                         }
                     }
                 }
@@ -1960,6 +1963,11 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
      * Fills {@code out} with the exposure mask for one block and returns how many
      * faces are exposed. Neighbouring chunks are consulted at the chunk borders.
      */
+    private float waterHeight(int x, int y, int z) {
+        int level = waterLevel(x, y, z);
+        return level >= 8 ? 1.0f : Math.max(0.5f, level / 8.0f);
+    }
+
     private int computeExposedFaces(byte[] voxels, int i, int j, int k, boolean[] out) {
         int type = voxels[blockIndex(i, j, k)] & 0xFF;
         int neighborX = 0, neighborY = 0;
