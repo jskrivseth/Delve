@@ -266,10 +266,10 @@ public class Block implements Serializable {
         {1, 0, 1, 0, 1, 0},          //21 granite: opaque stone fallback
         {4, 2, 4, 2, 4, 2},          //22 mossy cobblestone
         {1, 2, 1, 2, 1, 2},          //23 deepslate
-        {7, 2, 7, 2, 7, 2},          //24 tall grass
+        {11, 8, 11, 8, 11, 8},       //24 tall grass: transparent strands
         {13, 0, 13, 0, 13, 0},       //25 flower
         {12, 1, 12, 1, 12, 1},       //26 mushroom
-        {14, 2, 14, 2, 14, 2},       //27 brown grass
+        {12, 8, 12, 8, 12, 8},       //27 brown grass: transparent strands
         {14, 3, 14, 3, 14, 3},       //28 mud
         {14, 4, 15, 4, 14, 3},       //29 slush
         {15, 2, 15, 2, 15, 2},       //30 basalt
