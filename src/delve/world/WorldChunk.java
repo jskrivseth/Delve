@@ -111,7 +111,22 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
      * which cuts both resident memory and meshing's pointer chasing.
      */
     public volatile byte[] blocks;     //Contains all the blocks in this chunk
-    /** Water volume per voxel: 0 is dry, 1..7 is flowing, 8 is a source. */
+    /**
+     * Packed water level per voxel. Every water voxel renders as a full block;
+     * the level carries only bookkeeping the simulation needs:
+     * <ul>
+     *   <li>0 - dry</li>
+     *   <li>1 - water the terrain holds: the flooded columns generation made.
+     *       It does not decay; it moves only when the ground beneath it gives
+     *       way, so a breached lake drains rather than evaporating.</li>
+     *   <li>2..7 - water a source pushed out, weakening one step per cell. These
+     *       drain once nothing stronger feeds them, and never fall to level 1 --
+     *       that band belongs to terrain water, which reclamation must not eat.</li>
+     *   <li>8 - an anchored supply that never decays or dries up: the block the
+     *       player placed. Nothing else during play writes this level, so only
+     *       placed water keeps a surface alive indefinitely.</li>
+     * </ul>
+     */
     public volatile byte[] waterLevels;
     public volatile int numVerts;
     public volatile boolean containsTransparentBlocks;
@@ -2099,9 +2114,6 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                                 }
                             } else {
                                 faceCount += computeExposedFaces(voxels, i, j, k, EXPOSED_FACES);
-                                if (type == Block.WATER) {
-                                    faceCount += computeWaterStripFaces(i, j, k);
-                                }
                             }
                             blockCount++;
                         }
@@ -2138,8 +2150,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                             } else if (Block.isMarchingRock(type) && computeExposedFaces(voxels, i, j, k, EXPOSED_FACES) > 0) {
                                 Block.writeMarchingRock(buffer, indices, i, j, k, EXPOSED_FACES, type, this);
                             } else if (computeExposedFaces(voxels, i, j, k, EXPOSED_FACES) > 0) {
-                                Block.writeCube(buffer, indices, i, j, k, EXPOSED_FACES, type, this,
-                                        type == Block.WATER ? waterHeight(i, j, k) : 1.0f);
+                                Block.writeCube(buffer, indices, i, j, k, EXPOSED_FACES, type, this);
                             }
 
                         }
@@ -2155,11 +2166,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                         int type = voxels[blockIndex(i, j, k)] & 0xFF;
                         if (type != 0 && Block.isTranslucent(type)
                                 && computeExposedFaces(voxels, i, j, k, EXPOSED_FACES) > 0) {
-                            Block.writeCube(buffer, indices, i, j, k, EXPOSED_FACES, type, this,
-                                    waterHeight(i, j, k));
-                            if (type == Block.WATER) {
-                                writeWaterStrips(buffer, indices, i, j, k);
-                            }
+                            Block.writeCube(buffer, indices, i, j, k, EXPOSED_FACES, type, this);
                         }
                     }
                 }
@@ -2182,61 +2189,11 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     /**
      * Fills {@code out} with the exposure mask for one block and returns how many
      * faces are exposed. Neighbouring chunks are consulted at the chunk borders.
+     *
+     * Water always occupies its whole cell, so no per-fluid-level geometry is
+     * consulted here; faces shared with another water voxel are culled so a body
+     * of water reads as one continuous volume.
      */
-    private float waterHeight(int x, int y, int z) {
-        int level = waterLevel(x, y, z);
-        return waterHeightForLevel(level, waterLevelAt(x, y + 1, z) > 0);
-    }
-
-    private float waterHeightForLevel(int level, boolean hasWaterAbove) {
-        // The top cell keeps its partial surface. Cells below it form the
-        // waterfall and need full-height side faces to avoid textured gaps.
-        if (hasWaterAbove) {
-            return 1.0f;
-        }
-        return level >= 8 ? 1.0f : Math.max(0.5f, level / 8.0f);
-    }
-
-    private int computeWaterStripFaces(int x, int y, int z) {
-        float height = waterHeight(x, y, z);
-        int count = 0;
-        if (height > waterHeightAt(x, y, z + 1)) count++;
-        if (height > waterHeightAt(x + 1, y, z)) count++;
-        if (height > waterHeightAt(x - 1, y, z)) count++;
-        if (height > waterHeightAt(x, y, z - 1)) count++;
-        return count;
-    }
-
-    private void writeWaterStrips(FloatBuffer buffer, IntBuffer indices, int x, int y, int z) {
-        float height = waterHeight(x, y, z);
-        int[] dx = {0, 1, -1, 0};
-        int[] dz = {1, 0, 0, -1};
-        int[] faces = {0, 1, 3, 5};
-        boolean[] strip = new boolean[6];
-        for (int n = 0; n < faces.length; n++) {
-            int neighborLevel = waterLevelAt(x + dx[n], y, z + dz[n]);
-            if (neighborLevel == 0) {
-                continue;
-            }
-            float neighborHeight = waterHeight(x + dx[n], y, z + dz[n]);
-            if (height <= neighborHeight) {
-                continue;
-            }
-            for (int i = 0; i < strip.length; i++) {
-                strip[i] = false;
-            }
-            strip[faces[n]] = true;
-            Block.writeCube(buffer, indices, x, y, z, strip, Block.WATER, this,
-                    neighborHeight, height - neighborHeight);
-        }
-    }
-
-    private float waterHeightAt(int x, int y, int z) {
-        int level = waterLevelAt(x, y, z);
-        return level == 0 ? 0.0f
-                : waterHeightForLevel(level, waterLevelAt(x, y + 1, z) > 0);
-    }
-
     private int computeExposedFaces(byte[] voxels, int i, int j, int k, boolean[] out) {
         int type = voxels[blockIndex(i, j, k)] & 0xFF;
         int neighborX = 0, neighborY = 0;

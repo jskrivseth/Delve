@@ -37,6 +37,7 @@ class BlockFinderTest {
         assertEquals(8, chunk.waterLevel(4, 8, 4));
 
         BlockFinder.setBlockType(chunk, 4, 8, 4, Block.AIR);
+        World.processWaterUpdates(200);
         assertEquals(Block.AIR, chunk.getBlock(4, 8, 4));
         assertEquals(0, chunk.waterLevel(4, 8, 4));
     }

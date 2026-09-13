@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class WaterSimulationTest {
     private final List<WorldChunk> chunks = new ArrayList<>();
@@ -107,6 +108,59 @@ class WaterSimulationTest {
         World.processWaterUpdates(200);
 
         assertEquals(7, right.waterLevel(0, 4, 2));
+    }
+
+    /**
+     * Lakes are held by the bowl they fill, not by a source at the top. Once the
+     * simulation looks at them they must settle rather than slowly evaporate.
+     */
+    @Test
+    void waterRestingInTheBasinItFillsDoesNotEvaporate() {
+        WorldChunk lake = chunk(0, 0);
+        for (int x = 2; x <= 6; x++) {
+            for (int z = 2; z <= 6; z++) {
+                lake.blocks[WorldChunk.blockIndex(x, 5, z)] = (byte) Block.STONE;
+                lake.setWaterLevel(x, 6, z, 1);
+            }
+        }
+        for (int x = 2; x <= 6; x++) {
+            World.enqueueWaterUpdate(x, 6, 3);
+        }
+
+        World.processWaterUpdates(400);
+
+        for (int x = 2; x <= 6; x++) {
+            for (int z = 2; z <= 6; z++) {
+                assertEquals(1, lake.waterLevel(x, 6, z),
+                        "lake water at (" + x + ",6," + z + ") evaporated");
+            }
+        }
+    }
+
+    /**
+     * Water the player started is different: with its supply broken it has no
+     * terrain holding it, so everything it fed has to drain away.
+     */
+    @Test
+    void breakingAPlacedSourceReclaimsTheWaterItFed() {
+        WorldChunk hall = chunk(0, 0);
+        hall.blocks[WorldChunk.blockIndex(8, 6, 8)] = (byte) Block.STONE;
+        hall.setWaterLevel(8, 7, 8, 8);
+        World.enqueueWaterUpdate(8, 7, 8);
+        World.processWaterUpdates(400);
+        assertTrue(hall.waterLevel(7, 7, 8) >= 2, "the source should have fed the floor");
+
+        hall.setWaterLevel(8, 7, 8, 0);
+        World.enqueueWaterUpdate(8, 7, 8);
+        World.enqueueWaterDrainNeighborhood(8, 7, 8);
+        World.processWaterUpdates(800);
+
+        for (int x = 6; x <= 10; x++) {
+            for (int z = 6; z <= 10; z++) {
+                assertEquals(0, hall.waterLevel(x, 7, z),
+                        "water at (" + x + ",7," + z + ") outlived its source");
+            }
+        }
     }
 
     @Test
