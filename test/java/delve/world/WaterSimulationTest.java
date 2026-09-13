@@ -40,6 +40,23 @@ class WaterSimulationTest {
     }
 
     @Test
+    void verticalColumnDoesNotSpreadUntilItsBottomHitsTerrain() {
+        WorldChunk chunk = chunk(0, 0);
+        chunk.blocks[WorldChunk.blockIndex(4, 4, 4)] = (byte) Block.STONE;
+        chunk.setWaterLevel(4, 8, 4, 8);
+        World.enqueueWaterUpdate(4, 8, 4);
+
+        World.processWaterUpdates(200);
+
+        for (int y = 6; y <= 8; y++) {
+            assertEquals(0, chunk.waterLevel(3, y, 4));
+            assertEquals(0, chunk.waterLevel(5, y, 4));
+        }
+        assertEquals(6, chunk.waterLevel(3, 5, 4));
+        assertEquals(6, chunk.waterLevel(5, 5, 4));
+    }
+
+    @Test
     void sourceIsNotReplacedByWeakerFlow() {
         WorldChunk chunk = chunk(0, 0);
         chunk.setWaterLevel(1, 4, 1, 8);

@@ -287,6 +287,24 @@ public class World {
                 enqueueWaterUpdate(x, y, z + 1);
                 continue;
             }
+
+            /*
+             * A flowing column must remain vertical until it reaches terrain.
+             * In particular, a cell whose destination is another water cell is
+             * still part of that column; it must not fan out just because its
+             * own downward write is a no-op.
+             */
+            if (waterLevelAtWorld(x, y - 1, z) > 0) {
+                continue;
+            }
+
+            int belowType = blockTypeAtWorld(x, y - 1, z);
+            if (belowType < 0) {
+                // An unloaded neighbour is not known terrain. Let chunk loading
+                // requeue this cell instead of creating a false shelf.
+                continue;
+            }
+
             boolean flowedDown = false;
             int downwardLevel = level == 8 ? 7 : level;
             for (int drop = 1; drop <= MAX_WATER_DROP_DISTANCE && y - drop >= 0; drop++) {
@@ -295,7 +313,7 @@ public class World {
                 }
                 flowedDown = true;
             }
-            if (!flowedDown && level > 1) {
+            if (!flowedDown && level > 1 && !Block.isWaterReplaceable(belowType)) {
                 spreadWater(x - 1, y, z, level - 1);
                 spreadWater(x + 1, y, z, level - 1);
                 spreadWater(x, y, z - 1, level - 1);
@@ -310,18 +328,40 @@ public class World {
         int[][] neighbors = {{x - 1, y, z}, {x + 1, y, z},
             {x, y, z - 1}, {x, y, z + 1}, {x, y + 1, z}};
         for (int[] neighbor : neighbors) {
-            WorldChunk chunk = getChunk(Math.floorDiv(neighbor[0], WorldChunk.sizeX),
-                    Math.floorDiv(neighbor[2], WorldChunk.sizeZ));
-            if (chunk == null || !chunk.isGenerated) continue;
-            int neighborLevel = chunk.waterLevel(
-                    Math.floorMod(neighbor[0], WorldChunk.sizeX), neighbor[1],
-                    Math.floorMod(neighbor[2], WorldChunk.sizeZ));
+            int neighborLevel = waterLevelAtWorld(neighbor[0], neighbor[1], neighbor[2]);
             if (neighborLevel > level
                     || (neighbor[1] == y + 1 && neighborLevel >= level)) {
                 return true;
             }
         }
         return false;
+    }
+
+    private static int waterLevelAtWorld(int x, int y, int z) {
+        if (y < 0 || y >= WorldChunk.sizeY) {
+            return 0;
+        }
+        WorldChunk chunk = getChunk(Math.floorDiv(x, WorldChunk.sizeX),
+                Math.floorDiv(z, WorldChunk.sizeZ));
+        if (chunk == null || !chunk.isGenerated || chunk.waterLevels == null) {
+            return 0;
+        }
+        return chunk.waterLevel(Math.floorMod(x, WorldChunk.sizeX), y,
+                Math.floorMod(z, WorldChunk.sizeZ));
+    }
+
+    /** Returns -1 when the voxel is outside the loaded/generated world. */
+    private static int blockTypeAtWorld(int x, int y, int z) {
+        if (y < 0 || y >= WorldChunk.sizeY) {
+            return Block.STONE;
+        }
+        WorldChunk chunk = getChunk(Math.floorDiv(x, WorldChunk.sizeX),
+                Math.floorDiv(z, WorldChunk.sizeZ));
+        if (chunk == null || !chunk.isGenerated) {
+            return -1;
+        }
+        return chunk.getBlock(Math.floorMod(x, WorldChunk.sizeX), y,
+                Math.floorMod(z, WorldChunk.sizeZ));
     }
 
     private static boolean spreadWater(int x, int y, int z, int level) {
