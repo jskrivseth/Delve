@@ -101,6 +101,14 @@ public class Framebuffer {
         return fbo;
     }
 
+    public boolean isComplete() {
+        int previous = glGetInteger(GL_FRAMEBUFFER_BINDING);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        int status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        glBindFramebuffer(GL_FRAMEBUFFER, previous);
+        return status == GL_FRAMEBUFFER_COMPLETE;
+    }
+
     public int getWidth() {
         return width;
     }

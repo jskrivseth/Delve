@@ -66,6 +66,7 @@ public class Renderer {
     private static int taaWidth = -1, taaHeight = -1;
     private static boolean taaNeedsReset = true;
     private static boolean prevTaaArmed;
+    private static boolean taaFboWarningEmitted;
     private static int prevTaaPreset = -1;
     private static long taaFrameIndex;
     private static float taaMotion = 1.0f;
@@ -400,7 +401,6 @@ public class Renderer {
 
             GpuProfiler.begin(GpuProfiler.Zone.CLOUD_TAA);
             accumulateCloudTaa();
-            GpuProfiler.end(GpuProfiler.Zone.CLOUD_TAA);
 
             sceneBuffer.bind();
             glClearColor(skyR, skyG, skyB, 1.0f);
@@ -462,15 +462,30 @@ public class Renderer {
             prevTaaArmed = false;
             return;
         }
+        boolean targetsChanged = false;
         if (taaCur == null) {
             taaCur = new Framebuffer(w, h, true);
             taaHist[0] = new Framebuffer(w, h, true);
             taaHist[1] = new Framebuffer(w, h, true);
             taaWrite = 0;
+            targetsChanged = true;
         } else {
-            taaCur.resize(w, h);
-            taaHist[0].resize(w, h);
-            taaHist[1].resize(w, h);
+            if (taaCur.getWidth() != w || taaCur.getHeight() != h) {
+                taaCur.resize(w, h);
+                taaHist[0].resize(w, h);
+                taaHist[1].resize(w, h);
+                targetsChanged = true;
+            }
+        }
+        if (targetsChanged && (!taaCur.isComplete()
+                || !taaHist[0].isComplete()
+                || !taaHist[1].isComplete())) {
+            if (!taaFboWarningEmitted) {
+                System.err.println("RGBA16F cloud TAA target incomplete - disabling cloud TAA");
+                taaFboWarningEmitted = true;
+            }
+            Game.OPT_CLOUD_TAA = false;
+            return;
         }
         int preset = WorldPreset.clamp(World.WORLD_PRESET);
         if (!prevTaaArmed || preset != prevTaaPreset || w != taaWidth || h != taaHeight) {
