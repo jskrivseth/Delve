@@ -80,7 +80,7 @@ public class Block implements Serializable {
             // The side texture is mostly soil, so only the top takes leaf colour.
             return TINT_GRASS_BLOCK;
         }
-        if (type == LEAVES || type == TALL_GRASS || type == BROWN_GRASS) {
+        if (isLeaf(type) || type == TALL_GRASS || type == BROWN_GRASS) {
             return TINT_FOLIAGE;
         }
         if (type == DIRT || type == MUD || type == SAND || type == RED_SAND
@@ -171,6 +171,12 @@ public class Block implements Serializable {
         new float[]{0.77f, 0.66f, 0.32f, 1.0f},
         //37 - Frost boulder
         new float[]{0.66f, 0.82f, 0.89f, 1.0f},
+        //38 - Dark leaves
+        new float[]{0.16f, 0.40f, 0.12f, 1.0f},
+        //39 - Golden leaves
+        new float[]{0.72f, 0.58f, 0.14f, 1.0f},
+        //40 - Pale leaves
+        new float[]{0.42f, 0.66f, 0.28f, 1.0f},
     };
 
     public static final int AIR = 0, GRASS = 1, WATER = 2, SAND = 3, SNOW = 4,
@@ -181,7 +187,8 @@ public class Block implements Serializable {
             DEEPSLATE = 23, TALL_GRASS = 24, FLOWER = 25, MUSHROOM = 26,
             BROWN_GRASS = 27, MUD = 28, SLUSH = 29, BASALT = 30,
             SULFUR_STONE = 31, FROST_ICE = 32, THOLIN = 33, VOLCANIC_ASH = 34,
-            BASALT_BOULDER = 35, SULFUR_BOULDER = 36, FROST_BOULDER = 37;
+            BASALT_BOULDER = 35, SULFUR_BOULDER = 36, FROST_BOULDER = 37,
+            DARK_LEAVES = 38, GOLDEN_LEAVES = 39, PALE_LEAVES = 40;
 
     /** Human readable names, indexed by block type. */
     public static final String[] BLOCK_NAMES = {
@@ -191,7 +198,8 @@ public class Block implements Serializable {
         "Granite", "Mossy Cobblestone", "Deepslate", "Tall Grass", "Flower",
         "Mushroom", "Brown Grass", "Mud", "Slush", "Basalt", "Sulfur Stone",
         "Frost Ice", "Tholin", "Volcanic Ash", "Basalt Boulder",
-        "Sulfur Boulder", "Frost Boulder",
+        "Sulfur Boulder", "Frost Boulder", "Dark Leaves", "Golden Leaves",
+        "Pale Leaves",
     };
 
     /** Types a player may place, in block-picker order. */
@@ -202,6 +210,7 @@ public class Block implements Serializable {
         TALL_GRASS, FLOWER, MUSHROOM, BROWN_GRASS, MUD, SLUSH,
         BASALT, SULFUR_STONE, FROST_ICE, THOLIN, VOLCANIC_ASH,
         BASALT_BOULDER, SULFUR_BOULDER, FROST_BOULDER,
+        DARK_LEAVES, GOLDEN_LEAVES, PALE_LEAVES,
     };
 
     public static String nameOf(int type) {
@@ -254,6 +263,9 @@ public class Block implements Serializable {
         {15, 2, 15, 2, 15, 2},       //35 basalt boulder
         {15, 3, 15, 3, 15, 3},       //36 sulfur boulder
         {15, 5, 15, 5, 15, 5},       //37 frost boulder
+        {4, 3, 4, 3, 4, 3},          //38 dark leaves
+        {4, 3, 4, 3, 4, 3},          //39 golden leaves
+        {4, 3, 4, 3, 4, 3},          //40 pale leaves
     };
 
     /** Atlas tiles per row/column, exposed so the HUD can slice block icons. */
@@ -269,7 +281,7 @@ public class Block implements Serializable {
 
     /** Types that do not fully occlude the neighbouring face. */
     public static boolean isTransparent(int type) {
-        return type == AIR || type == LEAVES || type == GLASS || type == WATER
+        return type == AIR || isLeaf(type) || type == GLASS || type == WATER
                 || type == TALL_GRASS || type == FLOWER || type == MUSHROOM
                 || type == BROWN_GRASS;
     }
@@ -297,7 +309,7 @@ public class Block implements Serializable {
 
     /** Whether sky light passes through this block at all. */
     public static boolean transmitsLight(int type) {
-        return type == AIR || type == WATER || type == LEAVES || type == GLASS
+        return type == AIR || type == WATER || isLeaf(type) || type == GLASS
                 || type == TALL_GRASS || type == FLOWER || type == MUSHROOM
                 || type == BROWN_GRASS;
     }
@@ -310,13 +322,18 @@ public class Block implements Serializable {
         if (type == WATER) {
             return 3;
         }
-        if (type == LEAVES) {
+        if (isLeaf(type)) {
             return 2;
         }
         if (type == TALL_GRASS || type == FLOWER || type == MUSHROOM || type == BROWN_GRASS) {
             return 2;
         }
         return 1;
+    }
+
+    public static boolean isLeaf(int type) {
+        return type == LEAVES || type == DARK_LEAVES
+                || type == GOLDEN_LEAVES || type == PALE_LEAVES;
     }
 
     /** Tiles per atlas row/column. */
