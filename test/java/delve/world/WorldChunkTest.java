@@ -7,6 +7,7 @@ import java.nio.IntBuffer;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 /** Pins the flat-storage layout and the indexed mesh topology. */
 public class WorldChunkTest {
@@ -56,6 +57,13 @@ public class WorldChunkTest {
         // survive unchanged even if the palette ever grows past 127.
         chunk.blocks[WorldChunk.blockIndex(x, y, z)] = (byte) 255;
         assertEquals(255, chunk.getBlock(x, y, z));
+    }
+
+    @Test
+    public void testGeneratedGraniteUsesAnOpaqueTerrainTile() {
+        assertEquals(Block.sideTileCol(Block.STONE), Block.sideTileCol(Block.GRANITE));
+        assertEquals(Block.sideTileRow(Block.STONE), Block.sideTileRow(Block.GRANITE));
+        assertFalse(Block.isTransparent(Block.GRANITE));
     }
 
     @Test

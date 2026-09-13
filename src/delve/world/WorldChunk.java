@@ -55,17 +55,16 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     /*
      * Flags
      */
-    public boolean meshIsStale = false;
-    public boolean vboIsStale = false;
-    public boolean isRefreshing = false;
-    public boolean isDefunct = false;
-    public boolean isBuilding = false;
-    public boolean isBuilt = false;
-    public boolean isGenerating = false;
-    public boolean isGenerated = false;
-    public boolean isZombie = false;
-    public boolean neighborsGenerated = false;
-    public boolean purgeVBO = false;
+    public volatile boolean meshIsStale = false;
+    public volatile boolean isRefreshing = false;
+    public volatile boolean isDefunct = false;
+    public volatile boolean isBuilding = false;
+    public volatile boolean isBuilt = false;
+    public volatile boolean isGenerating = false;
+    public volatile boolean isGenerated = false;
+    public volatile boolean isZombie = false;
+    public volatile boolean neighborsGenerated = false;
+    public volatile boolean purgeVBO = false;
     public boolean serialize = false;
     /** Set when the player edits this chunk, so it is persisted before unloading. */
     public volatile boolean isModified = false;
@@ -104,9 +103,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     /*
      * Data
      */
-    public volatile FloatBuffer vbuffer;
-    /** Pending index list for the mesh sitting in {@link #vbuffer}. */
-    public volatile IntBuffer ibuffer;
+    private volatile PendingMesh pendingMesh;
     /**
      * Flattened block types, indexed {@link #blockIndex}. A byte per voxel
      * (block ids top out well under 128) instead of int[16][128][16]: one
@@ -123,12 +120,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     private volatile int pendingOpaqueVerts;
     private volatile int pendingIndices;
     private volatile int pendingOpaqueIndices;
-    /**
-     * Vertex count for the mesh sitting in {@link #vbuffer}, published to
-     * {@link #numVerts} only once that data is actually uploaded. Assigning
-     * numVerts from the builder thread would let the render thread draw the
-     * previous VBO with the new count and read past the end of it.
-     */
+    /** Counts produced by the worker before its atomic pending-mesh publish. */
     private volatile int pendingVerts;
     /*
      * Properties
@@ -147,10 +139,12 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     public transient int BLOCK_COUNT = 0;
     public transient int FACE_COUNT = 0;
     public transient float renderAlpha = 1.0f;
-    /** How long a chunk takes to fade in when built and fade out when destroyed. */
-    /** How long a chunk takes to fade in when built and fade out when destroyed. */
-    private static long fadeDurationNanos() {
+    private static long fadeOutDurationNanos() {
         return (long) (Game.OPT_CHUNK_FADE_DURATION_MS * 1_000_000.0);
+    }
+
+    private static long fadeInDurationNanos() {
+        return (long) (Game.OPT_CHUNK_FADE_IN_DURATION_MS * 1_000_000.0);
     }
     /**
      * Wall-clock time this chunk's VBO was first uploaded, or -1 before that.
@@ -195,11 +189,6 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
 
 
     public void generate() {
-        if (this.isGenerating) {
-            System.out.println("ERROR: attempt to generate a block already being generated");
-            return;
-        }
-        this.isGenerating = true;
         try {
             generateBlocks();
         } finally {
@@ -413,6 +402,8 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             }
         }
 
+        carveCaves(data, heightMap);
+
         if (worldPreset == WorldPreset.EARTH) {
             highest = plantTrees(data, heightMap, surfaceMap, biomeTypeMap, biomeBorderMap, tundraWeightMap, desertWeightMap, forestWeightMap, grassyWeightMap, ruggednessMap, wetlandMap, highest);
             highest = plantVegetation(data, heightMap, surfaceMap, biomeTypeMap, biomeBorderMap, tundraWeightMap, desertWeightMap, forestWeightMap, grassyWeightMap, wetlandMap, highest);
@@ -425,6 +416,23 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
 
         this.isGenerated = true;
         this.isBuilt = false;
+    }
+
+    private void carveCaves(int[][][] data, int[][] heightMap) {
+        for (int x = 0; x < sizeX; x++) {
+            for (int z = 0; z < sizeZ; z++) {
+                int worldX = worldPosX + x;
+                int worldZ = worldPosY + z;
+                int surfaceY = heightMap[x][z];
+                for (int y = TerrainGenerator.CAVE_MIN_Y; y <= surfaceY; y++) {
+                    int type = data[x][y][z];
+                    if (type != Block.AIR && type != Block.WATER && type != Block.BEDROCK
+                            && TerrainGenerator.isCave(worldX, y, worldZ, surfaceY)) {
+                        data[x][y][z] = Block.AIR;
+                    }
+                }
+            }
+        }
     }
 
     /** Sea level; columns below this are flooded with water. */
@@ -791,6 +799,9 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                 if (y < 2 || y >= sizeY - 6) {
                     continue;
                 }
+                if (data[x][y][z] == Block.AIR) {
+                    continue;
+                }
                 int worldX = worldPosX + x;
                 int worldZ = worldPosY + z;
                 float rugged = ruggednessMap[x][z];
@@ -1057,6 +1068,9 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                     continue;
                 }
                 int surface = surfaceMap[x][z];
+                if (data[x][y][z] != surface) {
+                    continue;
+                }
                 if (surface != Block.GRASS && surface != Block.CLAY && surface != Block.SNOW
                         && surface != Block.DIRT && surface != Block.MUD && surface != Block.SLUSH) {
                     continue;
@@ -1156,6 +1170,9 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             for (int z = 2; z < sizeZ - 2; z++) {
                 int y = heightMap[x][z];
                 int surface = surfaceMap[x][z];
+                if (data[x][y][z] != surface) {
+                    continue;
+                }
                 if ((surface != Block.GRASS && surface != Block.DIRT && surface != Block.MUD)
                         || y <= SEA_LEVEL + 1 || y >= sizeY - 10) {
                     continue;
@@ -1785,7 +1802,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     }
 
     public boolean isReady() {
-        return (this.vboVertexHandle != 0 || this.vboIsStale);
+        return this.vboVertexHandle != 0 || this.pendingMesh != null;
     }
 
     public void buildMesh() {
@@ -1799,15 +1816,10 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             this.meshIsStale = true;
             return;
         }
-        if (this.isBuilding) {
-            Game.consoleMsg("Attempt to build a mesh for a chunk that is already building.. ");
-            return;
-        }
         if (!this.isGenerated) {
             Game.consoleMsg("Attempt to build a mesh for a chunk that is not generated.. ");
             return;
         }
-        this.isBuilding = true;
         if (this.EXPOSED_FACES == null) {
             this.EXPOSED_FACES = new boolean[6];
         }
@@ -1856,11 +1868,9 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             if (faceCount == 0) {
                 this.pendingVerts = 0;
                 this.pendingIndices = 0;
-                this.vbuffer = null;
-                this.ibuffer = null;
+                this.pendingMesh = PendingMesh.EMPTY;
                 this.isBuilding = false;
                 this.isBuilt = true;
-                this.vboIsStale = true;
                 return;
             }
 
@@ -1905,15 +1915,14 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             this.pendingIndices = indices.position();
             buffer.flip();
             indices.flip();
-            this.vbuffer = buffer;
-            this.ibuffer = indices;
+            this.pendingMesh = new PendingMesh(buffer, indices, pendingVerts,
+                    pendingOpaqueVerts, pendingIndices, pendingOpaqueIndices);
         } finally {
             World.BLOCK_LOCK.readLock().unlock();
         }
 
         this.isBuilding = false;
         this.isBuilt = true;
-        this.vboIsStale = true;
     }
 
     /**
@@ -1959,15 +1968,31 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         return Block.isTransparent(neighborType) && neighborType != type;
     }
 
+    public boolean hasPendingMesh() {
+        return this.pendingMesh != null;
+    }
+
+    public synchronized void uploadPendingMesh() {
+        PendingMesh mesh = this.pendingMesh;
+        if (mesh == null) {
+            return;
+        }
+        this.pendingMesh = null;
+        buildVBO(mesh);
+    }
+
     public void buildVBO() {
-        FloatBuffer data = this.vbuffer;
-        IntBuffer indexData = this.ibuffer;
+        uploadPendingMesh();
+    }
+
+    private void buildVBO(PendingMesh mesh) {
+        FloatBuffer data = mesh.vertices;
+        IntBuffer indexData = mesh.indices;
         if (data == null || indexData == null) {
             // Mesh built to nothing (fully enclosed or empty chunk).
             this.numVerts = 0;
             this.numIndices = 0;
             this.opaqueIndices = 0;
-            this.vboIsStale = false;
             return;
         }
         if (this.meshReadyAtNanos < 0) {
@@ -1979,13 +2004,10 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         }
         Renderer.uploadChunkMesh(this, data, indexData);
         // Only now are the counts valid for the buffers the GPU holds.
-        this.numVerts = this.pendingVerts;
-        this.opaqueVerts = this.pendingOpaqueVerts;
-        this.numIndices = this.pendingIndices;
-        this.opaqueIndices = this.pendingOpaqueIndices;
-        this.vboIsStale = false;
-        this.vbuffer = null;
-        this.ibuffer = null;
+        this.numVerts = mesh.verticesCount;
+        this.opaqueVerts = mesh.opaqueVertices;
+        this.numIndices = mesh.indexCount;
+        this.opaqueIndices = mesh.opaqueIndexCount;
     }
 
     public void drawMesh() {
@@ -2058,11 +2080,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             deleteVBO();
             return;
         }
-        if (this.vboIsStale) {
-            this.vboIsStale = false;
-            this.buildVBO();
-        }
-        if (this.meshIsStale) {
+        if (this.meshIsStale && !this.isRefreshing) {
             this.meshIsStale = false;
             this.refreshMesh();
         }
@@ -2116,7 +2134,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         // straight back up and rebuilds it next time it is in view.
         this.purgeVBO = false;
         this.isBuilt = false;
-        this.vboIsStale = false;
+        this.pendingMesh = null;
         this.numIndices = 0;
         this.opaqueIndices = 0;
         this.meshReadyAtNanos = -1L;
@@ -2138,7 +2156,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     public synchronized void requestDestroyFade() {
         if (this.destroyRequestedAtNanos < 0) {
             float currentAlpha = lifecycleFadeAlpha();
-            long backdateNanos = (long) ((1.0f - currentAlpha) * fadeDurationNanos());
+            long backdateNanos = (long) ((1.0f - currentAlpha) * fadeOutDurationNanos());
             this.destroyRequestedAtNanos = System.nanoTime() - backdateNanos;
         }
     }
@@ -2158,7 +2176,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             return;
         }
         float currentAlpha = lifecycleFadeAlpha();
-        long backdateNanos = (long) (currentAlpha * fadeDurationNanos());
+        long backdateNanos = (long) (currentAlpha * fadeInDurationNanos());
         this.destroyRequestedAtNanos = -1L;
         this.meshReadyAtNanos = System.nanoTime() - backdateNanos;
     }
@@ -2167,7 +2185,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
      *  safe to actually free this chunk's GPU resources. */
     public boolean isDestroyFadeComplete() {
         return this.destroyRequestedAtNanos >= 0
-                && (System.nanoTime() - this.destroyRequestedAtNanos) >= fadeDurationNanos();
+                && (System.nanoTime() - this.destroyRequestedAtNanos) >= fadeOutDurationNanos();
     }
 
     /**
@@ -2179,13 +2197,12 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
      */
     public float lifecycleFadeAlpha() {
         long now = System.nanoTime();
-        long duration = fadeDurationNanos();
         if (this.destroyRequestedAtNanos >= 0) {
-            float t = (now - this.destroyRequestedAtNanos) / (float) duration;
+            float t = (now - this.destroyRequestedAtNanos) / (float) fadeOutDurationNanos();
             return clamp01(1.0f - t);
         }
         if (this.meshReadyAtNanos >= 0) {
-            float t = (now - this.meshReadyAtNanos) / (float) duration;
+            float t = (now - this.meshReadyAtNanos) / (float) fadeInDurationNanos();
             return clamp01(t);
         }
         return 1.0f;
@@ -2214,10 +2231,39 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         }
     }
 
-    public void refreshMesh() {
+    public synchronized void refreshMesh() {
+        // Several neighbours can publish border-light changes before this
+        // rebuild reaches the worker. Queueing every notification produces a
+        // stream of obsolete meshes that continuously replaces the VBO. Keep
+        // one active rebuild and retain meshIsStale for a single follow-up if a
+        // newer border state arrives while it is running.
+        if (this.isRefreshing || this.isBuilding || !this.isGenerated || this.pendingMesh != null) {
+            return;
+        }
         this.isRefreshing = true;
+        this.isBuilding = true;
         // Reuse the shared pool rather than spawning a raw Thread per rebuild.
         World.threadPool.execute(new WorldChunkBufferBuilderThread(this));
+    }
+
+    private static final class PendingMesh {
+        static final PendingMesh EMPTY = new PendingMesh(null, null, 0, 0, 0, 0);
+        final FloatBuffer vertices;
+        final IntBuffer indices;
+        final int verticesCount;
+        final int opaqueVertices;
+        final int indexCount;
+        final int opaqueIndexCount;
+
+        PendingMesh(FloatBuffer vertices, IntBuffer indices, int verticesCount,
+                    int opaqueVertices, int indexCount, int opaqueIndexCount) {
+            this.vertices = vertices;
+            this.indices = indices;
+            this.verticesCount = verticesCount;
+            this.opaqueVertices = opaqueVertices;
+            this.indexCount = indexCount;
+            this.opaqueIndexCount = opaqueIndexCount;
+        }
     }
 
     public void rebuildNeighborVBOs() {
@@ -2298,7 +2344,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         ret += ":is_ready::" + this.isReady();
         ret += ":is_visible:" + this.isVisible();
         ret += ":vbo:" + this.vboVertexHandle;
-        ret += ":is_stale:" + this.vboIsStale;
+        ret += ":has_pending_mesh:" + this.hasPendingMesh();
         ret += ":is_mesh_stale:" + this.meshIsStale;
         return ret;
     }

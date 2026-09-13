@@ -115,6 +115,9 @@ public class Game {
      *  F9 dev menu -- longer makes new terrain visibly ease in/out instead
      *  of popping. */
     public static float OPT_CHUNK_FADE_DURATION_MS = 1500.0f;
+    /** New terrain becomes readable quickly; fade-out intentionally remains
+     *  slower through OPT_CHUNK_FADE_DURATION_MS. */
+    public static float OPT_CHUNK_FADE_IN_DURATION_MS = 180.0f;
     /** Fraction of draw distance devoted to the smooth fade at the edge of
      *  view (higher = wider, more gradual falloff into fog/sky well before
      *  the actual draw-distance boundary, instead of a hard line). Tuned via
