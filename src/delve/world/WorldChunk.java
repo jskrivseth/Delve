@@ -1190,18 +1190,18 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                 int type;
                 int pick = (h >>> 16) & 0xFF;
                 switch (biomeType) {
-                    case EarthBiome.TUNDRA -> type = pick < 70 ? Block.BROWN_GRASS : (pick < 86 ? Block.FERN : Block.MUSHROOM);
-                    case EarthBiome.BOREAL_FOREST -> type = pick < 54 ? Block.FERN : (pick < 78 ? Block.BROWN_GRASS : Block.MUSHROOM);
+                    case EarthBiome.TUNDRA -> type = pick < 70 ? Block.BROWN_GRASS : (pick < 95 ? Block.FERN : Block.MUSHROOM);
+                    case EarthBiome.BOREAL_FOREST -> type = pick < 54 ? Block.FERN : (pick < 95 ? Block.BROWN_GRASS : Block.MUSHROOM);
                     case EarthBiome.SAVANNA -> type = pick < 56 ? Block.REED_GRASS : (pick < 82 ? Block.BROWN_GRASS : Block.FLOWER);
                     case EarthBiome.SHRUBLAND -> type = pick < 48 ? Block.REED_GRASS : (pick < 76 ? Block.BROWN_GRASS : Block.FLOWER);
                     case EarthBiome.TROPICAL_RAINFOREST -> type = pick < 52 ? Block.FERN : (pick < 78 ? Block.TALL_GRASS : Block.FLOWER);
                     case EarthBiome.WETLAND -> type = pick < 52 ? Block.REED_GRASS : (pick < 76 ? Block.FERN : Block.FLOWER);
-                    case EarthBiome.ALPINE -> type = pick < 62 ? Block.BROWN_GRASS : (pick < 86 ? Block.FERN : Block.MUSHROOM);
+                    case EarthBiome.ALPINE -> type = pick < 62 ? Block.BROWN_GRASS : (pick < 95 ? Block.FERN : Block.MUSHROOM);
                     default -> {
                         if (wet > 0.62f) {
-                            type = pick < 74 ? Block.TALL_GRASS : (pick < 90 ? Block.FLOWER : Block.MUSHROOM);
+                            type = pick < 74 ? Block.TALL_GRASS : (pick < 95 ? Block.FLOWER : Block.MUSHROOM);
                         } else if (forestW > 0.58f) {
-                            type = pick < 62 ? Block.TALL_GRASS : (pick < 82 ? Block.FLOWER : Block.MUSHROOM);
+                            type = pick < 62 ? Block.TALL_GRASS : (pick < 95 ? Block.FLOWER : Block.MUSHROOM);
                         } else {
                             type = pick < 76 ? Block.TALL_GRASS : Block.FLOWER;
                         }
@@ -1217,6 +1217,13 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                     type = tundraW > 0.45f ? Block.BROWN_GRASS : Block.TALL_GRASS;
                 } else if (type == Block.FLOWER) {
                     type = flowerTypeForBiome(biomeType, h);
+                }
+                // Red-clay patches are intentionally warm and high-contrast;
+                // keep bright green strands out of them so the ground patch
+                // remains readable instead of looking like a neon outline.
+                if (surface == Block.RED_CLAY
+                        && (type == Block.TALL_GRASS || type == Block.FERN || type == Block.REED_GRASS)) {
+                    type = Block.BROWN_GRASS;
                 }
 
                 data[x][y + 1][z] = type;

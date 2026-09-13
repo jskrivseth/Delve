@@ -80,7 +80,7 @@ public class Block implements Serializable {
             // The side texture is mostly soil, so only the top takes leaf colour.
             return TINT_GRASS_BLOCK;
         }
-        if (type == LEAVES || type == TALL_GRASS || type == BROWN_GRASS
+        if (type == LEAVES || type == TALL_GRASS
                 || type == FERN || type == REED_GRASS || type == RED_FLOWER
                 || type == PURPLE_FLOWER || type == BLUE_FLOWER) {
             return TINT_FOLIAGE;

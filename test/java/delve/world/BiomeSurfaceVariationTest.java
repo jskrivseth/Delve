@@ -53,4 +53,9 @@ class BiomeSurfaceVariationTest {
         assertNotEquals(false, foundDesertRock);
         assertNotEquals(false, foundForestPeat);
     }
+
+    @Test
+    void dryGrassStaysNeutralAgainstWarmGround() {
+        assertEquals(Block.TINT_NONE, Block.biomeTintKind(Block.BROWN_GRASS));
+    }
 }
