@@ -86,7 +86,10 @@ public class World {
     public static ArrayList<WorldChunk> destroyChunks = new ArrayList<WorldChunk>();
     public static ArrayList<WorldChunk> generateChunks = new ArrayList<WorldChunk>();
     private static final ArrayDeque<Long> waterQueue = new ArrayDeque<Long>();
-    public static int MAX_WATER_UPDATES = 128;
+    /** Water is intentionally much slower than the render loop. */
+    public static int MAX_WATER_UPDATES = 12;
+    public static long WATER_UPDATE_INTERVAL_NANOS = 180_000_000L;
+    private static long nextWaterUpdateAtNanos;
     /*
      * State
      */
@@ -109,6 +112,7 @@ public class World {
         BUILT_CHUNKS = 0;
         VBO_CHUNKS = 0;
         waterQueue.clear();
+        nextWaterUpdateAtNanos = 0L;
         SWEEPER_IS_SLEEPING = true;
         WAKE_SWEEPER = true;
         BREAK_BLOCK_REQUESTED = false;
@@ -220,7 +224,11 @@ public class World {
         GEN_CHUNKS = 0;
         VBO_CHUNKS = 0;
         serializeAndFreeInactiveChunks();
-        processWaterUpdates(MAX_WATER_UPDATES);
+        long now = System.nanoTime();
+        if (now >= nextWaterUpdateAtNanos) {
+            processWaterUpdates(MAX_WATER_UPDATES);
+            nextWaterUpdateAtNanos = now + WATER_UPDATE_INTERVAL_NANOS;
+        }
         pickSelectedBlock();
     }
 
