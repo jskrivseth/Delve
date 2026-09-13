@@ -86,6 +86,25 @@ public class World {
     public static ArrayList<WorldChunk> chunks = new ArrayList<WorldChunk>();
     public static ArrayList<WorldChunk> destroyChunks = new ArrayList<WorldChunk>();
     public static ArrayList<WorldChunk> generateChunks = new ArrayList<WorldChunk>();
+    private static final ArrayDeque<Long> waterQueue = new ArrayDeque<Long>();
+    /**
+     * Wavefront of cells to reclaim after water was removed. Kept separate from
+     * {@link #waterQueue} because it answers a different question: not "where
+     * does this water flow?" but "which water lost its supply?".
+     */
+    private static final ArrayDeque<Long> waterDrainQueue = new ArrayDeque<Long>();
+    /** Cells already queued this episode, so the wavefront terminates. */
+    private static final HashSet<Long> drainQueued = new HashSet<Long>();
+    /** Water is intentionally much slower than the render loop. */
+    public static int MAX_WATER_UPDATES = 12;
+    /**
+     * Drain cells reclaimed per pass. Larger than the flow budget so breaching a
+     * pool visibly recedes over a few ticks rather than hanging forever.
+     */
+    public static int MAX_WATER_DRAINS = 96;
+    public static int MAX_WATER_DROP_DISTANCE = 8;
+    public static long WATER_UPDATE_INTERVAL_NANOS = 180_000_000L;
+    private static long nextWaterUpdateAtNanos;
     /*
      * State
      */
@@ -107,6 +126,10 @@ public class World {
         GEN_CHUNKS = 0;
         BUILT_CHUNKS = 0;
         VBO_CHUNKS = 0;
+        waterQueue.clear();
+        waterDrainQueue.clear();
+        drainQueued.clear();
+        nextWaterUpdateAtNanos = 0L;
         SWEEPER_IS_SLEEPING = true;
         WAKE_SWEEPER = true;
         BREAK_BLOCK_REQUESTED = false;
@@ -219,7 +242,286 @@ public class World {
         GEN_CHUNKS = 0;
         VBO_CHUNKS = 0;
         serializeAndFreeInactiveChunks();
+        long now = System.nanoTime();
+        if (now >= nextWaterUpdateAtNanos) {
+            processWaterUpdates(MAX_WATER_UPDATES);
+            nextWaterUpdateAtNanos = now + WATER_UPDATE_INTERVAL_NANOS;
+        }
         pickSelectedBlock();
+    }
+
+    private static long waterKey(int x, int y, int z) {
+        return (((long) x & 0x1FFFFFL) << 43)
+                | (((long) y & 0x7FL) << 36)
+                | ((long) z & 0x1FFFFFL);
+    }
+
+    private static int waterX(long key) { return (int) (key >> 43); }
+    private static int waterY(long key) { return (int) ((key >> 36) & 0x7F); }
+    private static int waterZ(long key) {
+        return ((int) (key & 0x1FFFFFL) << 11) >> 11;
+    }
+
+    public static void enqueueWaterUpdate(int x, int y, int z) {
+        if (y >= 0 && y < WorldChunk.sizeY) {
+            waterQueue.addLast(waterKey(x, y, z));
+        }
+    }
+
+    public static void clearWaterUpdates() {
+        waterQueue.clear();
+        waterDrainQueue.clear();
+        drainQueued.clear();
+    }
+
+    /**
+     * Queues the neighbourhood of a cell whose water was taken away, so water
+     * that only existed because of it is reclaimed instead of hanging in midair
+     * (mutual lateral support keeps neighbouring flow cells artificially alive).
+     *
+     * Only flow water (levels 2..7) is reclaimed. Level 8 is an independent
+     * source, and level 1 is generated sea/lake water, which is held in place by
+     * the terrain it fills rather than by a source.
+     */
+    public static void enqueueWaterDrainNeighborhood(int x, int y, int z) {
+        enqueueWaterDrain(x - 1, y, z);
+        enqueueWaterDrain(x + 1, y, z);
+        enqueueWaterDrain(x, y + 1, z);
+        enqueueWaterDrain(x, y - 1, z);
+        enqueueWaterDrain(x, y, z - 1);
+        enqueueWaterDrain(x, y, z + 1);
+    }
+
+    private static void enqueueWaterDrain(int x, int y, int z) {
+        if (y < 0 || y >= WorldChunk.sizeY) {
+            return;
+        }
+        long key = waterKey(x, y, z);
+        if (drainQueued.add(key)) {
+            waterDrainQueue.addLast(key);
+        }
+    }
+
+    /**
+     * Reclaims one bounded slice of the drain wavefront. Fixed neighbour order
+     * plus a visited set keeps the result identical for identical input.
+     */
+    private static int processWaterDrains(int budget) {
+        int cleared = 0;
+        int examined = 0;
+        while (examined++ < budget && !waterDrainQueue.isEmpty()) {
+            long key = waterDrainQueue.removeFirst();
+            drainQueued.remove(key);
+            int x = waterX(key), y = waterY(key), z = waterZ(key);
+            int level = waterLevelAtWorld(x, y, z);
+            if (level < 2 || level >= 8) {
+                continue;   // dry, generated water, or an independent source
+            }
+            clearWaterCell(x, y, z);
+            cleared++;
+            enqueueWaterDrain(x - 1, y, z);
+            enqueueWaterDrain(x + 1, y, z);
+            enqueueWaterDrain(x, y + 1, z);
+            enqueueWaterDrain(x, y - 1, z);
+            enqueueWaterDrain(x, y, z - 1);
+            enqueueWaterDrain(x, y, z + 1);
+        }
+        return cleared;
+    }
+
+    /** Empties one cell and re-meshes its chunk (and the seam, if it is on one). */
+    private static void clearWaterCell(int x, int y, int z) {
+        WorldChunk chunk = getChunk(Math.floorDiv(x, WorldChunk.sizeX),
+                Math.floorDiv(z, WorldChunk.sizeZ));
+        if (chunk == null || !chunk.isGenerated || chunk.waterLevels == null) {
+            return;
+        }
+        int lx = Math.floorMod(x, WorldChunk.sizeX);
+        int lz = Math.floorMod(z, WorldChunk.sizeZ);
+        BLOCK_LOCK.writeLock().lock();
+        try {
+            chunk.setWaterLevel(lx, y, lz, 0);
+        } finally {
+            BLOCK_LOCK.writeLock().unlock();
+        }
+        if (lx == 0) {
+            markNeighborMeshStale(Math.floorDiv(x, WorldChunk.sizeX) - 1,
+                Math.floorDiv(z, WorldChunk.sizeZ));
+        } else if (lx == WorldChunk.sizeX - 1) {
+            markNeighborMeshStale(Math.floorDiv(x, WorldChunk.sizeX) + 1,
+                Math.floorDiv(z, WorldChunk.sizeZ));
+        }
+        if (lz == 0) {
+            markNeighborMeshStale(Math.floorDiv(x, WorldChunk.sizeX),
+                Math.floorDiv(z, WorldChunk.sizeZ) - 1);
+        } else if (lz == WorldChunk.sizeZ - 1) {
+            markNeighborMeshStale(Math.floorDiv(x, WorldChunk.sizeX),
+                Math.floorDiv(z, WorldChunk.sizeZ) + 1);
+        }
+    }
+
+    private static void markNeighborMeshStale(int chunkX, int chunkZ) {
+        WorldChunk neighbor = getChunk(chunkX, chunkZ);
+        if (neighbor != null) {
+            neighbor.meshIsStale = true;
+        }
+    }
+
+    /** Runs a bounded, deterministic FIFO water pass; exposed for focused tests. */
+    public static int processWaterUpdates(int budget) {
+        processWaterDrains(MAX_WATER_DRAINS);
+        int processed = 0;
+        while (processed++ < budget && !waterQueue.isEmpty()) {
+            long key = waterQueue.removeFirst();
+            int x = waterX(key), y = waterY(key), z = waterZ(key);
+                WorldChunk source = getChunk(Math.floorDiv(x, WorldChunk.sizeX),
+                        Math.floorDiv(z, WorldChunk.sizeZ));
+            if (source == null || !source.isGenerated || source.waterLevels == null) {
+                continue;
+            }
+            int lx = Math.floorMod(x, WorldChunk.sizeX), lz = Math.floorMod(z, WorldChunk.sizeZ);
+            int level = source.waterLevel(lx, y, lz);
+            if (level == 0) {
+                continue;
+            }
+            /*
+             * Level 1 is terrain water: the basin it fills holds it, so it keeps
+             * its level and only leaves when the ground underneath gives way.
+             * It moves rather than copies, so a breached lake drains instead of
+             * multiplying itself into the cave below.
+             */
+            if (level == 1) {
+                if (Block.isWaterReplaceable(blockTypeAtWorld(x, y - 1, z))
+                        && spreadWater(x, y - 1, z, 1)) {
+                    clearWaterCell(x, y, z);
+                }
+                continue;
+            }
+            /*
+             * Flow water (2..7) was pushed out by a source. Nothing but that
+             * source supports it, so once nothing stronger feeds it, it shrinks.
+             */
+            if (level < 8 && !hasStrongerSupport(x, y, z, level)) {
+                BLOCK_LOCK.writeLock().lock();
+                try {
+                    // Steps from 2 straight to dry: level 1 belongs to terrain
+                    // water, and drained flow water must not masquerade as it.
+                    source.setWaterLevel(lx, y, lz, level == 2 ? 0 : level - 1);
+                } finally {
+                    BLOCK_LOCK.writeLock().unlock();
+                }
+                enqueueWaterUpdate(x, y, z);
+                enqueueWaterUpdate(x - 1, y, z);
+                enqueueWaterUpdate(x + 1, y, z);
+                enqueueWaterUpdate(x, y, z - 1);
+                enqueueWaterUpdate(x, y, z + 1);
+                continue;
+            }
+
+            /*
+             * A flowing column must remain vertical until it reaches terrain.
+             * In particular, a cell whose destination is another water cell is
+             * still part of that column; it must not fan out just because its
+             * own downward write is a no-op.
+             */
+            if (waterLevelAtWorld(x, y - 1, z) > 0) {
+                continue;
+            }
+
+            int belowType = blockTypeAtWorld(x, y - 1, z);
+            if (belowType < 0) {
+                // An unloaded neighbour is not known terrain. Let chunk loading
+                // requeue this cell instead of creating a false shelf.
+                continue;
+            }
+
+            boolean flowedDown = false;
+            int downwardLevel = level == 8 ? 7 : level;
+            for (int drop = 1; drop <= MAX_WATER_DROP_DISTANCE && y - drop >= 0; drop++) {
+                if (!spreadWater(x, y - drop, z, downwardLevel)) {
+                    break;
+                }
+                flowedDown = true;
+            }
+            /*
+             * Lateral spreading stops at level 2: level 1 belongs to water the
+             * terrain holds, and flow water has to stay reclaimable.
+             */
+            if (!flowedDown && level > 2 && !Block.isWaterReplaceable(belowType)) {
+                spreadWater(x - 1, y, z, level - 1);
+                spreadWater(x + 1, y, z, level - 1);
+                spreadWater(x, y, z - 1, level - 1);
+                spreadWater(x, y, z + 1, level - 1);
+            }
+
+        }
+        return Math.min(processed, budget);
+    }
+
+    private static boolean hasStrongerSupport(int x, int y, int z, int level) {
+        int[][] neighbors = {{x - 1, y, z}, {x + 1, y, z},
+            {x, y, z - 1}, {x, y, z + 1}, {x, y + 1, z}};
+        for (int[] neighbor : neighbors) {
+            int neighborLevel = waterLevelAtWorld(neighbor[0], neighbor[1], neighbor[2]);
+            if (neighborLevel > level
+                    || (neighbor[1] == y + 1 && neighborLevel >= level)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static int waterLevelAtWorld(int x, int y, int z) {
+        if (y < 0 || y >= WorldChunk.sizeY) {
+            return 0;
+        }
+        WorldChunk chunk = getChunk(Math.floorDiv(x, WorldChunk.sizeX),
+                Math.floorDiv(z, WorldChunk.sizeZ));
+        if (chunk == null || !chunk.isGenerated || chunk.waterLevels == null) {
+            return 0;
+        }
+        return chunk.waterLevel(Math.floorMod(x, WorldChunk.sizeX), y,
+                Math.floorMod(z, WorldChunk.sizeZ));
+    }
+
+    /** Returns -1 when the voxel is outside the loaded/generated world. */
+    private static int blockTypeAtWorld(int x, int y, int z) {
+        if (y < 0 || y >= WorldChunk.sizeY) {
+            return Block.STONE;
+        }
+        WorldChunk chunk = getChunk(Math.floorDiv(x, WorldChunk.sizeX),
+                Math.floorDiv(z, WorldChunk.sizeZ));
+        if (chunk == null || !chunk.isGenerated) {
+            return -1;
+        }
+        return chunk.getBlock(Math.floorMod(x, WorldChunk.sizeX), y,
+                Math.floorMod(z, WorldChunk.sizeZ));
+    }
+
+    private static boolean spreadWater(int x, int y, int z, int level) {
+        if (y < 0 || y >= WorldChunk.sizeY) return false;
+        WorldChunk target = getChunk(Math.floorDiv(x, WorldChunk.sizeX),
+                Math.floorDiv(z, WorldChunk.sizeZ));
+        if (target == null || !target.isGenerated) return false;
+        int lx = Math.floorMod(x, WorldChunk.sizeX), lz = Math.floorMod(z, WorldChunk.sizeZ);
+        int type = target.getBlock(lx, y, lz);
+        if (type != Block.WATER && !Block.isWaterReplaceable(type)) return false;
+        int old = target.waterLevel(lx, y, lz);
+        if (old >= 8 || old >= level) return false;
+        BLOCK_LOCK.writeLock().lock();
+        try {
+            if (target.setWaterLevel(lx, y, lz, level)) {
+                enqueueWaterUpdate(x, y, z);
+                enqueueWaterUpdate(x - 1, y, z);
+                enqueueWaterUpdate(x + 1, y, z);
+                enqueueWaterUpdate(x, y, z - 1);
+                enqueueWaterUpdate(x, y, z + 1);
+                return true;
+            }
+        } finally {
+            BLOCK_LOCK.writeLock().unlock();
+        }
+        return false;
     }
 
     private void pickSelectedBlock() {

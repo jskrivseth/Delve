@@ -36,9 +36,14 @@ public class BlockFinder {
         if (localX >= 0 && localX < WorldChunk.sizeX) {
             if (localY >= 0 && localY < WorldChunk.sizeY) {
                 if (localZ >= 0 && localZ < WorldChunk.sizeZ) {
+                    boolean wasWater = chunk.getBlock(localX, localY, localZ) == Block.WATER;
+                    int removedWaterLevel = wasWater
+                            ? chunk.waterLevel(localX, localY, localZ) : 0;
                     World.BLOCK_LOCK.writeLock().lock();
                     try {
                         chunk.blocks[WorldChunk.blockIndex(localX, localY, localZ)] = (byte) type;
+                        int level = type == Block.WATER ? 8 : 0;
+                        chunk.waterLevels[WorldChunk.blockIndex(localX, localY, localZ)] = (byte) level;
                     } finally {
                         World.BLOCK_LOCK.writeLock().unlock();
                     }
@@ -48,6 +53,15 @@ public class BlockFinder {
                         chunk.noteBlockPlacedAt(localY);
                     }
                     invalidateSeam(chunkX, chunkZ, localX, localZ);
+                    if (type == Block.WATER) {
+                        World.enqueueWaterUpdate(x, y, z);
+                        World.processWaterUpdates(World.MAX_WATER_DROP_DISTANCE + 1);
+                    } else if (wasWater) {
+                        enqueueWaterNeighborhood(x, y, z);
+                        if (removedWaterLevel == 8) {
+                            World.enqueueWaterDrainNeighborhood(x, y, z);
+                        }
+                    }
                     return;
                 }
             }
@@ -113,9 +127,13 @@ public class BlockFinder {
         if (x >= 0 && x < WorldChunk.sizeX) {
             if (y >= 0 && y < WorldChunk.sizeY) {
                 if (z >= 0 && z < WorldChunk.sizeZ) {
+                    boolean wasWater = chunk.getBlock(x, y, z) == Block.WATER;
+                    int removedWaterLevel = wasWater ? chunk.waterLevel(x, y, z) : 0;
                     World.BLOCK_LOCK.writeLock().lock();
                     try {
                         chunk.blocks[WorldChunk.blockIndex(x, y, z)] = (byte) type;
+                        chunk.waterLevels[WorldChunk.blockIndex(x, y, z)] =
+                                (byte) (type == Block.WATER ? 8 : 0);
                     } finally {
                         World.BLOCK_LOCK.writeLock().unlock();
                     }
@@ -129,11 +147,32 @@ public class BlockFinder {
                     int localX = x;
                     int localZ = z;
                     invalidateSeam(chunkX, chunkZ, localX, localZ);
+                    if (type == Block.WATER) {
+                        World.enqueueWaterUpdate(chunk.worldPosX + x, y, chunk.worldPosY + z);
+                        World.processWaterUpdates(World.MAX_WATER_DROP_DISTANCE + 1);
+                    } else if (wasWater) {
+                        enqueueWaterNeighborhood(chunk.worldPosX + x, y, chunk.worldPosY + z);
+                        if (removedWaterLevel == 8) {
+                            World.enqueueWaterDrainNeighborhood(chunk.worldPosX + x, y,
+                                    chunk.worldPosY + z);
+                        }
+                    }
+
                     return;
                 }
             }
         }
         Game.consoleMsg("Failed to set a block @ (" + chunk.worldPosX + "," + chunk.worldPosY + "} using (" + x + "," + y + "," + z + ")");
+    }
+
+    private static void enqueueWaterNeighborhood(int x, int y, int z) {
+        World.enqueueWaterUpdate(x, y, z);
+        World.enqueueWaterUpdate(x - 1, y, z);
+        World.enqueueWaterUpdate(x + 1, y, z);
+        World.enqueueWaterUpdate(x, y - 1, z);
+        World.enqueueWaterUpdate(x, y + 1, z);
+        World.enqueueWaterUpdate(x, y, z - 1);
+        World.enqueueWaterUpdate(x, y, z + 1);
     }
 
     /**
@@ -168,9 +207,9 @@ public class BlockFinder {
         int typeAt(int x, int y, int z);
     }
 
-    /** Blocks the ray stops on. Water is see-through so a lake bed stays reachable. */
+    /** Every rendered block is targetable so water sources can be broken. */
     private static boolean isTargetable(int type) {
-        return type != Block.AIR && type != Block.WATER;
+        return type != Block.AIR;
     }
 
     /**

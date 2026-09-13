@@ -86,4 +86,36 @@ public class Serializer {
             return null;
         }
     }
+
+    public static boolean serializeBytes(byte[] data, String filename) {
+            File target = fileFor(filename);
+            File temp = new File(target.getParentFile(), filename + ".tmp");
+            try {
+                try (FileOutputStream fout = new FileOutputStream(temp);
+                     ObjectOutputStream oos = new ObjectOutputStream(fout)) {
+                    oos.writeObject(data);
+                }
+                Files.move(temp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                return true;
+            } catch (Exception ex) {
+                System.err.println("Failed saving fluid data " + filename + ": " + ex.getMessage());
+                temp.delete();
+                return false;
+            }
+        }
+
+    public static byte[] deserializeBytes(String filename) {
+            File file = fileFor(filename);
+            if (!file.isFile()) {
+                return null;
+            }
+            try (FileInputStream fin = new FileInputStream(file);
+                 ObjectInputStream ois = new ObjectInputStream(fin)) {
+                return (byte[]) ois.readObject();
+            } catch (Exception ex) {
+                System.err.println("Failed loading fluid data " + filename + ": " + ex.getMessage());
+                delete(filename);
+                return null;
+        }
+    }
 }
