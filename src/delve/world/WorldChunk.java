@@ -5,6 +5,7 @@
 package delve.world;
 
 import java.nio.FloatBuffer;
+import java.nio.IntBuffer;
 import org.joml.Matrix4f;
 import org.lwjgl.BufferUtils;
 import java.io.Serializable;
@@ -41,6 +42,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
      * Handles
      */
     public transient int vboVertexHandle;
+    public transient int vboIndexHandle;
     public transient int vaoHandle;
     private transient Matrix4f modelMatrix = new Matrix4f();
 
@@ -103,11 +105,24 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
      * Data
      */
     public volatile FloatBuffer vbuffer;
-    public volatile int[][][] blocks;     //Contains all the blocks in this chunk
+    /** Pending index list for the mesh sitting in {@link #vbuffer}. */
+    public volatile IntBuffer ibuffer;
+    /**
+     * Flattened block types, indexed {@link #blockIndex}. A byte per voxel
+     * (block ids top out well under 128) instead of int[16][128][16]: one
+     * 32 KiB array per chunk rather than thousands of nested int[] objects,
+     * which cuts both resident memory and meshing's pointer chasing.
+     */
+    public volatile byte[] blocks;     //Contains all the blocks in this chunk
     public volatile int numVerts;
     /** Vertices in the leading opaque range; the remainder is translucent. */
     public volatile int opaqueVerts;
+    /** Index counts mirroring {@link #numVerts}/{@link #opaqueVerts}. */
+    public volatile int numIndices;
+    public volatile int opaqueIndices;
     private volatile int pendingOpaqueVerts;
+    private volatile int pendingIndices;
+    private volatile int pendingOpaqueIndices;
     /**
      * Vertex count for the mesh sitting in {@link #vbuffer}, published to
      * {@link #numVerts} only once that data is actually uploaded. Assigning
@@ -163,7 +178,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     private static final float ARM_LENGTH = 5;
 
     public WorldChunk(int x, int y) {
-        blocks = new int[sizeX][sizeY][sizeZ];
+        blocks = new byte[sizeX * sizeY * sizeZ];
         posX = x;
         posY = y;
         worldPosX = (int) posX * sizeX;
@@ -405,7 +420,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             highest = placePlanetBoulders(data, heightMap, surfaceMap, ruggednessMap, worldPreset, highest);
         }
 
-        this.blocks = data;
+        this.blocks = flatten(data);
         this.maxHeight = Math.min(highest + 1, sizeY);
 
         this.isGenerated = true;
@@ -1463,11 +1478,12 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
 
     /** Recomputes the highest occupied Y so meshing can skip the air above it. */
     private void recomputeMaxHeight() {
+        byte[] voxels = this.blocks;
         int highest = 1;
         for (int x = 0; x < sizeX; x++) {
             for (int z = 0; z < sizeZ; z++) {
                 for (int y = sizeY - 1; y >= 0; y--) {
-                    if (blocks[x][y][z] != 0) {
+                    if (voxels[blockIndex(x, y, z)] != 0) {
                         if (y + 1 > highest) {
                             highest = y + 1;
                         }
@@ -1486,6 +1502,42 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         }
     }
 
+    /** Flat-array offset for a voxel, matching the {@link #skyLight} layout. */
+    public static int blockIndex(int x, int y, int z) {
+        return (x * sizeY + y) * sizeZ + z;
+    }
+
+    /** Block type at chunk-local coordinates. Caller holds the read lock. */
+    public int getBlock(int x, int y, int z) {
+        return blocks[blockIndex(x, y, z)] & 0xFF;
+    }
+
+    /** Collapses generation's int[16][128][16] scratch into the flat form. */
+    private static byte[] flatten(int[][][] data) {
+        byte[] flat = new byte[sizeX * sizeY * sizeZ];
+        for (int x = 0; x < sizeX; x++) {
+            for (int y = 0; y < sizeY; y++) {
+                for (int z = 0; z < sizeZ; z++) {
+                    flat[blockIndex(x, y, z)] = (byte) data[x][y][z];
+                }
+            }
+        }
+        return flat;
+    }
+
+    /** Expands back for the save format, which predates the flat storage. */
+    private static int[][][] expand(byte[] flat) {
+        int[][][] data = new int[sizeX][sizeY][sizeZ];
+        for (int x = 0; x < sizeX; x++) {
+            for (int y = 0; y < sizeY; y++) {
+                for (int z = 0; z < sizeZ; z++) {
+                    data[x][y][z] = flat[blockIndex(x, y, z)] & 0xFF;
+                }
+            }
+        }
+        return data;
+    }
+
     /**
      * Solidity in chunk-local coordinates, following the neighbouring chunk when
      * the lookup crosses a border. Used for ambient occlusion.
@@ -1499,7 +1551,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             return false;
         }
         if (x >= 0 && x < sizeX && z >= 0 && z < sizeZ) {
-            return !Block.isTransparent(blocks[x][y][z]);
+            return !Block.isTransparent(getBlock(x, y, z));
         }
         return World.isSolidGlobal(worldPosX + x, y, worldPosY + z);
     }
@@ -1552,6 +1604,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         // rebuild re-read a consistent state. Publishing a fully-built array
         // atomically removes the race.
         byte[] light = new byte[sizeX * sizeY * sizeZ];
+        byte[] voxels = this.blocks;
         if (lightQueue == null) {
             lightQueue = new int[1 << 16];
         }
@@ -1562,7 +1615,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         for (int x = 0; x < sizeX; x++) {
             for (int z = 0; z < sizeZ; z++) {
                 for (int y = sizeY - 1; y >= 0; y--) {
-                    if (!Block.transmitsLight(blocks[x][y][z])) {
+                    if (!Block.transmitsLight(voxels[blockIndex(x, y, z)] & 0xFF)) {
                         break;
                     }
                     light[lightIndex(x, y, z)] = (byte) MAX_LIGHT;
@@ -1574,12 +1627,12 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         // Seed the four borders from neighbouring chunks that are already lit.
         for (int y = 0; y < sizeY; y++) {
             for (int x = 0; x < sizeX; x++) {
-                seedBorder(light, x, y, 0, worldPosX + x, y, worldPosY - 1);
-                seedBorder(light, x, y, sizeZ - 1, worldPosX + x, y, worldPosY + sizeZ);
+                seedBorder(light, voxels, x, y, 0, worldPosX + x, y, worldPosY - 1);
+                seedBorder(light, voxels, x, y, sizeZ - 1, worldPosX + x, y, worldPosY + sizeZ);
             }
             for (int z = 0; z < sizeZ; z++) {
-                seedBorder(light, 0, y, z, worldPosX - 1, y, worldPosY + z);
-                seedBorder(light, sizeX - 1, y, z, worldPosX + sizeX, y, worldPosY + z);
+                seedBorder(light, voxels, 0, y, z, worldPosX - 1, y, worldPosY + z);
+                seedBorder(light, voxels, sizeX - 1, y, z, worldPosX + sizeX, y, worldPosY + z);
             }
         }
 
@@ -1592,12 +1645,12 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             if (level <= 1) {
                 continue;
             }
-            spread(light, x + 1, y, z, level);
-            spread(light, x - 1, y, z, level);
-            spread(light, x, y + 1, z, level);
-            spread(light, x, y - 1, z, level);
-            spread(light, x, y, z + 1, level);
-            spread(light, x, y, z - 1, level);
+            spread(light, voxels, x + 1, y, z, level);
+            spread(light, voxels, x - 1, y, z, level);
+            spread(light, voxels, x, y + 1, z, level);
+            spread(light, voxels, x, y - 1, z, level);
+            spread(light, voxels, x, y, z + 1, level);
+            spread(light, voxels, x, y, z - 1, level);
         }
 
         // Publish the complete light map first, then flag neighbours whose
@@ -1702,9 +1755,9 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         }
     }
 
-    private void seedBorder(byte[] light, int x, int y, int z,
+    private void seedBorder(byte[] light, byte[] voxels, int x, int y, int z,
                             int worldX, int worldY, int worldZ) {
-        if (!Block.transmitsLight(blocks[x][y][z])) {
+        if (!Block.transmitsLight(voxels[blockIndex(x, y, z)] & 0xFF)) {
             return;
         }
         int level = World.skyLightGlobal(worldX, worldY, worldZ) - 1;
@@ -1715,11 +1768,11 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         }
     }
 
-    private void spread(byte[] light, int x, int y, int z, int level) {
+    private void spread(byte[] light, byte[] voxels, int x, int y, int z, int level) {
         if (x < 0 || x >= sizeX || y < 0 || y >= sizeY || z < 0 || z >= sizeZ) {
             return;
         }
-        int type = blocks[x][y][z];
+        int type = voxels[blockIndex(x, y, z)] & 0xFF;
         if (!Block.transmitsLight(type)) {
             return;
         }
@@ -1760,6 +1813,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         }
         BLOCK_COUNT = 0;
         FACE_COUNT = 0;
+        final byte[] voxels = this.blocks;
 
         // Voxel data is read here on a worker thread while the main thread may be
         // editing blocks, so both passes run under the shared read lock.
@@ -1769,24 +1823,26 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             buildTintGrid();
             int ceiling = Math.min(this.maxHeight, sizeY);
 
-            // Pass 1: count exposed faces so the chunk buffer can be sized exactly.
-            // Nothing is allocated per block, unlike the old FloatBuffer-per-cube
-            // approach that then had to be merged into a second buffer.
+            // Pass 1: count exposed faces so the chunk buffers can be sized
+            // exactly. Nothing is allocated per block, unlike the old
+            // FloatBuffer-per-cube approach that then had to be merged into a
+            // second buffer. Six indices per face is the ceiling for every
+            // writer -- shared quads and unrolled triangle pairs alike.
             int faceCount = 0;
             int blockCount = 0;
             for (int i = 0; i < sizeX; i++) {
                 for (int j = 0; j < ceiling; j++) {
                     for (int k = 0; k < sizeZ; k++) {
-                        int type = blocks[i][j][k];
+                        int type = voxels[blockIndex(i, j, k)] & 0xFF;
                         if (type != 0) {
                             if (Block.isSpritePlant(type)) {
                                 faceCount += 4; // two crossed quads, double sided
                             } else if (Block.isMarchingRock(type)) {
-                                if (computeExposedFaces(i, j, k, EXPOSED_FACES) > 0) {
+                                if (computeExposedFaces(voxels, i, j, k, EXPOSED_FACES) > 0) {
                                     faceCount += 8; // centered closed rock mesh (octahedron)
                                 }
                             } else {
-                                faceCount += computeExposedFaces(i, j, k, EXPOSED_FACES);
+                                faceCount += computeExposedFaces(voxels, i, j, k, EXPOSED_FACES);
                             }
                             blockCount++;
                         }
@@ -1799,49 +1855,58 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
 
             if (faceCount == 0) {
                 this.pendingVerts = 0;
+                this.pendingIndices = 0;
                 this.vbuffer = null;
+                this.ibuffer = null;
                 this.isBuilding = false;
                 this.isBuilt = true;
                 this.vboIsStale = true;
                 return;
             }
 
-            // Pass 2: opaque faces first, then translucent, so the two occupy
-            // contiguous ranges of one buffer and can be drawn as separate passes.
             FloatBuffer buffer = BufferUtils.createFloatBuffer(faceCount * Block.FLOATS_PER_FACE);
+            IntBuffer indices = BufferUtils.createIntBuffer(faceCount * Block.INDICES_PER_FACE);
+
+            // Pass 2: opaque faces first, then translucent, so both the vertex
+            // and the index lists keep the two categories in contiguous ranges
+            // that can be drawn as separate glDrawElements sub-ranges.
             for (int i = 0; i < sizeX; i++) {
                 for (int j = 0; j < ceiling; j++) {
                     for (int k = 0; k < sizeZ; k++) {
-                        int type = blocks[i][j][k];
+                        int type = voxels[blockIndex(i, j, k)] & 0xFF;
                         if (type != 0 && !Block.isTranslucent(type)) {
                             if (Block.isSpritePlant(type)) {
-                                Block.writeCrossSprite(buffer, i, j, k, type, this);
-                            } else if (Block.isMarchingRock(type) && computeExposedFaces(i, j, k, EXPOSED_FACES) > 0) {
-                                Block.writeMarchingRock(buffer, i, j, k, EXPOSED_FACES, type, this);
-                            } else if (computeExposedFaces(i, j, k, EXPOSED_FACES) > 0) {
-                                Block.writeCube(buffer, i, j, k, EXPOSED_FACES, type, this);
+                                Block.writeCrossSprite(buffer, indices, i, j, k, type, this);
+                            } else if (Block.isMarchingRock(type) && computeExposedFaces(voxels, i, j, k, EXPOSED_FACES) > 0) {
+                                Block.writeMarchingRock(buffer, indices, i, j, k, EXPOSED_FACES, type, this);
+                            } else if (computeExposedFaces(voxels, i, j, k, EXPOSED_FACES) > 0) {
+                                Block.writeCube(buffer, indices, i, j, k, EXPOSED_FACES, type, this);
                             }
                         }
                     }
                 }
             }
             this.pendingOpaqueVerts = buffer.position() / Renderer.FLOATS_PER_VERTEX;
+            this.pendingOpaqueIndices = indices.position();
 
             for (int i = 0; i < sizeX; i++) {
                 for (int j = 0; j < ceiling; j++) {
                     for (int k = 0; k < sizeZ; k++) {
-                        int type = blocks[i][j][k];
+                        int type = voxels[blockIndex(i, j, k)] & 0xFF;
                         if (type != 0 && Block.isTranslucent(type)
-                                && computeExposedFaces(i, j, k, EXPOSED_FACES) > 0) {
-                            Block.writeCube(buffer, i, j, k, EXPOSED_FACES, type, this);
+                                && computeExposedFaces(voxels, i, j, k, EXPOSED_FACES) > 0) {
+                            Block.writeCube(buffer, indices, i, j, k, EXPOSED_FACES, type, this);
                         }
                     }
                 }
             }
 
             this.pendingVerts = buffer.position() / Renderer.FLOATS_PER_VERTEX;
+            this.pendingIndices = indices.position();
             buffer.flip();
+            indices.flip();
             this.vbuffer = buffer;
+            this.ibuffer = indices;
         } finally {
             World.BLOCK_LOCK.readLock().unlock();
         }
@@ -1855,8 +1920,8 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
      * Fills {@code out} with the exposure mask for one block and returns how many
      * faces are exposed. Neighbouring chunks are consulted at the chunk borders.
      */
-    private int computeExposedFaces(int i, int j, int k, boolean[] out) {
-        int type = blocks[i][j][k];
+    private int computeExposedFaces(byte[] voxels, int i, int j, int k, boolean[] out) {
+        int type = voxels[blockIndex(i, j, k)] & 0xFF;
         int neighborX = 0, neighborY = 0;
         if (i == 0) {  // Look down
             neighborX = World.chunkNeighbor(2, i, j, k, posX, posY);
@@ -1869,12 +1934,12 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             neighborY = World.chunkNeighbor(4, i, j, k, posX, posY);
         }
 
-        out[0] = (k == sizeZ - 1) ? showsFace(type, neighborY) : showsFace(type, blocks[i][j][k + 1]);   //Front  +z
-        out[1] = (i == sizeX - 1) ? showsFace(type, neighborX) : showsFace(type, blocks[i + 1][j][k]);   //Right  +x
-        out[2] = (j == sizeY - 1) || showsFace(type, blocks[i][j + 1][k]);                               //Top    +y
-        out[3] = (i == 0) ? showsFace(type, neighborX) : showsFace(type, blocks[i - 1][j][k]);           //Left   -x
-        out[4] = (j > 0) && showsFace(type, blocks[i][j - 1][k]);                                        //Bottom -y
-        out[5] = (k == 0) ? showsFace(type, neighborY) : showsFace(type, blocks[i][j][k - 1]);           //Back   -z
+        out[0] = (k == sizeZ - 1) ? showsFace(type, neighborY) : showsFace(type, voxels[blockIndex(i, j, k + 1)] & 0xFF);   //Front  +z
+        out[1] = (i == sizeX - 1) ? showsFace(type, neighborX) : showsFace(type, voxels[blockIndex(i + 1, j, k)] & 0xFF);   //Right  +x
+        out[2] = (j == sizeY - 1) || showsFace(type, voxels[blockIndex(i, j + 1, k)] & 0xFF);                             //Top    +y
+        out[3] = (i == 0) ? showsFace(type, neighborX) : showsFace(type, voxels[blockIndex(i - 1, j, k)] & 0xFF);           //Left   -x
+        out[4] = (j > 0) && showsFace(type, voxels[blockIndex(i, j - 1, k)] & 0xFF);                                      //Bottom -y
+        out[5] = (k == 0) ? showsFace(type, neighborY) : showsFace(type, voxels[blockIndex(i, j, k - 1)] & 0xFF);          //Back   -z
 
         int count = 0;
         for (int f = 0; f < 6; f++) {
@@ -1896,9 +1961,12 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
 
     public void buildVBO() {
         FloatBuffer data = this.vbuffer;
-        if (data == null) {
+        IntBuffer indexData = this.ibuffer;
+        if (data == null || indexData == null) {
             // Mesh built to nothing (fully enclosed or empty chunk).
             this.numVerts = 0;
+            this.numIndices = 0;
+            this.opaqueIndices = 0;
             this.vboIsStale = false;
             return;
         }
@@ -1909,12 +1977,15 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             // handle and never pass through this branch a second time.
             this.meshReadyAtNanos = System.nanoTime();
         }
-        Renderer.uploadChunkMesh(this, data);
-        // Only now is the count valid for the buffer the GPU holds.
+        Renderer.uploadChunkMesh(this, data, indexData);
+        // Only now are the counts valid for the buffers the GPU holds.
         this.numVerts = this.pendingVerts;
         this.opaqueVerts = this.pendingOpaqueVerts;
+        this.numIndices = this.pendingIndices;
+        this.opaqueIndices = this.pendingOpaqueIndices;
         this.vboIsStale = false;
         this.vbuffer = null;
+        this.ibuffer = null;
     }
 
     public void drawMesh() {
@@ -2030,6 +2101,8 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         this.purgeVBO = false;
         this.isBuilt = false;
         this.vboIsStale = false;
+        this.numIndices = 0;
+        this.opaqueIndices = 0;
         this.meshReadyAtNanos = -1L;
         this.destroyRequestedAtNanos = -1L;
     }
@@ -2161,9 +2234,10 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     }
 
     public boolean save() {
+        // The save format predates flat storage; bridge back to the 3-D array.
         World.BLOCK_LOCK.readLock().lock();
         try {
-            return Serializer.serializeArray(this.blocks, saveName());
+            return Serializer.serializeArray(expand(this.blocks), saveName());
         } finally {
             World.BLOCK_LOCK.readLock().unlock();
         }
@@ -2185,7 +2259,8 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             Serializer.delete(saveName());
             return false;
         }
-        this.blocks = loaded;
+        this.blocks = flatten(loaded);
+        recomputeMaxHeight();
         return true;
     }
 

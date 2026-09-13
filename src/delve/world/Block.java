@@ -6,6 +6,7 @@ package delve.world;
 
 import java.io.Serializable;
 import java.nio.FloatBuffer;
+import java.nio.IntBuffer;
 
 import delve.core.Vector;
 import delve.core.Vector3d;
@@ -327,7 +328,10 @@ public class Block implements Serializable {
     private static final float UV_INSET = 0.5f / 256.0f;
 
     /** Vertices emitted per exposed face (2 triangles). */
+    /** Worst-case vertex budget per face; shared quads write only 4. */
     public static final int VERTS_PER_FACE = 6;
+    /** Every face -- shared quad or unrolled triangle pair -- costs 6 indices. */
+    public static final int INDICES_PER_FACE = 6;
     /** position(3) + normal(3) + color+ao(4) + texcoord(2) + skylight(1) + tint(1) */
     public static final int FLOATS_PER_VERTEX = 14;
     public static final int FLOATS_PER_FACE = VERTS_PER_FACE * FLOATS_PER_VERTEX;
@@ -434,7 +438,7 @@ public class Block implements Serializable {
      * @param type   block type, used for the color palette and atlas tile
      * @param solid  neighbour lookup used for ambient occlusion
      */
-    public static void writeCube(FloatBuffer buffer, int x, int y, int z,
+    public static void writeCube(FloatBuffer buffer, IntBuffer indices, int x, int y, int z,
                                  boolean[] faces, int type, SolidityLookup solid) {
         if (buffer == null || faces == null || faces.length == 0) {
             return;
@@ -505,13 +509,14 @@ public class Block implements Serializable {
                 t3v = solid.tintAt(x + (int) corners[3][0], z + (int) corners[3][2], ground);
             }
 
-            // Two triangles over the four corners: 0-1-2, 2-3-0.
+            // Four corner vertices, then the same two triangles (0-1-2, 2-3-0)
+            // spelled as indices -- the repeats were written twice before.
+            int vi = buffer.position() / FLOATS_PER_VERTEX;
             putVertex(buffer, corners[0], n, x, y, z, r, g, b, ao0, u0, u1, v0, v1, light, t0);
             putVertex(buffer, corners[1], n, x, y, z, r, g, b, ao1, u0, u1, v0, v1, light, t1v);
             putVertex(buffer, corners[2], n, x, y, z, r, g, b, ao2, u0, u1, v0, v1, light, t2v);
-            putVertex(buffer, corners[2], n, x, y, z, r, g, b, ao2, u0, u1, v0, v1, light, t2v);
             putVertex(buffer, corners[3], n, x, y, z, r, g, b, ao3, u0, u1, v0, v1, light, t3v);
-            putVertex(buffer, corners[0], n, x, y, z, r, g, b, ao0, u0, u1, v0, v1, light, t0);
+            indices.put(vi).put(vi + 1).put(vi + 2).put(vi + 2).put(vi + 3).put(vi);
         }
     }
 
@@ -521,7 +526,7 @@ public class Block implements Serializable {
      * Exposed adjacent side faces pull shared corners inward, producing rounded
      * transitions and more organic seams than strict axis-aligned cubes.
      */
-    public static void writeMarchingRock(FloatBuffer buffer, int x, int y, int z,
+    public static void writeMarchingRock(FloatBuffer buffer, IntBuffer indices, int x, int y, int z,
                                          boolean[] faces, int type, SolidityLookup solid) {
         if (buffer == null || faces == null || faces.length == 0) {
             return;
@@ -554,6 +559,10 @@ public class Block implements Serializable {
             float nZ = axis == 2 ? dir : 0.0f;
 
             float[][] corners = FACE_CORNERS[f];
+            // The shared corner of the two triangles carries different UVs in
+            // each, so the six vertices cannot collapse into one indexed quad;
+            // emit them unrolled and spend identity indices.
+            int vi = buffer.position() / FLOATS_PER_VERTEX;
             for (int i = 0; i < 2; i++) {
                 for (int j = 0; j < 3; j++) {
                     float[] c = corners[tris[i][j]];
@@ -566,6 +575,9 @@ public class Block implements Serializable {
                     float vv = (j == 2) ? v1 : v0;
                     putSpriteVertex(buffer, p[0], p[1], p[2], nX, nY, nZ, r, g, b, ao, uu, vv, light, NO_TINT);
                 }
+            }
+            for (int q = 0; q < 6; q++) {
+                indices.put(vi + q);
             }
         }
     }
@@ -618,7 +630,7 @@ public class Block implements Serializable {
      * This avoids rendering vegetation as opaque cubes while keeping meshing and
      * lighting in the same chunk pipeline.
      */
-    public static void writeCrossSprite(FloatBuffer buffer, int x, int y, int z,
+    public static void writeCrossSprite(FloatBuffer buffer, IntBuffer indices, int x, int y, int z,
                                         int type, SolidityLookup solid) {
         if (buffer == null) {
             return;
@@ -648,13 +660,13 @@ public class Block implements Serializable {
         float tint = biomeTintKind(type) != TINT_NONE ? solid.tintAt(x, z, false) : NO_TINT;
 
         // Quad A: (\) diagonal.
-        putSpriteQuad(buffer,
+        putSpriteQuad(buffer, indices,
                 cx - h, baseY, cz - h,
                 cx + h, baseY, cz + h,
                 cx + h, topY, cz + h,
                 cx - h, topY, cz - h,
                 r, g, b, ao, u0, u1, v0, v1, light, 0f, 1f, 0f, tint);
-        putSpriteQuad(buffer,
+        putSpriteQuad(buffer, indices,
                 cx + h, baseY, cz + h,
                 cx - h, baseY, cz - h,
                 cx - h, topY, cz - h,
@@ -662,13 +674,13 @@ public class Block implements Serializable {
                 r, g, b, ao, u0, u1, v0, v1, light, 0f, 1f, 0f, tint);
 
         // Quad B: (/) diagonal.
-        putSpriteQuad(buffer,
+        putSpriteQuad(buffer, indices,
                 cx - h, baseY, cz + h,
                 cx + h, baseY, cz - h,
                 cx + h, topY, cz - h,
                 cx - h, topY, cz + h,
                 r, g, b, ao, u0, u1, v0, v1, light, 0f, 1f, 0f, tint);
-        putSpriteQuad(buffer,
+        putSpriteQuad(buffer, indices,
                 cx + h, baseY, cz - h,
                 cx - h, baseY, cz + h,
                 cx - h, topY, cz + h,
@@ -676,7 +688,7 @@ public class Block implements Serializable {
                 r, g, b, ao, u0, u1, v0, v1, light, 0f, 1f, 0f, tint);
     }
 
-    private static void putSpriteQuad(FloatBuffer buffer,
+    private static void putSpriteQuad(FloatBuffer buffer, IntBuffer indices,
                                       float x0, float y0, float z0,
                                       float x1, float y1, float z1,
                                       float x2, float y2, float z2,
@@ -685,12 +697,13 @@ public class Block implements Serializable {
                                       float u0, float u1, float v0, float v1,
                                       float light, float nx, float ny, float nz,
                                       float tint) {
+        // Double-sided billboard triangles, 0-1-2 and 2-3-0, as one quad.
+        int vi = buffer.position() / FLOATS_PER_VERTEX;
         putSpriteVertex(buffer, x0, y0, z0, nx, ny, nz, r, g, b, ao, u0, v1, light, tint);
         putSpriteVertex(buffer, x1, y1, z1, nx, ny, nz, r, g, b, ao, u1, v1, light, tint);
         putSpriteVertex(buffer, x2, y2, z2, nx, ny, nz, r, g, b, ao, u1, v0, light, tint);
-        putSpriteVertex(buffer, x2, y2, z2, nx, ny, nz, r, g, b, ao, u1, v0, light, tint);
         putSpriteVertex(buffer, x3, y3, z3, nx, ny, nz, r, g, b, ao, u0, v0, light, tint);
-        putSpriteVertex(buffer, x0, y0, z0, nx, ny, nz, r, g, b, ao, u0, v1, light, tint);
+        indices.put(vi).put(vi + 1).put(vi + 2).put(vi + 2).put(vi + 3).put(vi);
     }
 
     private static void putSpriteVertex(FloatBuffer buffer, float x, float y, float z,

@@ -38,7 +38,7 @@ public class BlockFinder {
                 if (localZ >= 0 && localZ < WorldChunk.sizeZ) {
                     World.BLOCK_LOCK.writeLock().lock();
                     try {
-                        chunk.blocks[localX][localY][localZ] = type;
+                        chunk.blocks[WorldChunk.blockIndex(localX, localY, localZ)] = (byte) type;
                     } finally {
                         World.BLOCK_LOCK.writeLock().unlock();
                     }
@@ -115,7 +115,7 @@ public class BlockFinder {
                 if (z >= 0 && z < WorldChunk.sizeZ) {
                     World.BLOCK_LOCK.writeLock().lock();
                     try {
-                        chunk.blocks[x][y][z] = type;
+                        chunk.blocks[WorldChunk.blockIndex(x, y, z)] = (byte) type;
                     } finally {
                         World.BLOCK_LOCK.writeLock().unlock();
                     }
@@ -290,11 +290,14 @@ public class BlockFinder {
         if (chunk == null || !chunk.isGenerated) {
             return Block.AIR;
         }
-        int[][][] data = chunk.blocks;
+        byte[] data = chunk.blocks;
         if (data == null) {
             return Block.AIR;
         }
-        return data[Math.floorMod(worldX, WorldChunk.sizeX)][worldY][Math.floorMod(worldZ, WorldChunk.sizeZ)];
+        // 0xFF: the flat store holds signed bytes but block ids are 0..37.
+        return data[WorldChunk.blockIndex(
+                Math.floorMod(worldX, WorldChunk.sizeX), worldY,
+                Math.floorMod(worldZ, WorldChunk.sizeZ))] & 0xFF;
     }
 }
 

@@ -4,6 +4,7 @@ import org.joml.Matrix4f;
 import org.lwjgl.system.MemoryUtil;
 
 import java.nio.FloatBuffer;
+import java.nio.IntBuffer;
 
 import static org.lwjgl.opengl.GL11.*;
 import static org.lwjgl.opengl.GL12.GL_TEXTURE_3D;
@@ -250,6 +251,10 @@ public class Renderer {
         if (chunk.vboVertexHandle != 0) {
             glDeleteBuffers(chunk.vboVertexHandle);
             chunk.vboVertexHandle = 0;
+        }
+        if (chunk.vboIndexHandle != 0) {
+            glDeleteBuffers(chunk.vboIndexHandle);
+            chunk.vboIndexHandle = 0;
         }
         if (chunk.vaoHandle != 0) {
             glDeleteVertexArrays(chunk.vaoHandle);
@@ -648,19 +653,28 @@ public class Renderer {
     }
 
     /**
-     * Creates/updates the VAO+VBO for a chunk mesh. Must run on the GL thread.
+     * Creates/updates the VAO+VBO+element-buffer for a chunk mesh.
+     * Must run on the GL thread.
      */
-    public static void uploadChunkMesh(WorldChunk chunk, FloatBuffer vertexData) {
+    public static void uploadChunkMesh(WorldChunk chunk, FloatBuffer vertexData, IntBuffer indexData) {
         if (chunk.vaoHandle == 0) {
             chunk.vaoHandle = glGenVertexArrays();
         }
         if (chunk.vboVertexHandle == 0) {
             chunk.vboVertexHandle = glGenBuffers();
         }
+        if (chunk.vboIndexHandle == 0) {
+            chunk.vboIndexHandle = glGenBuffers();
+        }
 
         glBindVertexArray(chunk.vaoHandle);
         glBindBuffer(GL_ARRAY_BUFFER, chunk.vboVertexHandle);
         glBufferData(GL_ARRAY_BUFFER, vertexData, GL_STATIC_DRAW);
+
+        // Binding the element buffer while the VAO is bound captures it in the
+        // VAO state, so each chunk's draws use its own indices with no rebinding.
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, chunk.vboIndexHandle);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, indexData, GL_STATIC_DRAW);
 
         glEnableVertexAttribArray(0);
         glVertexAttribPointer(0, 3, GL_FLOAT, false, VERTEX_STRIDE_BYTES, 0L);
@@ -675,6 +689,9 @@ public class Renderer {
         glEnableVertexAttribArray(5);
         glVertexAttribPointer(5, 1, GL_FLOAT, false, VERTEX_STRIDE_BYTES, 13L * Float.BYTES);
 
+        // Leave the element buffer bound: unlike array buffers, the binding
+        // recorded here belongs to the VAO, and unbinding it before releasing
+        // the VAO would erase the association we just captured.
         glBindVertexArray(0);
         glBindBuffer(GL_ARRAY_BUFFER, 0);
     }
@@ -1370,21 +1387,21 @@ public class Renderer {
     }
 
     public static void renderChunkMesh(WorldChunk chunk) {
-        if (chunk == null || chunk.numVerts <= 0 || chunk.vaoHandle == 0) {
+        if (chunk == null || chunk.numIndices <= 0 || chunk.vaoHandle == 0) {
             return;
         }
 
-        int opaque = Math.min(chunk.opaqueVerts, chunk.numVerts);
+        int opaque = Math.min(chunk.opaqueIndices, chunk.numIndices);
         if (opaque > 0) {
             setChunkModel(chunk);
             chunkShader.setFloat("alphaOverride", chunk.renderAlpha);
             glBindVertexArray(chunk.vaoHandle);
-            glDrawArrays(GL_TRIANGLES, 0, opaque);
+            glDrawElements(GL_TRIANGLES, opaque, GL_UNSIGNED_INT, 0L);
             glBindVertexArray(0);
             chunkShader.setFloat("alphaOverride", 1.0f);
         }
 
-        if (chunk.numVerts > opaque) {
+        if (chunk.numIndices > opaque) {
             translucentQueue.add(chunk);
         }
     }
@@ -1427,11 +1444,15 @@ public class Renderer {
             if (chunk.vaoHandle == 0) {
                 continue;
             }
-            int opaque = Math.min(chunk.opaqueVerts, chunk.numVerts);
+            int opaque = Math.min(chunk.opaqueIndices, chunk.numIndices);
+            if (chunk.numIndices <= opaque) {
+                continue;
+            }
             setChunkModel(chunk);
             chunkShader.setFloat("alphaOverride", 0.62f * chunk.renderAlpha);
             glBindVertexArray(chunk.vaoHandle);
-            glDrawArrays(GL_TRIANGLES, opaque, chunk.numVerts - opaque);
+            glDrawElements(GL_TRIANGLES, chunk.numIndices - opaque, GL_UNSIGNED_INT,
+                    (long) opaque * Integer.BYTES);
             glBindVertexArray(0);
         }
 

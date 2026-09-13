@@ -538,7 +538,8 @@ public class World {
         if (chunk == null || !chunk.isGenerated || chunk.blocks == null) {
             return false;   // never trap the player inside unloaded terrain
         }
-        int type = chunk.blocks[Math.floorMod(worldX, WorldChunk.sizeX)][worldY][Math.floorMod(worldZ, WorldChunk.sizeZ)];
+        int type = chunk.getBlock(Math.floorMod(worldX, WorldChunk.sizeX), worldY,
+                Math.floorMod(worldZ, WorldChunk.sizeZ));
         return Block.isCollidable(type);
     }
 
@@ -561,7 +562,7 @@ public class World {
         }
         int lx = Math.floorMod(worldX, WorldChunk.sizeX);
         int lz = Math.floorMod(worldZ, WorldChunk.sizeZ);
-        return !Block.isTransparent(chunk.blocks[lx][y][lz]);
+        return !Block.isTransparent(chunk.getBlock(lx, y, lz));
     }
 
     /**
@@ -598,7 +599,7 @@ public class World {
                 if (chunkX < sizeX - 1 && chunkY < sizeY) {
                     chunk = World.getChunk(chunkX + 1, chunkY);
                     if (chunk != null && chunk.isGenerated) {
-                        return chunk.blocks[0][y][z];
+                        return chunk.getBlock(0, y, z);
                     }
                 }
                 break;
@@ -607,7 +608,7 @@ public class World {
                 if (chunkX > 0 && chunkY < sizeY) {
                     chunk = World.getChunk(chunkX - 1, chunkY);
                     if (chunk != null && chunk.isGenerated) {
-                        return chunk.blocks[WorldChunk.sizeX - 1][y][z];
+                        return chunk.getBlock(WorldChunk.sizeX - 1, y, z);
                     }
                 }
                 break;
@@ -616,7 +617,7 @@ public class World {
                 if (chunkY > 0 && chunkX < sizeX) {
                     chunk = World.getChunk(chunkX, chunkY - 1);
                     if (chunk != null && chunk.isGenerated) {
-                        return chunk.blocks[x][y][WorldChunk.sizeZ - 1];
+                        return chunk.getBlock(x, y, WorldChunk.sizeZ - 1);
                     }
                 }
                 break;
@@ -625,7 +626,7 @@ public class World {
                 if (chunkY < sizeY - 1 && chunkX < sizeX) {
                     chunk = World.getChunk(chunkX, chunkY + 1);
                     if (chunk != null && chunk.isGenerated) {
-                        return chunk.blocks[x][y][0];
+                        return chunk.getBlock(x, y, 0);
                     }
                 }
                 break;

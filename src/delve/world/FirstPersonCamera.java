@@ -314,12 +314,14 @@ public class FirstPersonCamera extends Camera {
                 if (cached == null || !cached.isGenerated) {
                     continue;   // never trap the player inside unloaded terrain
                 }
-                int[][][] data = cached.blocks;
+                byte[] data = cached.blocks;
                 if (data == null) {
                     continue;
                 }
-                for (int y = y0; y <= y1; y++) {
-                    int type = data[lx][y][lz];
+                // y-stride is one chunk slab of sizeZ; walk it linearly.
+                for (int y = y0, idx = WorldChunk.blockIndex(lx, y0, lz);
+                        y <= y1; y++, idx += WorldChunk.sizeZ) {
+                    int type = data[idx] & 0xFF;
                     if (Block.isCollidable(type)) {
                         return true;
                     }
