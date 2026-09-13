@@ -70,8 +70,13 @@ public class Util {
     }
 
     public static String getApplicationPath() {
-        File directory = new File(".");
-        return directory.getAbsolutePath().substring(0, directory.getAbsolutePath().length() - 1);
+        // Canonical path keeps the directory name intact; the old code sliced the
+        // trailing "." off getAbsolutePath(), stranding a dangling separator.
+        try {
+            return new File(".").getCanonicalPath();
+        } catch (java.io.IOException e) {
+            return new File(".").getAbsolutePath();
+        }
     }
 
     public static long getMaxMemory() {
