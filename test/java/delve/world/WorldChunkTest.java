@@ -91,14 +91,22 @@ public class WorldChunkTest {
     }
 
     @Test
-    public void testWriteCrossSpriteSharesCornersAcrossBothDiagonals() {
-        FloatBuffer verts = org.lwjgl.BufferUtils.createFloatBuffer(4 * 6 * Block.FLOATS_PER_VERTEX);
-        IntBuffer inds = org.lwjgl.BufferUtils.createIntBuffer(4 * Block.INDICES_PER_FACE);
+    public void testWriteCrossSpriteEmitsTwoPlanesWithIndexedTriangles() {
+        FloatBuffer verts = org.lwjgl.BufferUtils.createFloatBuffer(2 * 4 * Block.FLOATS_PER_VERTEX);
+        IntBuffer inds = org.lwjgl.BufferUtils.createIntBuffer(2 * Block.INDICES_PER_FACE);
 
         Block.writeCrossSprite(verts, inds, 1, 33, 2, Block.TALL_GRASS, OPEN_SKY);
 
-        assertEquals(4 * 4 * Block.FLOATS_PER_VERTEX, verts.position());
-        assertEquals(4 * Block.INDICES_PER_FACE, inds.position());
+        assertEquals(2 * 4 * Block.FLOATS_PER_VERTEX, verts.position());
+        assertEquals(2 * Block.INDICES_PER_FACE, inds.position());
+
+        inds.flip();
+        int[] indexList = new int[inds.remaining()];
+        inds.get(indexList);
+        assertArrayEquals(
+                new int[]{0, 1, 2, 2, 3, 0, 4, 5, 6, 6, 7, 4},
+                indexList,
+                "two crossed planes should emit four indexed triangles without reversed duplicates");
     }
 
     @Test

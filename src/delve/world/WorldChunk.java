@@ -2181,7 +2181,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                         if (type != 0) {
                             transparentBlocks |= Block.isTransparent(type);
                             if (Block.isSpritePlant(type)) {
-                                faceCount += 4; // two crossed quads, double sided
+                                faceCount += 2; // two crossed quads, cull-off doubles sides
                             } else if (Block.isMarchingRock(type)) {
                                 if (computeExposedFaces(voxels, i, j, k, EXPOSED_FACES) > 0) {
                                     faceCount += 8; // centered closed rock mesh (octahedron)

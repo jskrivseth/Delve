@@ -830,10 +830,6 @@ public class Block implements Serializable {
                 bx0, baseY, bz0, bx1, baseY, bz1,
                 tx1, topY, tz1, tx0, topY, tz0,
                 r, g, b, ao, u0, u1, v0, v1, light, 0f, 1f, 0f, tint);
-        putSpriteQuad(buffer, indices,
-                bx1, baseY, bz1, bx0, baseY, bz0,
-                tx0, topY, tz0, tx1, topY, tz1,
-                r, g, b, ao, u0, u1, v0, v1, light, 0f, 1f, 0f, tint);
     }
 
     static float plantHeight(int type, int variation) {
