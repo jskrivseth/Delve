@@ -415,17 +415,17 @@ public class World {
                         && spreadWater(x, y - 1, z, 7)) {
                     continue;
                 }
-                // Generated lakes normally sit in terrain-filled basins, but a
-                // cave mouth or cliff can expose an adjacent column whose next
-                // cell down is also open. Move one conserved level-1 cell over
-                // that lip; its queued destination then falls normally. Requiring
-                // open space below the neighbour prevents terrain water from
-                // spreading sideways across ordinary flat ground.
-                if (!emitTerrainWaterOverDrop(x, y, z, x - 1, z)
-                        && !emitTerrainWaterOverDrop(x, y, z, x + 1, z)
-                        && !emitTerrainWaterOverDrop(x, y, z, x, z - 1)) {
-                    emitTerrainWaterOverDrop(x, y, z, x, z + 1);
-                }
+                // Spill through any adjacent cell water could actually escape
+                // into: one with open space below it (a cliff lip or shaft),
+                // or one covered overhead (a cave mouth or dug tunnel). Open
+                // sky at a shoreline is neither, so lakes do not weep thin
+                // films across every beach they touch. The emitted flow is
+                // level 7, which fades to nothing at level 2, so the lake can
+                // never creep outward the way a true source would.
+                emitTerrainWaterOutlet(x, y, z, x - 1, z);
+                emitTerrainWaterOutlet(x, y, z, x + 1, z);
+                emitTerrainWaterOutlet(x, y, z, x, z - 1);
+                emitTerrainWaterOutlet(x, y, z, x, z + 1);
                 continue;
             }
             /*
@@ -489,14 +489,38 @@ public class World {
         return Math.min(processed, budget);
     }
 
-    private static boolean emitTerrainWaterOverDrop(int x, int y, int z,
-                                                    int outletX, int outletZ) {
-        if (!Block.isWaterReplaceable(blockTypeAtWorld(outletX, y, outletZ))
-                || !Block.isWaterReplaceable(blockTypeAtWorld(outletX, y - 1, outletZ))
-                || !spreadWater(outletX, y, outletZ, 7)) {
+    /**
+     * True when the adjacent cell is open, air that water poured into it would
+     * not simply coat and dry in: open space below it gives the water
+     * somewhere to fall, and a ceiling within reach marks an enclosed void
+     * rather than a beach. Either case is a breach worth draining through;
+     * open sky is not.
+     */
+    private static boolean emitTerrainWaterOutlet(int x, int y, int z,
+                                                  int outletX, int outletZ) {
+        if (!Block.isWaterReplaceable(blockTypeAtWorld(outletX, y, outletZ))) {
             return false;
         }
-        return true;
+        boolean escapesDown = Block.isWaterReplaceable(blockTypeAtWorld(outletX, y - 1, outletZ))
+                || Block.isWaterReplaceable(blockTypeAtWorld(outletX, y - 2, outletZ));
+        if (!escapesDown && !hasCeilingAbove(outletX, y, outletZ)) {
+            return false;
+        }
+        return spreadWater(outletX, y, outletZ, 7);
+    }
+
+    /** Whether something solid roofs the outlet cell within reach. */
+    private static boolean hasCeilingAbove(int x, int y, int z) {
+        for (int up = 1; up <= MAX_WATER_DROP_DISTANCE; up++) {
+            int type = blockTypeAtWorld(x, y + up, z);
+            if (type < 0) {
+                return false;   // unloaded sky: settle when the chunk loads
+            }
+            if (!Block.isWaterReplaceable(type)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static boolean hasStrongerSupport(int x, int y, int z, int level) {
@@ -550,6 +574,10 @@ public class World {
         if (type != Block.WATER && !Block.isWaterReplaceable(type)) return false;
         int old = target.waterLevel(lx, y, lz);
         if (old >= 8 || old >= level) return false;
+        // A level-1 cell is an anchored reservoir member. Ordinary flow must
+        // never launder it into disposable flow water, or a breach would
+        // drain the lake by converting it cell by cell instead of spilling.
+        if (old == 1) return false;
         BLOCK_LOCK.writeLock().lock();
         try {
             if (target.setWaterLevel(lx, y, lz, level)) {

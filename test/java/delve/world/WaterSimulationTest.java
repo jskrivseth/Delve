@@ -229,6 +229,46 @@ class WaterSimulationTest {
     }
 
     /**
+     * A tunneller reaching a lake from the side expects it to pour in even
+     * though the tunnel floor is solid: the breach is covered overhead, so it
+     * is a void water can escape into, not open sky.
+     */
+    @Test
+    void diggingAHorizontalTunnelIntoALakeSpillsIntoIt() {
+        WorldChunk hill = chunk(0, 0);
+        for (int x = 2; x <= 13; x++) {
+            for (int y = 0; y <= 9; y++) {
+                for (int z = 2; z <= 6; z++) {
+                    hill.blocks[WorldChunk.blockIndex(x, y, z)] = (byte) Block.STONE;
+                }
+            }
+        }
+        for (int x = 11; x <= 12; x++) {   // buried lake pocket
+            for (int y = 7; y <= 9; y++) {
+                for (int z = 2; z <= 6; z++) {
+                    hill.blocks[WorldChunk.blockIndex(x, y, z)] = (byte) Block.WATER;
+                    hill.setWaterLevel(x, y, z, 1);
+                }
+            }
+        }
+        for (int x = 4; x <= 10; x++) {    // bore the tunnel, breaking the wall
+            hill.blocks[WorldChunk.blockIndex(x, 7, 4)] = (byte) Block.AIR;
+        }
+        World.enqueueWaterUpdate(11, 7, 4);
+        World.enqueueWaterUpdate(10, 7, 4);
+        World.processWaterUpdates(400);
+
+        assertTrue(hill.waterLevel(9, 7, 4) > 1,
+                "lake refused to spill into a breached tunnel");
+        assertTrue(hill.waterLevel(6, 7, 4) > 1,
+                "spill did not travel along the tunnel floor");
+        assertEquals(1, hill.waterLevel(11, 7, 4),
+                "the breach converted the reservoir cell into disposable flow");
+        assertEquals(1, hill.waterLevel(11, 9, 4),
+                "lake was consumed instead of acting as an anchored source");
+    }
+
+    /**
      * Water the player started is different: with its supply broken it has no
      * terrain holding it, so everything it fed has to drain away.
      */

@@ -485,11 +485,15 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     }
 
     /**
-     * Seeds only generated-water cells that can immediately fall or spill over
-     * a ledge. Bulk-queueing every sea voxel would swamp the deliberately slow
-     * simulation; settled basin water needs no update. Boundary outlets whose
-     * neighbour is not generated yet are picked up by replayBoundaryColumns()
-     * when that neighbour becomes publishable.
+     * Seeds generated-water cells that touch an open cell in any direction:
+     * the lake bed gave way, or a cave or erosion hollow pressed against the
+     * basin wall somewhere below the surface. Seeded cells act as anchored
+     * reservoir sources and emit level-7 flow, which fades at level 2 and so
+     * can never creep outward unchecked. Settled, enclosed basin cells touch
+     * only water and ground and are never queued, so the deliberately slow
+     * simulation stays free for the breaches that matter. Outlets whose
+     * neighbour chunk is not generated yet are picked up by
+     * replayBoundaryColumns() when that neighbour becomes publishable.
      */
     void enqueueGeneratedWaterOutlets() {
         int ceiling = Math.min(maxHeight, sizeY);
@@ -499,27 +503,16 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                     if (waterLevels[blockIndex(x, y, z)] != 1) {
                         continue;
                     }
-                    boolean surface = y + 1 >= sizeY
-                            || waterLevels[blockIndex(x, y + 1, z)] == 0;
                     if (isWaterReplaceableAt(x, y - 1, z)
-                            || (surface && isGeneratedWaterLedge(x, y, z))) {
+                            || isWaterReplaceableAt(x - 1, y, z)
+                            || isWaterReplaceableAt(x + 1, y, z)
+                            || isWaterReplaceableAt(x, y, z - 1)
+                            || isWaterReplaceableAt(x, y, z + 1)) {
                         World.enqueueWaterUpdate(worldPosX + x, y, worldPosY + z);
                     }
                 }
             }
         }
-    }
-
-    private boolean isGeneratedWaterLedge(int x, int y, int z) {
-        return isOpenDropAt(x - 1, y, z)
-                || isOpenDropAt(x + 1, y, z)
-                || isOpenDropAt(x, y, z - 1)
-                || isOpenDropAt(x, y, z + 1);
-    }
-
-    private boolean isOpenDropAt(int x, int y, int z) {
-        return isWaterReplaceableAt(x, y, z)
-                && isWaterReplaceableAt(x, y - 1, z);
     }
 
     private boolean isWaterReplaceableAt(int x, int y, int z) {
