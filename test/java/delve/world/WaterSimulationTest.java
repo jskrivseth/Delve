@@ -268,6 +268,26 @@ class WaterSimulationTest {
                 "lake was consumed instead of acting as an anchored source");
     }
 
+    @Test
+    void breachedReservoirKeepsEmittingAcrossSimulationTicks() {
+        WorldChunk lake = chunk(0, 0);
+        lake.blocks[WorldChunk.blockIndex(4, 5, 4)] = (byte) Block.AIR;
+        lake.blocks[WorldChunk.blockIndex(4, 2, 4)] = (byte) Block.STONE;
+        lake.setWaterLevel(4, 6, 4, 1);
+
+        World.enqueueWaterUpdateImmediate(4, 6, 4);
+        World.processWaterUpdates(1);
+        int first = lake.waterLevel(4, 5, 4);
+        World.processWaterUpdates(40);
+        int second = lake.waterLevel(4, 5, 4);
+
+        assertTrue(first > 1, "the breach did not emit its first flow cell");
+        assertTrue(second > 1,
+                "the reservoir stopped emitting after its first simulation tick");
+        assertEquals(1, lake.waterLevel(4, 6, 4),
+                "the breached reservoir cell was consumed");
+    }
+
     /**
      * Water the player started is different: with its supply broken it has no
      * terrain holding it, so everything it fed has to drain away.

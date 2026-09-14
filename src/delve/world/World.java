@@ -411,9 +411,10 @@ public class World {
              * normally after the breach is plugged.
              */
             if (level == 1) {
+                boolean emitted = false;
                 if (Block.isWaterReplaceable(blockTypeAtWorld(x, y - 1, z))
                         && spreadWater(x, y - 1, z, 7)) {
-                    continue;
+                    emitted = true;
                 }
                 // Spill through any adjacent cell water could actually escape
                 // into: one with open space below it (a cliff lip or shaft),
@@ -422,10 +423,16 @@ public class World {
                 // films across every beach they touch. The emitted flow is
                 // level 7, which fades to nothing at level 2, so the lake can
                 // never creep outward the way a true source would.
-                emitTerrainWaterOutlet(x, y, z, x - 1, z);
-                emitTerrainWaterOutlet(x, y, z, x + 1, z);
-                emitTerrainWaterOutlet(x, y, z, x, z - 1);
-                emitTerrainWaterOutlet(x, y, z, x, z + 1);
+                emitted |= emitTerrainWaterOutlet(x, y, z, x - 1, z);
+                emitted |= emitTerrainWaterOutlet(x, y, z, x + 1, z);
+                emitted |= emitTerrainWaterOutlet(x, y, z, x, z - 1);
+                emitted |= emitTerrainWaterOutlet(x, y, z, x, z + 1);
+                if (emitted) {
+                    // Reservoir cells are persistent sources while breached.
+                    // Requeue only a cell that actually emitted, so sealed
+                    // lakes do not consume the simulation budget.
+                    enqueueWaterUpdate(x, y, z);
+                }
                 continue;
             }
             /*
