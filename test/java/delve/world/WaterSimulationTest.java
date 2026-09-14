@@ -288,6 +288,24 @@ class WaterSimulationTest {
                 "the breached reservoir cell was consumed");
     }
 
+    @Test
+    void breakingLakeBedThroughBlockFinderStartsSpillImmediately() {
+        WorldChunk lake = chunk(0, 0);
+        lake.blocks[WorldChunk.blockIndex(4, 5, 4)] = (byte) Block.STONE;
+        lake.blocks[WorldChunk.blockIndex(4, 2, 4)] = (byte) Block.STONE;
+        lake.setWaterLevel(4, 6, 4, 1);
+        for (int i = 0; i < 1000; i++) {
+            World.enqueueWaterUpdate(12, 12, 12);
+        }
+
+        BlockFinder.setBlockType(lake, 4, 5, 4, Block.AIR);
+
+        assertEquals(1, lake.waterLevel(4, 6, 4),
+                "breaking the bed consumed the generated reservoir");
+        assertTrue(lake.waterLevel(4, 5, 4) > 1,
+                "breaking the bed did not start the spill immediately");
+    }
+
     /**
      * Water the player started is different: with its supply broken it has no
      * terrain holding it, so everything it fed has to drain away.

@@ -61,6 +61,14 @@ public class BlockFinder {
                         if (removedWaterLevel == 8) {
                             World.enqueueWaterDrainNeighborhood(x, y, z);
                         }
+                    } else if (type == Block.AIR) {
+                        // Breaking terrain can expose a generated lake from
+                        // below or from the side. Run the bounded water pass
+                        // immediately, just as placement does, so the breach
+                        // is visible in the same interaction rather than after
+                        // the background terrain queue drains.
+                        enqueueWaterNeighborhoodImmediate(x, y, z);
+                        World.processWaterUpdates(World.MAX_WATER_DROP_DISTANCE + 1);
                     }
                     return;
                 }
@@ -157,6 +165,10 @@ public class BlockFinder {
                             World.enqueueWaterDrainNeighborhood(chunk.worldPosX + x, y,
                                     chunk.worldPosY + z);
                         }
+                    } else if (type == Block.AIR) {
+                        enqueueWaterNeighborhoodImmediate(
+                                chunk.worldPosX + x, y, chunk.worldPosY + z);
+                        World.processWaterUpdates(World.MAX_WATER_DROP_DISTANCE + 1);
                     }
 
                     return;
@@ -167,13 +179,23 @@ public class BlockFinder {
     }
 
     private static void enqueueWaterNeighborhood(int x, int y, int z) {
-        World.enqueueWaterUpdate(x, y, z);
+        World.enqueueWaterUpdateImmediate(x, y, z);
         World.enqueueWaterUpdate(x - 1, y, z);
         World.enqueueWaterUpdate(x + 1, y, z);
         World.enqueueWaterUpdate(x, y - 1, z);
         World.enqueueWaterUpdate(x, y + 1, z);
         World.enqueueWaterUpdate(x, y, z - 1);
         World.enqueueWaterUpdate(x, y, z + 1);
+    }
+
+    private static void enqueueWaterNeighborhoodImmediate(int x, int y, int z) {
+        World.enqueueWaterUpdateImmediate(x, y, z);
+        World.enqueueWaterUpdateImmediate(x - 1, y, z);
+        World.enqueueWaterUpdateImmediate(x + 1, y, z);
+        World.enqueueWaterUpdateImmediate(x, y - 1, z);
+        World.enqueueWaterUpdateImmediate(x, y + 1, z);
+        World.enqueueWaterUpdateImmediate(x, y, z - 1);
+        World.enqueueWaterUpdateImmediate(x, y, z + 1);
     }
 
     /**
