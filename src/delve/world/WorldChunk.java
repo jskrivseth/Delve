@@ -63,8 +63,13 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     public volatile boolean isBuilding = false;
     public volatile boolean isBuilt = false;
     public volatile boolean isGenerating = false;
+    /** Monotonic stamps of when the flags were set; watchdog fuel. */
+    volatile long isGeneratingSince;
+    volatile long isBuildingSince;
     public volatile boolean isGenerated = false;
     public volatile boolean isZombie = false;
+    /** Already handed to the destroyer list; keeps the sweeper O(1) per chunk. */
+    volatile boolean queuedForDestroy = false;
     public volatile boolean neighborsGenerated = false;
     public volatile boolean purgeVBO = false;
     public boolean serialize = false;
@@ -2796,6 +2801,10 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         long backdateNanos = (long) (currentAlpha * fadeInDurationNanos());
         this.destroyRequestedAtNanos = -1L;
         this.meshReadyAtNanos = System.nanoTime() - backdateNanos;
+        // The player came back before the sweep collected it: the chunk leaves
+        // the destroy list for real now, so the sweeper must be free to
+        // re-evaluate it (and re-queue it) on a later pass.
+        this.queuedForDestroy = false;
     }
 
     /** True once a requested destroy fade has fully played out -- only then is it
@@ -2859,6 +2868,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         }
         this.isRefreshing = true;
         this.isBuilding = true;
+        this.isBuildingSince = System.nanoTime();
         // Reuse the shared pool rather than spawning a raw Thread per rebuild.
         try {
             World.submitChunkTask(new WorldChunkBufferBuilderThread(this), this);

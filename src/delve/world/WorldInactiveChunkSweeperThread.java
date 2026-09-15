@@ -28,71 +28,60 @@ public class WorldInactiveChunkSweeperThread implements Runnable {
 
     @Override
     public void run() {
-        synchronized (World.destroyChunks) {
-            int outerRadius = (radius * Game.OPT_CHUNK_SERIALIZE_RADIUS_MULTIPLIER);
-            int xLowerBound = Math.max(x - outerRadius, 0);
-            int xUpperBound = Math.min(x + outerRadius, World.sizeX);
-            int yLowerBound = Math.max(y - outerRadius, 0);
-            int yUpperBound = Math.min(y + outerRadius, World.sizeY);
-            //System.out.println("xLowerBound: " + xLowerBound + " - xUpperBound: " + xUpperBound + " - yLowerBound: " + yLowerBound + " - yUpperBound: " + yUpperBound );
-            //System.out.println("0 - " + (World.sizeX / WorldChunk.sizeX));
+        int outerRadius = (radius * Game.OPT_CHUNK_SERIALIZE_RADIUS_MULTIPLIER);
+        // Chunk coordinates are unbounded signed positions. World.sizeX/sizeY
+        // are the world's BLOCK-space dimensions, so clamping chunk-space
+        // bounds to them silently turned one whole side of the map into
+        // sweep candidates once the camera travelled far enough East/North:
+        // the entire loaded world zombified at once and never came back.
+        int xLowerBound = x - outerRadius;
+        int xUpperBound = x + outerRadius;
+        int yLowerBound = y - outerRadius;
+        int yUpperBound = y + outerRadius;
 
-            //for (int i = 0; i < World.sizeX; i++) {
-            //   for (int j = 0; j < World.sizeY; j++) {
-            // World.chunks is mutated (add/remove) from the main thread; without
-            // this lock this background scan can read a torn/resized array
-            // mid-mutation, intermittently throwing or silently skipping chunks.
-            synchronized (World.chunks) {
-                for (int i = 0; i < chunks.size(); i++) {
-                    WorldChunk thisChunk = chunks.get(i);
-                    if (thisChunk == null) {
-                        continue;
-                    }
-                    // Parenthesised deliberately. Without it && bound tighter than
-                    // ||, so the null check only guarded the first comparison and
-                    // a chunk was swept merely for sitting past one bound.
-                    boolean outsideKeepArea = thisChunk.posX < xLowerBound
-                            || thisChunk.posX > xUpperBound
-                            || thisChunk.posY < yLowerBound
-                            || thisChunk.posY > yUpperBound;
-                    if (outsideKeepArea) {
-                        thisChunk.serialize();
-                        thisChunk.isZombie = true;
-                        // Idempotent -- starts the fade-out clock the first
-                        // time this chunk is seen outside the keep area, and
-                        // does nothing on later sweeps while it's still
-                        // fading. Only queue it for actual GPU teardown once
-                        // that fade has fully played out.
-                        //
-                        // NOTE ON SCOPE: with the default keep-area radius
-                        // (OPT_CHUNK_SERIALIZE_RADIUS_MULTIPLIER == 1), a
-                        // chunk stops being visited by World.render()'s main
-                        // loop at essentially the same instant it becomes
-                        // sweep-eligible here, so this delay mostly does not
-                        // produce a *visible* fade for the common "walking
-                        // away" case -- that case already fades smoothly via
-                        // the render loop's own distance-based edgeFade
-                        // before a chunk ever reaches this boundary. What
-                        // this really guarantees is (a) GPU teardown never
-                        // happens mid-fade, and (b) a chunk that flickers
-                        // back and forth across the boundary resumes its
-                        // fade continuously with no pop (see
-                        // WorldChunk.requestDestroyFade/cancelDestroyFade).
-                        // A true visible fade-out for abrupt cases (e.g. draw
-                        // distance reduced in settings) would need the render
-                        // loop itself to keep drawing a margin of chunks
-                        // beyond the live radius while they finish fading --
-                        // intentionally out of scope here to avoid touching
-                        // the chunk generation/culling hot path.
-                        thisChunk.requestDestroyFade();
-                        if (thisChunk.isDestroyFadeComplete()
-                                && !World.destroyChunks.contains(thisChunk)) {
-                            World.destroyChunks.add(thisChunk);
-                        }
+        // The render thread adds chunks under this monitor every frame; holding
+        // it for a full scan of a 20k-element list stalled the frame loop for
+        // tens of milliseconds at a time. Copy, release, then scan.
+        ArrayList<WorldChunk> snapshot;
+        synchronized (World.chunks) {
+            snapshot = new ArrayList<>(World.chunks);
+        }
+
+        for (int i = 0, n = snapshot.size(); i < n; i++) {
+            WorldChunk thisChunk = snapshot.get(i);
+            if (thisChunk == null || thisChunk.queuedForDestroy) {
+                // Queued chunks are the destroyer's business; chunks whose
+                // fade is merely still playing out stay visitable so this
+                // pass can notice the fade finishing.
+                continue;
+            }
+            boolean outsideKeepArea = thisChunk.posX < xLowerBound
+                    || thisChunk.posX > xUpperBound
+                    || thisChunk.posY < yLowerBound
+                    || thisChunk.posY > yUpperBound;
+            if (!outsideKeepArea) {
+                continue;
+            }
+            if (!thisChunk.isZombie) {
+                thisChunk.serialize();
+                thisChunk.isZombie = true;
+                // Starts the fade-out clock the first time this chunk is seen
+                // outside the keep area. A chunk that flickers back across the
+                // boundary resumes its fade via cancelDestroyFade(), which also
+                // releases its queue slot here.
+                thisChunk.requestDestroyFade();
+            }
+            if (thisChunk.isDestroyFadeComplete()) {
+                synchronized (World.destroyChunks) {
+                    if (!thisChunk.queuedForDestroy) {
+                        // Flag instead of destroyChunks.contains(): a linear
+                        // scan of a multi-thousand entry list per candidate
+                        // chunk made this sweep quadratic.
+                        thisChunk.queuedForDestroy = true;
+                        World.destroyChunks.add(thisChunk);
                     }
                 }
             }
-            //}
         }
         World.SWEEPER_IS_SLEEPING = true;
         World.WAKE_SWEEPER = true;

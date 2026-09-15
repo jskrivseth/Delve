@@ -126,9 +126,23 @@ public class World {
     /*
      * State
      */
-    private static final int CHUNK_WORKER_COUNT = 3;
-    private static final int MAX_QUEUED_CHUNK_TASKS = 64;
+    /**
+     * Generation and meshing are pure CPU work behind one shared read lock, so
+     * three workers leave cores idle while fast flight demands ~50 chunks/s of
+     * fresh terrain. Scale with the machine, but keep room for the render
+     * thread and GC.
+     */
+    private static final int CHUNK_WORKER_COUNT = Math.max(3,
+            Math.min(6, Runtime.getRuntime().availableProcessors() / 2));
+    // A queue sized near one frame's demand turned every burst into a storm of
+    // rejections, and every rejection threw away a frame's worth of submits.
+    static final int MAX_QUEUED_CHUNK_TASKS = 512;
     private static final AtomicLong CHUNK_TASK_SEQUENCE = new AtomicLong();
+    /** Cumulative counters for ChunkPipelineMonitor's throughput census. */
+    static final AtomicLong SUBMITTED_CHUNK_TASKS = new AtomicLong();
+    static final AtomicLong COMPLETED_CHUNK_TASKS = new AtomicLong();
+    /** Ring up to which the last frame was willing to draw. */
+    static volatile int lastReadyFrontier = -1;
     public static ExecutorService threadPool = createThreadPool();
 
     private static ExecutorService createThreadPool() {
@@ -141,14 +155,32 @@ public class World {
             @Override
             public void execute(Runnable command) {
                 if (getQueue().size() >= MAX_QUEUED_CHUNK_TASKS) {
-                    throw new RejectedExecutionException("chunk task queue is full");
+                    purgeObsoleteQueuedTasks();
+                    if (getQueue().size() >= MAX_QUEUED_CHUNK_TASKS) {
+                        throw new RejectedExecutionException("chunk task queue is full");
+                    }
                 }
                 super.execute(command);
             }
         };
     }
 
+    /**
+     * Kinds of queued work, so an overflow can roll back the right chunk flag.
+     */
+    static final int TASK_GENERATION = 0;
+    static final int TASK_MESH = 1;
+    static final int TASK_OTHER = 2;
+    /** Innermost rings that must load even under memory pressure. */
+    private static final int ESSENTIAL_LOAD_RADIUS = 3;
+    private static long lastQueuePurgeAtNanos;
+    static final AtomicLong PURGED_CHUNK_TASKS = new AtomicLong();
+
     static void submitChunkTask(Runnable task, WorldChunk chunk) {
+        submitChunkTask(task, chunk, chunk == null ? TASK_OTHER : TASK_MESH);
+    }
+
+    static void submitChunkTask(Runnable task, WorldChunk chunk, int kind) {
         int priority = Integer.MAX_VALUE;
         if (chunk != null && Game.GAME_CAMERA != null) {
             double dx = chunk.posX - Game.GAME_CAMERA.position.x / WorldChunk.sizeX;
@@ -156,8 +188,72 @@ public class World {
             priority = (int) Math.min(Integer.MAX_VALUE,
                     Math.max(Math.abs(dx), Math.abs(dz)) * 1000.0);
         }
+        SUBMITTED_CHUNK_TASKS.incrementAndGet();
         threadPool.execute(new PrioritizedChunkTask(task, priority,
-                CHUNK_TASK_SEQUENCE.getAndIncrement()));
+                CHUNK_TASK_SEQUENCE.getAndIncrement(), chunk, kind));
+    }
+
+    /**
+     * Chunks no longer wanted must not squat in the queue: with the queue full
+     * of terrain the camera has already flown past, every genuinely near submit
+     * bounced off the cap and the visible frontier starved. Evict the obsolete
+     * entries (rolling their flags back so they can be re-submitted if the
+     * player doubles back) before declaring the queue full.
+     */
+    private static void purgeObsoleteQueuedTasks() {
+        long now = System.nanoTime();
+        if (now - lastQueuePurgeAtNanos < 20_000_000L) {
+            return;
+        }
+        lastQueuePurgeAtNanos = now;
+        if (!(threadPool instanceof ThreadPoolExecutor)) {
+            return;
+        }
+        java.util.Iterator<Runnable> it =
+                ((ThreadPoolExecutor) threadPool).getQueue().iterator();
+        int purged = 0;
+        while (it.hasNext()) {
+            Object entry = it.next();
+            if (!(entry instanceof PrioritizedChunkTask)) {
+                continue;
+            }
+            PrioritizedChunkTask task = (PrioritizedChunkTask) entry;
+            WorldChunk chunk = task.chunk;
+            if (chunk == null || !(chunk.isZombie || !isChunkInCurrentBounds(chunk)
+                    || !isCurrentChunk(chunk))) {
+                continue;
+            }
+            it.remove();
+            task.cancelQueued();
+            purged++;
+        }
+        if (purged > 0) {
+            PURGED_CHUNK_TASKS.addAndGet(purged);
+        }
+    }
+
+    /**
+     * Memory pressure stops the loaded halo from expanding, but never the
+     * ground around the player. Refusing to create chunks everywhere while the
+     * heap recovered left players standing on nothing (falling through a world
+     * that could not rebuild itself for minutes).
+     */
+    static boolean canLoadChunk(int innerRadius) {
+        return !Game.MEMORY_BOUND || innerRadius <= ESSENTIAL_LOAD_RADIUS;
+    }
+
+    static int pendingChunkTasks() {
+        return threadPool instanceof ThreadPoolExecutor
+                ? ((ThreadPoolExecutor) threadPool).getQueue().size() : 0;
+    }
+
+    static int busyChunkWorkers() {
+        return threadPool instanceof ThreadPoolExecutor
+                ? ((ThreadPoolExecutor) threadPool).getActiveCount() : 0;
+    }
+
+    static int totalChunkWorkers() {
+        return CHUNK_WORKER_COUNT;
     }
 
     private static final class PrioritizedChunkTask
@@ -165,16 +261,49 @@ public class World {
         private final Runnable task;
         private final int priority;
         private final long sequence;
+        private final WorldChunk chunk;
+        private final int kind;
 
-        PrioritizedChunkTask(Runnable task, int priority, long sequence) {
+        PrioritizedChunkTask(Runnable task, int priority, long sequence,
+                             WorldChunk chunk, int kind) {
             this.task = task;
             this.priority = priority;
             this.sequence = sequence;
+            this.chunk = chunk;
+            this.kind = kind;
         }
 
         @Override
         public void run() {
-            task.run();
+            try {
+                task.run();
+            } finally {
+                COMPLETED_CHUNK_TASKS.incrementAndGet();
+                if (kind == TASK_OTHER) {
+                    ChunkPipelineMonitor.markTaskEnd();
+                } else {
+                    ChunkPipelineMonitor.markChunkTaskEnd();
+                }
+            }
+        }
+
+        /**
+         * Drops a task that will never run. Its chunk's in-flight flags were
+         * set on the faith that this task would clear them; without rolling
+         * them back the chunk is skipped by the renderer forever.
+         */
+        void cancelQueued() {
+            if (chunk == null) {
+                return;
+            }
+            if (kind == TASK_GENERATION) {
+                chunk.isGenerating = false;
+                chunk.isGeneratingSince = 0;
+            } else if (kind == TASK_MESH) {
+                chunk.isBuilding = false;
+                chunk.isRefreshing = false;
+                chunk.isBuildingSince = 0;
+            }
         }
 
         @Override
@@ -925,13 +1054,23 @@ public class World {
 
             int SWEPT_CHUNKS = 0;
             synchronized (World.destroyChunks) {
-                int toSweep = Math.min(destroyChunks.size(), World.MAX_CHUNKS_TO_SWEEP);
+                int backlog = destroyChunks.size();
+                // Teardown pace has to scale with churn. Flying fast turns
+                // hundreds of chunks/s out of the keep area; at eight chunks
+                // per pass the graveyard only ever grew, pinning the heap,
+                // tripping MEMORY_BOUND, and freezing new chunk creation until
+                // the backlog drained -- minutes later.
+                int budget = Game.MEMORY_BOUND ? 192
+                        : (backlog > 4096 ? 96 : World.MAX_CHUNKS_TO_SWEEP);
+                int toSweep = Math.min(backlog, budget);
                 for (int i = 0; i < toSweep; i++) {
-                    // Always index 0: removing by the loop counter while it
-                    // advances skips every other entry, so chunks stayed queued
-                    // for destruction indefinitely.
-                    WorldChunk deadChunk = destroyChunks.remove(0);
+                    // Pop from the tail. remove(0) shifts a list that can hold
+                    // tens of thousands of entries once per swept chunk, which
+                    // is quadratic in exactly the situation that is already
+                    // struggling. Destruction order is irrelevant.
+                    WorldChunk deadChunk = destroyChunks.remove(destroyChunks.size() - 1);
                     if (deadChunk != null) {
+                        deadChunk.queuedForDestroy = false;
                         deadChunk.serialize();
                         deadChunk.deleteVBO();
                         // chunks is also iterated unsynchronized by the sweeper
@@ -985,6 +1124,7 @@ public class World {
         int midX = currentChunkX;
         int midY = currentChunkY;
         int readyFrontier = readyFrontierRadius(currentChunkX, currentChunkY, chunkRadius);
+        World.lastReadyFrontier = readyFrontier;
         
         Renderer.beginChunkPass();
         
@@ -1059,21 +1199,40 @@ public class World {
                 frontier = 0;
                 continue;
             }
-            boolean complete = true;
+            int incomplete = 0;
             for (int x = lowerX; x <= upperX; x++) {
-                complete &= chunkReadyForDraw(x, lowerY);
-                complete &= chunkReadyForDraw(x, upperY);
+                if (!chunkReadyForDraw(x, lowerY)) {
+                    incomplete++;
+                }
+                if (!chunkReadyForDraw(x, upperY)) {
+                    incomplete++;
+                }
             }
             for (int z = lowerY + 1; z < upperY; z++) {
-                complete &= chunkReadyForDraw(lowerX, z);
-                complete &= chunkReadyForDraw(upperX, z);
+                if (!chunkReadyForDraw(lowerX, z)) {
+                    incomplete++;
+                }
+                if (!chunkReadyForDraw(upperX, z)) {
+                    incomplete++;
+                }
             }
-            if (!complete) {
+            if (incomplete > ringStragglerTolerance(ring)) {
                 break;
             }
             frontier = ring;
         }
         return frontier;
+    }
+
+    /**
+     * Strict ring completeness meant one straggler chunk blacked out every
+     * ring beyond it, so during fast travel the outer world blinked outward
+     * and inward as individual uploads landed. Rings may therefore contain a
+     * few unuploaded cells -- enough slack to absorb normal churn, too tight
+     * for a swiss-cheese horizon (roughly 2.5% at the widest rings).
+     */
+    private static int ringStragglerTolerance(int ring) {
+        return Math.max(1, ring / 4);
     }
 
     private boolean chunkReadyForDraw(int x, int z) {
@@ -1094,7 +1253,8 @@ public class World {
     private void renderChunk(int i, int j, int currentChunkX, int currentChunkY,
                              int innerRadius, int outerRadius, boolean drawAllowed) {
         WorldChunk thisChunk = World.getChunk(i, j);
-        if (thisChunk == null && !Game.MEMORY_BOUND && World.GEN_CHUNKS < World.MAX_CHUNKS_TO_GEN) {
+        if (thisChunk == null && canLoadChunk(innerRadius)
+                && World.GEN_CHUNKS < World.MAX_CHUNKS_TO_GEN) {
             thisChunk = new WorldChunk(i, j);
             synchronized (World.chunks) {
                 chunks.add(thisChunk);
@@ -1111,20 +1271,23 @@ public class World {
                 return;
             }
 
-            if (!thisChunk.isGenerated && !Game.MEMORY_BOUND && GEN_CHUNKS < World.MAX_CHUNKS_TO_GEN) {
+            if (!thisChunk.isGenerated && canLoadChunk(innerRadius)
+                    && GEN_CHUNKS < World.MAX_CHUNKS_TO_GEN) {
                 // Reserve before enqueueing; otherwise a busy executor leaves
                 // the chunk looking idle and every frame submits another job.
                 thisChunk.isGenerating = true;
+                thisChunk.isGeneratingSince = System.nanoTime();
                 Runnable chunkBuilder = new WorldChunkLoadThread(thisChunk);
                 try {
-                    submitChunkTask(chunkBuilder, thisChunk);
+                    submitChunkTask(chunkBuilder, thisChunk, TASK_GENERATION);
                     GEN_CHUNKS++;
                 } catch (RejectedExecutionException e) {
                     thisChunk.isGenerating = false;
                 }
                 return;
             }
-            if (thisChunk.isGenerated && !thisChunk.isBuilt && !Game.MEMORY_BOUND && BUILT_CHUNKS < World.MAX_CHUNKS_TO_BUILD) {
+            if (thisChunk.isGenerated && !thisChunk.isBuilt && canLoadChunk(innerRadius)
+                    && BUILT_CHUNKS < World.MAX_CHUNKS_TO_BUILD) {
 
                 //This chunk is not building and not built, so lets build it..
 
@@ -1133,6 +1296,7 @@ public class World {
                 if (innerRadius < outerRadius - 1) {
                     thisChunk.isRefreshing = true;
                     thisChunk.isBuilding = true;
+                    thisChunk.isBuildingSince = System.nanoTime();
                     Runnable chunkBufferBuilder = new WorldChunkBufferBuilderThread(thisChunk);
                     try {
                         submitChunkTask(chunkBufferBuilder, thisChunk);

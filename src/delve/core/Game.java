@@ -231,6 +231,13 @@ public class Game {
      * Debug
      */
     public static boolean DEBUG_DRAW_CAMERA_RAY = false;
+    /**
+     * Automated streaming soak test ({@code -Ddelve.stress=true}): forces the
+     * user-reported worst case -- max draw distance, vsync off, flight -- and
+     * drives the camera at ~90 blocks/s so ChunkPipelineMonitor can gather
+     * evidence without a player.
+     */
+    public static final boolean STRESS_FLIGHT = Boolean.getBoolean("delve.stress");
     /** 0 and 1 are midnight, 0.25 sunrise, 0.5 noon, 0.75 sunset. */
     public static volatile float TIME_OF_DAY = 0.30f;
     /** Selectable day lengths in real seconds. */
@@ -411,8 +418,9 @@ public class Game {
             }
         }
         // Profiling runs need to be repeatable, and stopping at the title screen
-        // to click through to a world makes that awkward.
-        if (flag("delve.autoplay")) {
+        // to click through to a world makes that awkward. The streaming stress
+        // soak implies the same thing: nobody is at the keyboard.
+        if (flag("delve.autoplay") || STRESS_FLIGHT) {
             long seed = Long.getLong("delve.seed", new java.util.Random().nextLong());
             INSTANCE.startWorld(SaveGame.create(SaveGame.nextDefaultName(), seed, 0));
         }
@@ -512,6 +520,14 @@ public class Game {
         this.APP_FULLSCREEN = fullscreen;
         try {
             init();
+            if (STRESS_FLIGHT) {
+                OPT_DRAW_DISTANCE = Math.max(OPT_DRAW_DISTANCE, 46);
+                OPT_VSYNC = false;
+                WINDOW.setVSync(false);
+                GAME_FLYMODE = true;
+                System.out.println("[stress] automated flight enabled "
+                        + "(draw distance " + OPT_DRAW_DISTANCE + ", vsync off)");
+            }
 
             getDelta();
             LAST_FRAMES_PER_SECOND = getTime();
@@ -588,6 +604,35 @@ public class Game {
         if (!MENU_OPEN && !DEV_MENU_OPEN) {
             GAME_CAMERA.update();
             GAME_WORLD.update();
+            ChunkPipelineMonitor.tick();
+            if (STRESS_FLIGHT) {
+                stressFlyTick();
+            }
+        }
+    }
+
+    private long stressNextHopAtNanos;
+    private long stressHops;
+
+    /**
+     * Moves the camera ~90 blocks/second along a gently wandering course, so
+     * the pipeline is continuously handed brand-new chunks the way fast fly
+     * mode does -- but reproducibly, and far longer than a wrist lasts.
+     */
+    private void stressFlyTick() {
+        long now = System.nanoTime();
+        if (now - stressNextHopAtNanos < 200_000_000L) {
+            return;
+        }
+        stressNextHopAtNanos = now;
+        GAME_FLYMODE = true;
+        stressHops++;
+        double heading = Math.sin(stressHops * 0.055) * 0.8;
+        GAME_CAMERA.position.x += Math.cos(heading) * 18;
+        GAME_CAMERA.position.z += Math.sin(heading) * 18;
+        double skyFloor = WorldChunk.SEA_LEVEL + 48;
+        if (GAME_CAMERA.position.y < skyFloor) {
+            GAME_CAMERA.position.y = skyFloor;
         }
     }
 
