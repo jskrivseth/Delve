@@ -1628,7 +1628,7 @@ public class Renderer {
             // temporarily change culling state.
             glEnable(GL_CULL_FACE);
             glCullFace(GL_BACK);
-            glFrontFace(GL_CCW);
+            glFrontFace(GL_CW);
             glBindVertexArray(chunk.vaoHandle);
             glDrawElements(GL_TRIANGLES, opaque, GL_UNSIGNED_INT, 0L);
             glBindVertexArray(0);
