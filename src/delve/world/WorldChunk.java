@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.HashMap;
 import java.util.BitSet;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import static org.lwjgl.opengl.GL11.GL_LINES;
@@ -2859,7 +2860,12 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         this.isRefreshing = true;
         this.isBuilding = true;
         // Reuse the shared pool rather than spawning a raw Thread per rebuild.
-        World.threadPool.execute(new WorldChunkBufferBuilderThread(this));
+        try {
+            World.threadPool.execute(new WorldChunkBufferBuilderThread(this));
+        } catch (RejectedExecutionException e) {
+            this.isRefreshing = false;
+            this.isBuilding = false;
+        }
     }
 
     private static final class PendingMesh {
