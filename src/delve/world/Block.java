@@ -871,13 +871,15 @@ public class Block implements Serializable {
                                       float u0, float u1, float v0, float v1,
                                       float light, float nx, float ny, float nz,
                                       float tint) {
-        // Double-sided billboard triangles, 0-1-2 and 2-3-0, as one quad.
+        // Explicitly emit both windings so billboard plants remain visible with
+        // backface culling enabled for the surrounding chunk's terrain.
         int vi = buffer.position() / FLOATS_PER_VERTEX;
         putSpriteVertex(buffer, x0, y0, z0, nx, ny, nz, r, g, b, ao, u0, v1, light, tint);
         putSpriteVertex(buffer, x1, y1, z1, nx, ny, nz, r, g, b, ao, u1, v1, light, tint);
         putSpriteVertex(buffer, x2, y2, z2, nx, ny, nz, r, g, b, ao, u1, v0, light, tint);
         putSpriteVertex(buffer, x3, y3, z3, nx, ny, nz, r, g, b, ao, u0, v0, light, tint);
         indices.put(vi).put(vi + 1).put(vi + 2).put(vi + 2).put(vi + 3).put(vi);
+        indices.put(vi + 2).put(vi + 1).put(vi).put(vi).put(vi + 3).put(vi + 2);
     }
 
     private static void putSpriteVertex(FloatBuffer buffer, float x, float y, float z,
