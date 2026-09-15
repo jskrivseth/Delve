@@ -279,6 +279,10 @@ class WaterSimulationTest {
     @Test
     void sheetEdgesAppronDownOverADrop() {
         WorldChunk chunk = chunk(0, 0);
+        // The lip carries a block under it: aprons are lawful on sills,
+        // never on water hanging over an undercut void.
+        chunk.blocks[WorldChunk.blockIndex(3, 5, 4)] = (byte) Block.STONE;
+        chunk.blocks[WorldChunk.blockIndex(4, 5, 4)] = (byte) Block.STONE;
         chunk.setWaterLevel(3, 6, 4, 4);
         chunk.setWaterLevel(4, 6, 4, 4);
         // The pool one row down, directly beyond the lip line at x=5.
@@ -291,6 +295,47 @@ class WaterSimulationTest {
         assertEquals(WorldChunk.waterSurfaceHeight(4), interior, 0.0001f);
         assertTrue(lip < interior, "lip stayed flush instead of spilling over");
         assertTrue(lip > 0.0f, "apron punched through the cell floor");
+    }
+
+    /**
+     * Unsupported lip: the sheet's own carrier cell hangs over open space.
+     * No apron may issue; the edge holds its flat mean, and the void is
+     * dealt with by the sheet below.
+     */
+    @Test
+    void apronNeedsABlockUnderTheCarrier() {
+        WorldChunk chunk = chunk(0, 0);
+        chunk.setWaterLevel(4, 6, 4, 4);
+        chunk.setWaterLevel(5, 5, 4, 4);   // water one row down, but the
+                                           // carrier at (5?,6) has no sill:
+                                           // its own column below is open.
+
+        float corner = chunk.waterCornerHeight(5, 6, 4);
+        // Wet column (4,6,4) is unsupported (air beneath) -> apron gated off.
+        assertEquals(WorldChunk.waterSurfaceHeight(4), corner, 0.0001f);
+    }
+
+    /**
+     * Vertical fill: where water directly overhangs a lower sheet, that
+     * sheet's shared corner drives flush to the cell top -- the underside
+     * of the overhanging water -- welding surface to surface instead of
+     * leaving a peeled strip of bank between them. Interior corners of the
+     * same sheet stay flat.
+     */
+    @Test
+    void sheetUnderOverhangingWaterFillsVertically() {
+        WorldChunk chunk = chunk(0, 0);
+        chunk.setWaterLevel(4, 5, 3, 4);
+        chunk.setWaterLevel(4, 5, 4, 4);
+        // Thick water hanging one row directly above the columns x=5.
+        chunk.setWaterLevel(5, 6, 3, 8);
+        chunk.setWaterLevel(5, 6, 4, 8);
+
+        float sealed = chunk.waterCornerHeight(5, 5, 4);
+        float interior = chunk.waterCornerHeight(4, 5, 4);
+
+        assertEquals(1.0f, sealed, 0.0001f);
+        assertTrue(interior < 1.0f, "whole sheet flattened against the ceiling");
     }
 
     /**

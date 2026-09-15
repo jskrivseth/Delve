@@ -2443,11 +2443,15 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     }
 
     float waterCornerHeight(int cornerX, int y, int cornerZ) {
+        final float apronWeight = 0.6f;
         float sum = 0.0f;
         int wetSurfaces = 0;
         int unknownColumns = 0;
         float apronSum = 0.0f;
         int apronColumns = 0;
+        boolean hasFullWater = false;
+        boolean unsupportedWet = false;
+        boolean sealedFromAbove = false;
         for (int dx = -1; dx <= 0; dx++) {
             for (int dz = -1; dz <= 0; dz++) {
                 int cx = cornerX + dx;
@@ -2457,25 +2461,41 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                     unknownColumns++;
                     continue;
                 }
-                if (waterLevelAt(cx, y + 1, cz) != 0) {
-                    continue;
-                }
-                if (level == 8) {
-                    return 1.0f;
-                }
-                if (level > 0 && level < 8) {
-                    sum += waterSurfaceHeight(level);
+                if (level > 0) {
+                    if (waterLevelAt(cx, y + 1, cz) != 0) {
+                        continue;
+                    }
+                    if (level == 8) {
+                        hasFullWater = true;
+                        sum += 1.0f;
+                    } else {
+                        sum += waterSurfaceHeight(level);
+                    }
                     wetSurfaces++;
+                    // An apron may only issue off a carrier standing on
+                    // something: solid ground or more water. Wetness
+                    // dangling over open space undercuts a dig, and over a
+                    // dig the sheet must sheer vertically, not wing out.
+                    if (waterLevelAt(cx, y - 1, cz) == 0 && !solidBelow(cx, cz, y)) {
+                        unsupportedWet = true;
+                    }
                     continue;
                 }
-                // Dry here, but liquid one row down across this corner: the
-                // sheet spills OVER that block rather than shearing off at a
-                // vertical drop. The lower surface enters the mean as a soft
-                // participant expressed in this row's units (its absolute
-                // height minus one cell), which pulls the shared corner down
-                // and ramps the sheet outward over the lip. A column with
-                // only ground beneath is not a participant at all, so an
-                // ordinary shoreline stays flush.
+                // Dry. Solid bank votes nothing; an open cell may speak.
+                if (solidHere(cx, cz, y)) {
+                    continue;
+                }
+                if (waterLevelAt(cx, y + 1, cz) != 0) {
+                    // Water hangs directly above this corner. Vertical fill:
+                    // this sheet's corner drives flush to the underside of
+                    // the overhang so the surfaces weld instead of peeling
+                    // apart into a strip of exposed bank.
+                    sealedFromAbove = true;
+                    continue;
+                }
+                // Spill-over: liquid one row down across an open cell pulls
+                // this corner down toward that surface (expressed in this
+                // row's units), ramping the sheet over its block.
                 int under = waterLevelAtOrUnknown(cx, y - 1, cz);
                 if (under == 8) {
                     apronSum += 0.0f;
@@ -2489,36 +2509,36 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         if (wetSurfaces == 0) {
             return 0.0f;
         }
-        if (apronColumns > 0) {
-            // Half-strength vote: a real participant, but never enough to
-            // drown the corners of the sheet carrying the spill.
-            final float apronWeight = 0.6f;
+        if (sealedFromAbove) {
+            return 1.0f;
+        }
+        if (apronColumns > 0 && !unsupportedWet) {
+            // Half-strength apron vote; full water, when present, votes its
+            // 1.0 into the same mean, so even an overflowing brim tilts over
+            // the drop it feeds.
             float denom = wetSurfaces + apronWeight * apronColumns
                     + (seamPaved ? 0.0f : unknownColumns);
             float corner = (sum + apronWeight * apronSum) / denom;
             return corner > 0.0f ? corner : 0.0f;
         }
-        // Plain mean of the adjacent wet surfaces. Equal levels -- a settled
-        // lake, a level flow channel, generated shallows meeting their own
-        // shoreline -- therefore tile FLAT: the corner height is that one
-        // surface height everywhere, with no meniscus bump climbing the bank.
-        // Unequal levels still slope: a cascade's corner sits midway between
-        // upstream and downstream, so free-standing falls keep their taper.
-        // A dry neighbour is not a participant at all: it neither drags the
-        // edge down nor lifts it, which is what keeps shoreline junctions
-        // flush instead of tented or trough-shaped.
-        //
-        // Pavement: an UNREADABLE column (neighbour absent or unpublished)
-        // is indistinguishable from dry ground, so unpaved it counts against
-        // the mean and sags -- the old crack. Seam paving refuses to guess
-        // low: unknown columns are neutralised (treated like the mean of the
-        // wet columns they stand beside), matching what the neighbour will
-        // compute from its own side. The boundary replay queued at publish
-        // then settles the real levels underneath.
+        if (hasFullWater) {
+            // A brim shared with plain water keeps full height unless the
+            // corner is genuinely spilling; that is the trough killer.
+            return 1.0f;
+        }
         if (seamPaved) {
             return sum / wetSurfaces;
         }
         return sum / (wetSurfaces + unknownColumns);
+    }
+
+    private boolean solidHere(int x, int y, int z) {
+        return y < 0 || y >= sizeY
+                || World.isSolidGlobal(worldPosX + x, y, worldPosY + z);
+    }
+
+    private boolean solidBelow(int x, int z, int y) {
+        return solidHere(x, y - 1, z);
     }
 
     static float waterSurfaceHeight(int level) {
