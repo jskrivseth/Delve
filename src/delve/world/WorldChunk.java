@@ -135,6 +135,15 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
      * </ul>
      */
     public volatile byte[] waterLevels;
+    /**
+     * Heap footprint of {@link #pendingMesh} while it waits for the GPU, and
+     * the running total across all chunks. A built mesh is duplicated work:
+     * CPU-side until glBufferData takes it, so an unbounded backlog is a heap
+     * leak shaped like geometry.
+     */
+    private long pendingMeshBytes;
+    private static final java.util.concurrent.atomic.AtomicLong PENDING_MESH_BYTES =
+            new java.util.concurrent.atomic.AtomicLong();
     /** Sparse occupancy index used by the active-world water snapshot. */
     private transient BitSet waterCellBits;
     public volatile int numVerts;
@@ -2337,6 +2346,12 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             }
             this.pendingMesh = new PendingMesh(buffer, indices, pendingVerts,
                     pendingOpaqueVerts, pendingIndices, pendingOpaqueIndices);
+            // Untouched until it reaches the GPU: thousands of these queued at
+            // once is how a fast flight ends up spending most of the heap on
+            // geometry the card has not been given yet.
+            this.pendingMeshBytes = (long) buffer.capacity() * Float.BYTES
+                    + (long) indices.capacity() * Integer.BYTES;
+            PENDING_MESH_BYTES.addAndGet(this.pendingMeshBytes);
         } finally {
             World.BLOCK_LOCK.readLock().unlock();
         }
@@ -2581,6 +2596,20 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         return Block.isTransparent(neighborType) && neighborType != type;
     }
 
+    public static void setPendingMeshTotalBytes(long delta) {
+        PENDING_MESH_BYTES.addAndGet(delta);
+    }
+
+    /** Heap bytes currently holding meshes that have not reached the GPU. */
+    public static long pendingMeshBytesTotal() {
+        return PENDING_MESH_BYTES.get();
+    }
+
+    /** World teardown forgets every chunk at once; the tally must follow. */
+    static void resetPendingMeshAccounting() {
+        PENDING_MESH_BYTES.set(0);
+    }
+
     public boolean hasPendingMesh() {
         return this.pendingMesh != null;
     }
@@ -2591,6 +2620,8 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             return;
         }
         this.pendingMesh = null;
+        PENDING_MESH_BYTES.addAndGet(-this.pendingMeshBytes);
+        this.pendingMeshBytes = 0;
         buildVBO(mesh);
         if (mesh != PendingMesh.EMPTY && this.seamPaved
                 && this.seamPavedRetries < MAX_SEAM_PAVED_MESH_RETRIES) {
@@ -2743,6 +2774,13 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     }
 
     public void deleteVBO() {
+        // A mesh discarded without ever being uploaded must still give its
+        // bytes back to the accounting, or the total creeps upward forever.
+        if (this.pendingMesh != null) {
+            this.pendingMesh = null;
+            PENDING_MESH_BYTES.addAndGet(-this.pendingMeshBytes);
+            this.pendingMeshBytes = 0;
+        }
         Renderer.deleteChunkMesh(this);
         this.numVerts = 0;
         // purgeVBO used to stay true forever after this ran, and isBuilt
@@ -2875,6 +2913,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         } catch (RejectedExecutionException e) {
             this.isRefreshing = false;
             this.isBuilding = false;
+            World.enterChunkSubmitBackoff();
         }
     }
 

@@ -90,7 +90,34 @@ public class Game {
     public static boolean OPT_DRAW_WIRES = false;
     public static int OPT_DRAW_DISTANCE = 10;
     public static int OPT_MIN_DRAW_DISTANCE = 2;
-    public static int OPT_MAX_DRAW_DISTANCE = Math.max(4, (int) Util.logb(Util.getAvailableMemory() / 104857600.0, 1.10));
+    /**
+     * Largest selectable render distance, fitted to the heap.
+     *
+     * The previous estimate was log-linear in memory available at boot, which
+     * drifted exactly where it mattered: the loaded region grows with the
+     * SQUARE of the distance, so a radius fitted at r=10 badly overshoots at
+     * r=46. Fit the loaded square to about half the heap instead, using a
+     * measured ~512 KB of heap per loaded chunk (voxels, water, sky light and
+     * the pending mesh buffer waiting to reach the GPU).
+     */
+    public static int OPT_MAX_DRAW_DISTANCE = maxDrawDistanceForHeap();
+
+    /** Largest render distance the current heap ceiling can carry. */
+    public static int maxDrawDistanceForHeap() {
+        final long HEAP_BYTES_PER_CHUNK = 512L * 1024L;
+        final int HARD_CEILING = 64;
+        long budget = (long) (Util.getMaxMemory() * 0.5);
+        long chunksFit = Math.max(9, budget / HEAP_BYTES_PER_CHUNK);
+        int side = (int) Math.floor(Math.sqrt((double) chunksFit));
+        int radius = (side - 1) / 2;
+        return Math.max(2, Math.min(HARD_CEILING, radius));
+    }
+
+    /** Refreshes the ceiling after e.g. a heap change; returns the new cap. */
+    public static int recomputeMaxDrawDistance() {
+        OPT_MAX_DRAW_DISTANCE = maxDrawDistanceForHeap();
+        return OPT_MAX_DRAW_DISTANCE;
+    }
     public static boolean OPT_VSYNC = true;
     public static int OPT_CHUNK_SERIALIZE_RADIUS_MULTIPLIER = 1;
     public static boolean OPT_AMBIENT_OCCLUSION = true;
@@ -689,6 +716,7 @@ public class Game {
             DEV_MENU.render();
         }
         PerfOverlay.render();
+        Toast.render();
         GpuProfiler.end(GpuProfiler.Zone.HUD);
         GpuProfiler.endFrame();
     }
@@ -805,6 +833,9 @@ public class Game {
         MESSAGES[2] = MESSAGES[1];
         MESSAGES[1] = MESSAGES[0];
         MESSAGES[0] = message;
+        // MESSAGES itself is a log buffer with no renderer attached; Toast is
+        // what actually puts notices in front of the player.
+        Toast.show(message);
     }
 
     private static void cleanup() {

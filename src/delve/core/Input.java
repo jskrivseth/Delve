@@ -371,7 +371,7 @@ public class Input {
             Game.OPT_DRAW_DISTANCE -= 1;
             game.setupPerspective();
         }
-        if (wasPressed(GLFW_KEY_F5) && Game.OPT_DRAW_DISTANCE < Game.OPT_MAX_DRAW_DISTANCE && !Game.MEMORY_BOUND) {
+        if (wasPressed(GLFW_KEY_F5) && Game.OPT_DRAW_DISTANCE < Game.OPT_MAX_DRAW_DISTANCE) {
             Game.OPT_DRAW_DISTANCE += 1;
             game.setupPerspective();
         }

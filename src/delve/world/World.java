@@ -173,6 +173,57 @@ public class World {
     static final int TASK_OTHER = 2;
     /** Innermost rings that must load even under memory pressure. */
     private static final int ESSENTIAL_LOAD_RADIUS = 3;
+    /**
+     * Effective view radius in chunks: normally the player's setting, pulled in
+     * by the memory governor when the heap runs short and walked back out once
+     * there is headroom. Scaling the ring is far kinder than the old cliff
+     * where MEMORY_BOUND simply refused to create chunks and the world went
+     * dark around the player.
+     */
+    static int activeRenderRadius = Game.OPT_DRAW_DISTANCE;
+    /** Headroom ratios commanding shrink/grow; the gap between them is hysteresis. */
+    private static final float HEADROOM_SHRINK_BELOW = 0.12f;
+    private static final float HEADROOM_GROW_ABOVE = 0.25f;
+    /** Teardown backlog that counts as pressure: queued, not yet reclaimed. */
+    private static final int TEARDOWN_SQUEEZE = 4096;
+    private static final int TEARDOWN_RELAX_LIMIT = TEARDOWN_SQUEEZE / 4;
+    /** Rings added per governor sample while walking the radius back out. */
+    private static final int GOVERNOR_GROW_STEP = 2;
+    /** Never blind the player completely, however tight memory gets. */
+    private static final int GOVERNOR_MIN_RADIUS = 6;
+    /** Minimum spacing between "view distance pulled in" toasts. */
+    private static final long GOVERNOR_TOAST_COOLDOWN_NANOS = 20_000_000_000L;
+    private static final long GOVERNOR_SAMPLE_NANOS = 200_000_000L;
+    private static long nextGovernorSampleAtNanos;
+    /** True while the governor holds the horizon in shorter than requested. */
+    private static boolean governorHeldIn;
+    private static long lastGovernorToastAtNanos;
+
+    /**
+     * The radius everything should actually use: the player's setting, or the
+     * shorter distance the memory governor has settled on. Load, sweep, fog and
+     * the far plane must agree, or a shortened horizon shows up as a hard cut
+     * instead of disappearing into haze.
+     */
+    public static int effectiveRenderDistance() {
+        int wanted = Math.max(1, Game.OPT_DRAW_DISTANCE);
+        return Math.min(Math.max(1, activeRenderRadius), wanted);
+    }
+    /**
+     * After a rejected submission the queue is by definition full, so retrying
+     * the same chunk next frame just wastes CPU: thousands of still-unbuilt
+     * chunks at ~1000 fps meant ~300k rejected submits per second against ~3k
+     * completions, which is pure GC churn while nothing progressed. Pausing
+     * submissions briefly lets the backlog drain; VBO promotion is unaffected.
+     */
+    private static final long SUBMIT_BACKOFF_NANOS = 120_000_000L;
+    private static long submitBackoffUntilNanos;
+    /**
+     * Heap ceiling for meshes built but not yet uploaded. Near-field uploads
+     * drain this first (nearest-first promotion), so pausing new builds while
+     * it is full costs a short delay at the rim rather than a swollen heap.
+     */
+    private static final long MAX_PENDING_MESH_BYTES = 384L * 1024L * 1024L;
     private static long lastQueuePurgeAtNanos;
     static final AtomicLong PURGED_CHUNK_TASKS = new AtomicLong();
 
@@ -240,6 +291,15 @@ public class World {
      */
     static boolean canLoadChunk(int innerRadius) {
         return !Game.MEMORY_BOUND || innerRadius <= ESSENTIAL_LOAD_RADIUS;
+    }
+
+    /** True while rejected submissions have put the queue on a short timeout. */
+    static boolean inChunkSubmitBackoff() {
+        return System.nanoTime() < submitBackoffUntilNanos;
+    }
+
+    static void enterChunkSubmitBackoff() {
+        submitBackoffUntilNanos = System.nanoTime() + SUBMIT_BACKOFF_NANOS;
     }
 
     static int pendingChunkTasks() {
@@ -326,6 +386,10 @@ public class World {
         chunkIndex.clear();
         chunks.clear();
         destroyChunks.clear();
+        WorldChunk.resetPendingMeshAccounting();
+        activeRenderRadius = Game.OPT_DRAW_DISTANCE;
+        governorHeldIn = false;
+        submitBackoffUntilNanos = 0;
         GEN_CHUNKS = 0;
         BUILT_CHUNKS = 0;
         VBO_CHUNKS = 0;
@@ -462,6 +526,7 @@ public class World {
         BUILT_CHUNKS = 0;
         GEN_CHUNKS = 0;
         VBO_CHUNKS = 0;
+        tuneRenderRadiusToMemory();
         serializeAndFreeInactiveChunks();
         long now = System.nanoTime();
         if (now >= nextWaterUpdateAtNanos) {
@@ -469,6 +534,65 @@ public class World {
             nextWaterUpdateAtNanos = now + WATER_UPDATE_INTERVAL_NANOS;
         }
         pickSelectedBlock();
+    }
+
+    /**
+     * Fits the view radius to the memory actually available.
+     *
+     * Pulling the ring in is graded (roughly an eighth per sample down to a
+     * floor) and releasing it is slow (two rings per sample), so the horizon
+     * breathes instead of oscillating. A large teardown backlog also counts as
+     * squeeze: those chunks are memory the sweep has promised but not yet
+     * surrendered, which is exactly the state fast travel pushes the game into.
+     */
+    private static void tuneRenderRadiusToMemory() {
+        long now = System.nanoTime();
+        if (now < nextGovernorSampleAtNanos) {
+            return;
+        }
+        nextGovernorSampleAtNanos = now + GOVERNOR_SAMPLE_NANOS;
+
+        int wanted = Math.max(1, Game.OPT_DRAW_DISTANCE);
+        int floor = Math.min(GOVERNOR_MIN_RADIUS, wanted);
+        float headroom = (float) Util.getAvailableMemory() / (float) Util.getMaxMemory();
+        int queuedTeardown;
+        synchronized (destroyChunks) {
+            queuedTeardown = destroyChunks.size();
+        }
+        boolean squeezed = headroom < HEADROOM_SHRINK_BELOW || queuedTeardown > TEARDOWN_SQUEEZE;
+        boolean relaxed = headroom > HEADROOM_GROW_ABOVE && queuedTeardown < TEARDOWN_RELAX_LIMIT;
+
+        int current = activeRenderRadius;
+        if (current > wanted) {
+            // The player lowered the setting; obey immediately.
+            current = wanted;
+        }
+        if (squeezed) {
+            current = Math.max(floor, current - Math.max(1, current / 8));
+        } else if (relaxed && current < wanted) {
+            current = Math.min(wanted, current + GOVERNOR_GROW_STEP);
+        }
+
+        boolean heldIn = current < wanted;
+        boolean steppedDown = heldIn && current <= activeRenderRadius - 2;
+        if (heldIn && (steppedDown || !governorHeldIn)
+                && now - lastGovernorToastAtNanos > GOVERNOR_TOAST_COOLDOWN_NANOS) {
+            lastGovernorToastAtNanos = now;
+            String why = headroom < HEADROOM_SHRINK_BELOW ? "low memory" : "chunk teardown backlog";
+            delve.render.Toast.show("View distance " + wanted + " -> " + current + " (" + why + ")");
+        } else if (!heldIn && governorHeldIn) {
+            lastGovernorToastAtNanos = now;
+            delve.render.Toast.show("View distance restored to " + wanted);
+        }
+        governorHeldIn = heldIn;
+        if (current != activeRenderRadius) {
+            activeRenderRadius = current;
+            // The far plane is derived from the view radius; without this the
+            // clip plane would keep reaching out to the old horizon.
+            if (Game.INSTANCE != null) {
+                Game.INSTANCE.setupPerspective();
+            }
+        }
     }
 
     private static long waterKey(int x, int y, int z) {
@@ -1089,7 +1213,7 @@ public class World {
             }
 
             Game.STAT_SWEPT_CHUNKS += SWEPT_CHUNKS;
-            int chunkRadius = Game.OPT_DRAW_DISTANCE; //The number of chunks around the player to render
+            int chunkRadius = effectiveRenderDistance(); //Sweep ring follows what is actually being drawn
             int currentChunkX = (int) Math.floor(camera.position.x / WorldChunk.sizeX);
             int currentChunkY = (int) Math.floor(camera.position.z / WorldChunk.sizeZ);
 
@@ -1106,21 +1230,42 @@ public class World {
 
     }
 
+    /**
+     * Rings beyond the nominal draw distance that are still traversed so a
+     * chunk's opacity can ramp to zero *while it is on screen*, instead of
+     * being culled at full opacity and blinking out. The sweep ring sits past
+     * this (see WorldInactiveChunkSweeperThread), so the destroy fade only
+     * ever starts on chunks the player can no longer see.
+     */
+    private static final int FADE_OUT_RINGS = 3;
+    /** Rings the ready frontier keeps fading across before chunks disappear. */
+    private static final int FRONTIER_BLEND_RINGS = 8;
+    /** Rim radius (nominal draw distance + fade band) of the current frame. */
+    private int renderRimRadius;
+
     //Render any WorldChunks that happen to be within the chunkRadius of the current camera position
     public void render() {
         if (Game.DEBUG_DRAW_CAMERA_RAY && !pickerRay.isEmpty()) {
             drawPickerRay();
         }
 
-        int chunkRadius = Game.OPT_DRAW_DISTANCE; //The number of chunks around the player to render
+        int chunkRadius = effectiveRenderDistance(); //Chunks around the player to load and draw this frame
         int currentChunkX = (int) Math.floor(camera.position.x / WorldChunk.sizeX);
         int currentChunkY = (int) Math.floor(camera.position.z / WorldChunk.sizeZ);
+        // Loading, budgeting and sweeping still key off chunkRadius; the extra
+        // rings exist purely to draw already-existing chunks as they fade.
+        renderRimRadius = chunkRadius + FADE_OUT_RINGS;
         
         World.CURRENT_BOUND_XL = currentChunkX - chunkRadius;         //Lower X
         World.CURRENT_BOUND_XU = currentChunkX + chunkRadius;  //Upper X
         World.CURRENT_BOUND_YL = currentChunkY - chunkRadius; // Lower Y
         World.CURRENT_BOUND_YU = currentChunkY + chunkRadius;  //Upper Y
         
+        int rimXL = currentChunkX - renderRimRadius;
+        int rimXU = currentChunkX + renderRimRadius;
+        int rimYL = currentChunkY - renderRimRadius;
+        int rimYU = currentChunkY + renderRimRadius;
+
         int midX = currentChunkX;
         int midY = currentChunkY;
         int readyFrontier = readyFrontierRadius(currentChunkX, currentChunkY, chunkRadius);
@@ -1128,40 +1273,40 @@ public class World {
         
         Renderer.beginChunkPass();
         
-        for (int radius = 0; radius <= chunkRadius; radius++) {
-            int xRadiusLower = Math.max(midX - radius, World.CURRENT_BOUND_XL);
-            int yRadiusLower = Math.max(midY - radius, World.CURRENT_BOUND_YL);
-            int xRadiusUpper = Math.min(midX + radius, World.CURRENT_BOUND_XU);
-            int yRadiusUpper = Math.min(midY + radius, World.CURRENT_BOUND_YU);
+        for (int radius = 0; radius <= renderRimRadius; radius++) {
+            int xRadiusLower = Math.max(midX - radius, rimXL);
+            int yRadiusLower = Math.max(midY - radius, rimYL);
+            int xRadiusUpper = Math.min(midX + radius, rimXU);
+            int yRadiusUpper = Math.min(midY + radius, rimYU);
             
             if (radius == 0) {
                 renderChunk(xRadiusLower, yRadiusLower, midX, midY, radius, chunkRadius,
-                        radius <= readyFrontier);
+                        readyFrontier);
                 continue;
             }
             
             //do all x+
             for (int i = xRadiusLower; i < xRadiusUpper; i++) {
                 renderChunk(i, yRadiusLower, midX, midY, radius, chunkRadius,
-                        radius <= readyFrontier);
+                        readyFrontier);
             }
             
             //do all y+
             for (int i = yRadiusLower; i < yRadiusUpper; i++) {
                 renderChunk(xRadiusUpper, i, midX, midY, radius, chunkRadius,
-                        radius <= readyFrontier);
+                        readyFrontier);
             }
             
             //do all x-
             for (int i = xRadiusUpper; i > xRadiusLower; i--) {
                 renderChunk(i, yRadiusUpper, midX, midY, radius, chunkRadius,
-                        radius <= readyFrontier);
+                        readyFrontier);
             }
             
             //do all y-
             for (int i = yRadiusUpper; i > yRadiusLower; i--) {
                 renderChunk(xRadiusLower, i, midX, midY, radius, chunkRadius,
-                        radius <= readyFrontier);
+                        readyFrontier);
             }
         }
         Game.STAT_BUILT_CHUNKS += BUILT_CHUNKS;
@@ -1247,13 +1392,18 @@ public class World {
 
     private void renderChunk(int i, int j, int currentChunkX, int currentChunkY,
                              int innerRadius, int outerRadius) {
-        renderChunk(i, j, currentChunkX, currentChunkY, innerRadius, outerRadius, true);
+        renderChunk(i, j, currentChunkX, currentChunkY, innerRadius, outerRadius,
+                Integer.MAX_VALUE);
     }
 
+    /**
+     * @param readyFrontier rings whose every chunk had a GPU mesh last census;
+     *                      rings beyond it fade out instead of snapping off.
+     */
     private void renderChunk(int i, int j, int currentChunkX, int currentChunkY,
-                             int innerRadius, int outerRadius, boolean drawAllowed) {
+                             int innerRadius, int outerRadius, int readyFrontier) {
         WorldChunk thisChunk = World.getChunk(i, j);
-        if (thisChunk == null && canLoadChunk(innerRadius)
+        if (thisChunk == null && innerRadius <= outerRadius && canLoadChunk(innerRadius)
                 && World.GEN_CHUNKS < World.MAX_CHUNKS_TO_GEN) {
             thisChunk = new WorldChunk(i, j);
             synchronized (World.chunks) {
@@ -1271,8 +1421,9 @@ public class World {
                 return;
             }
 
-            if (!thisChunk.isGenerated && canLoadChunk(innerRadius)
-                    && GEN_CHUNKS < World.MAX_CHUNKS_TO_GEN) {
+            if (!thisChunk.isGenerated && innerRadius <= outerRadius
+                    && canLoadChunk(innerRadius) && GEN_CHUNKS < World.MAX_CHUNKS_TO_GEN
+                    && !inChunkSubmitBackoff()) {
                 // Reserve before enqueueing; otherwise a busy executor leaves
                 // the chunk looking idle and every frame submits another job.
                 thisChunk.isGenerating = true;
@@ -1283,11 +1434,14 @@ public class World {
                     GEN_CHUNKS++;
                 } catch (RejectedExecutionException e) {
                     thisChunk.isGenerating = false;
+                    enterChunkSubmitBackoff();
                 }
                 return;
             }
             if (thisChunk.isGenerated && !thisChunk.isBuilt && canLoadChunk(innerRadius)
-                    && BUILT_CHUNKS < World.MAX_CHUNKS_TO_BUILD) {
+                    && BUILT_CHUNKS < World.MAX_CHUNKS_TO_BUILD
+                    && !inChunkSubmitBackoff()
+                    && WorldChunk.pendingMeshBytesTotal() < MAX_PENDING_MESH_BYTES) {
 
                 //This chunk is not building and not built, so lets build it..
 
@@ -1304,6 +1458,7 @@ public class World {
                     } catch (RejectedExecutionException e) {
                         thisChunk.isBuilding = false;
                         thisChunk.isRefreshing = false;
+                        enterChunkSubmitBackoff();
                     }
                 }
                 return;
@@ -1327,7 +1482,8 @@ public class World {
                     thisChunk.uploadPendingMesh();
                     VBO_CHUNKS++;
                 }
-                if (drawAllowed) {
+                float frontierFade = frontierFadeAlpha(innerRadius, readyFrontier);
+                if (frontierFade > 0f) {
                     // Frustum culling must only skip DRAWING. Gating mesh
                     // generation on visibility leaves permanent holes, because
                     // an off-screen chunk would never become drawable.
@@ -1340,10 +1496,11 @@ public class World {
                         double dx = (i + 0.5) - (camera.position.x / WorldChunk.sizeX);
                         double dz = (j + 0.5) - (camera.position.z / WorldChunk.sizeZ);
                         float chebyshevDist = (float) Math.max(Math.abs(dx), Math.abs(dz));
-                        float fadeMargin = Math.max(2.0f, outerRadius * Game.OPT_CHUNK_EDGE_FADE_FRACTION);
+                        float fadeMargin = Math.max(2.0f, renderRimRadius * Game.OPT_CHUNK_EDGE_FADE_FRACTION);
                         float edgeFade = Math.max(0.0f, Math.min(1.0f,
-                                (outerRadius - chebyshevDist) / fadeMargin));
-                        thisChunk.renderAlpha = edgeFade * thisChunk.lifecycleFadeAlpha();
+                                (renderRimRadius - chebyshevDist) / fadeMargin));
+                        thisChunk.renderAlpha = edgeFade * thisChunk.lifecycleFadeAlpha()
+                                * frontierFade;
                         // Upload throttling must never throttle drawing an
                         // existing GPU mesh.
                         thisChunk.render();
@@ -1352,6 +1509,24 @@ public class World {
                 thisChunk.selectedBlock = null;
             }
         }
+    }
+
+    /**
+     * Beyond the ready frontier chunks fade out across a band of rings rather
+     * than switching off at a hard wall. The frontier radius breathes in and
+     * out constantly while terrain streams in, and a binary cutoff made entire
+     * shells of far terrain pop on and off -- several blinks per chunk before
+     * the ring finally settled.
+     */
+    static float frontierFadeAlpha(int radius, int readyFrontier) {
+        int beyond = radius - readyFrontier;
+        if (beyond <= 0) {
+            return 1.0f;
+        }
+        if (beyond >= FRONTIER_BLEND_RINGS) {
+            return 0.0f;
+        }
+        return 1.0f - (float) beyond / FRONTIER_BLEND_RINGS;
     }
 
     public static boolean allNeighborsAreGenerated(WorldChunk chunk) {

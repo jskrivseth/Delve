@@ -15,6 +15,14 @@ import delve.core.Game;
  */
 public class WorldInactiveChunkSweeperThread implements Runnable {
 
+    /**
+     * Rings of clearance between the visible set (draw distance plus World's
+     * fade band) and the sweep ring. Inside this clearance a chunk must never
+     * be marked zombie, or its destroy fade competes with normal rendering and
+     * the far horizon strobes as the camera crosses chunk boundaries.
+     */
+    private static final int SWEEP_MARGIN_RINGS = 6;
+
     ArrayList<WorldChunk> chunks;
     int x, y, radius;
 
@@ -28,7 +36,7 @@ public class WorldInactiveChunkSweeperThread implements Runnable {
 
     @Override
     public void run() {
-        int outerRadius = (radius * Game.OPT_CHUNK_SERIALIZE_RADIUS_MULTIPLIER);
+        int outerRadius = keepRadius(radius, Game.OPT_CHUNK_SERIALIZE_RADIUS_MULTIPLIER);
         // Chunk coordinates are unbounded signed positions. World.sizeX/sizeY
         // are the world's BLOCK-space dimensions, so clamping chunk-space
         // bounds to them silently turned one whole side of the map into
@@ -85,5 +93,22 @@ public class WorldInactiveChunkSweeperThread implements Runnable {
         }
         World.SWEEPER_IS_SLEEPING = true;
         World.WAKE_SWEEPER = true;
+    }
+
+    /**
+     * Radius, in chunks, inside which chunks are kept alive.
+     *
+     * The sweep ring sits decidedly past the visible set -- draw distance plus
+     * clearance -- for two reasons. (1) With no clearance a chunk at the very
+     * edge of view flipped in and out of zombie/destroy-fade each time the
+     * camera nudged across a chunk boundary, so far chunks visibly blinked
+     * several times before settling. (2) A chunk that is no longer traversed
+     * by the render loop cannot show its fade-out at all; World.render now
+     * traverses a few rings past the draw distance, and the sweep ring stays
+     * beyond that band so the fade completes where the player can see it.
+     */
+    static int keepRadius(int drawRadius, int serializeRadiusMultiplier) {
+        return Math.max(drawRadius * Math.max(1, serializeRadiusMultiplier),
+                drawRadius + SWEEP_MARGIN_RINGS);
     }
 }

@@ -152,6 +152,37 @@ class WorldRenderLifecycleTest {
         }
     }
 
+    @Test
+    void frontierFadesAcrossABandInsteadOfSnappingOff() {
+        // A hard cutoff at the ready frontier made whole shells of far terrain
+        // pop on and off as the frontier breathed during streaming.
+        assertEquals(1.0f, World.frontierFadeAlpha(5, 5));
+        assertEquals(1.0f, World.frontierFadeAlpha(0, 5));
+        float first = World.frontierFadeAlpha(6, 5);
+        assertTrue(first < 1.0f, "first ring past the frontier must start dimming");
+        float previous = first;
+        for (int radius = 7; radius < 13; radius++) {
+            float alpha = World.frontierFadeAlpha(radius, 5);
+            assertTrue(alpha < previous, "dimming must progress outward");
+            previous = alpha;
+        }
+        assertEquals(0.0f, World.frontierFadeAlpha(13, 5), "band has a finite end");
+    }
+
+    @Test
+    void sweepRingKeepsClearanceBeyondTheVisibleSet() {
+        // Sweeping inside the drawn radius made edge chunks blink in and out of
+        // destroy fade; the keep ring must sit past the draw distance and the
+        // render loop's fade-out band.
+        assertTrue(WorldInactiveChunkSweeperThread.keepRadius(10, 1) > 10 + 3,
+                "keep ring must clear the fade band");
+        assertTrue(WorldInactiveChunkSweeperThread.keepRadius(46, 1) > 46 + 3);
+        assertEquals(30, WorldInactiveChunkSweeperThread.keepRadius(10, 3),
+                "an explicit multiplier still wins over the margin");
+        assertTrue(WorldInactiveChunkSweeperThread.keepRadius(10, 0) > 10 + 3,
+                "a zero multiplier must not shrink the keep ring below draw distance");
+    }
+
     private static final class ManualExecutor extends AbstractExecutorService {
         final List<Runnable> tasks = new ArrayList<>();
         private boolean shutdown;

@@ -78,11 +78,15 @@ public final class ChunkPipelineMonitor {
         // A thread deadlock is news no matter how quiet everything looks.
         long[] deadlocked = findDeadlock();
         int swept = sweepStuckFlags(now);
-        boolean stalled = taskAge >= STALL_WARN_NANOS && (pending > 0 || busy > 0)
+        // Sitting in the settings menu or with time paused is not a stall: the
+        // update path deliberately stops submitting work there.
+        boolean parked = Game.MENU_OPEN || Game.DEV_MENU_OPEN || Game.TIME_PAUSED;
+        boolean stalled = !parked && (taskAge >= STALL_WARN_NANOS
+                && (pending > 0 || busy > 0)
                 // Sweepers alone keep the generic heartbeat alive; if no real
                 // chunk work has finished for a long stretch while workers are
                 // occupied, they are occupied by something that never returns.
-                || (chunkTaskAge >= STUCK_CHUNK_TASK_NANOS && busy > 0);
+                || chunkTaskAge >= STUCK_CHUNK_TASK_NANOS && busy > 0);
 
         int[] near = new int[STATE_COUNT];
         int[] far = new int[STATE_COUNT];
@@ -104,6 +108,7 @@ public final class ChunkPipelineMonitor {
         rememberBaselines(submitted, completed);
 
         ReentrantReadWriteLock lock = World.BLOCK_LOCK;
+        int viewRadius = World.effectiveRenderDistance();
         StringBuilder line = new StringBuilder("[chunk-stream]");
         if (swept > 0) {
             line.append(" SWEPT_STUCK_FLAGS=").append(swept);
@@ -120,8 +125,11 @@ public final class ChunkPipelineMonitor {
                 .append(" busy=").append(busy).append('/').append(World.totalChunkWorkers())
                 .append(" rate=").append(rate).append('/').append(done).append(" per/s")
                 .append(" frontier=").append(World.lastReadyFrontier)
-                .append('/').append(Game.OPT_DRAW_DISTANCE)
+                .append('/').append(viewRadius)
+                .append(Game.OPT_DRAW_DISTANCE != viewRadius
+                        ? " (want " + Game.OPT_DRAW_DISTANCE + ")" : "")
                 .append(" missingNear=").append(missingNear)
+                .append(" meshHeap=").append(WorldChunk.pendingMeshBytesTotal() >>> 20).append("MB")
                 .append(" mem=").append(Game.MEMORY_BOUND ? "LOW" : "ok")
                 .append('(').append(Runtime.getRuntime().freeMemory() >>> 20)
                 .append('/').append(Runtime.getRuntime().maxMemory() >>> 20).append("MB)")
@@ -217,7 +225,7 @@ public final class ChunkPipelineMonitor {
      * chunks that exist but are still meshing or fading in.
      */
     private static int countMissingNearField() {
-        int radius = Math.min(Game.OPT_DRAW_DISTANCE, NEAR_FIELD_RING);
+        int radius = Math.min(World.effectiveRenderDistance(), NEAR_FIELD_RING);
         int centerX = (int) Math.floor(Game.GAME_CAMERA.position.x / WorldChunk.sizeX);
         int centerZ = (int) Math.floor(Game.GAME_CAMERA.position.z / WorldChunk.sizeZ);
         int missing = 0;
