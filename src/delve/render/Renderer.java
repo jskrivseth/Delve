@@ -1623,15 +1623,12 @@ public class Renderer {
         if (opaque > 0) {
             setChunkModel(chunk);
             chunkShader.setFloat("alphaOverride", chunk.renderAlpha);
-            // The legacy terrain mesh contains mixed winding (including
-            // billboard-style opaque geometry), so culling the opaque range
-            // removes valid terrain faces. Keep culling for translucent water,
-            // where double-sided blending causes visible dark seams.
-            glDisable(GL_CULL_FACE);
+            glEnable(GL_CULL_FACE);
+            glCullFace(GL_BACK);
+            glFrontFace(GL_CCW);
             glBindVertexArray(chunk.vaoHandle);
             glDrawElements(GL_TRIANGLES, opaque, GL_UNSIGNED_INT, 0L);
             glBindVertexArray(0);
-            glEnable(GL_CULL_FACE);
             chunkShader.setFloat("alphaOverride", 1.0f);
         }
 
