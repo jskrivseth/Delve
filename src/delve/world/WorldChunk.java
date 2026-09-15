@@ -280,6 +280,9 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     }
 
     private void generateBlocks() {
+        if (!World.isCurrentChunk(this)) {
+            return;
+        }
         // A previously edited chunk is restored from disk instead of being
         // regenerated, otherwise the player's changes vanish when it reloads.
         if (this.load()) {
@@ -308,6 +311,9 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         // Climate + relief driven terrain. Temperature/moisture choose a simple
         // biome, while ruggedness controls whether an area is flat or mountainy.
         for (int x = 0; x < sizeX; x++) {
+            if ((x & 1) == 0 && !World.isCurrentChunk(this)) {
+                return;
+            }
             for (int z = 0; z < sizeZ; z++) {
                 int worldX = worldPosX + x;
                 int worldZ = worldPosY + z;
@@ -484,6 +490,9 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         }
 
         carveCaves(data, heightMap);
+        if (!World.isCurrentChunk(this)) {
+            return;
+        }
 
         if (worldPreset == WorldPreset.EARTH) {
             highest = plantTrees(data, heightMap, surfaceMap, biomeTypeMap, biomeBorderMap, tundraWeightMap, desertWeightMap, forestWeightMap, grassyWeightMap, ruggednessMap, wetlandMap, highest);
@@ -495,6 +504,9 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         this.blocks = flatten(data);
         this.waterLevels = new byte[blocks.length];
         for (int x = 0; x < sizeX; x++) {
+            if ((x & 1) == 0 && !World.isCurrentChunk(this)) {
+                return;
+            }
             for (int y = 0; y < sizeY; y++) {
                 for (int z = 0; z < sizeZ; z++) {
                     if (data[x][y][z] == Block.WATER) {
@@ -526,8 +538,14 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
      * replayBoundaryColumns() when that neighbour becomes publishable.
      */
     void enqueueGeneratedWaterOutlets() {
+        if (!World.isCurrentChunk(this)) {
+            return;
+        }
         int ceiling = Math.min(maxHeight, sizeY);
         for (int x = 0; x < sizeX; x++) {
+            if ((x & 1) == 0 && !World.isCurrentChunk(this)) {
+                return;
+            }
             for (int y = 1; y < ceiling; y++) {
                 for (int z = 0; z < sizeZ; z++) {
                     if (waterLevels[blockIndex(x, y, z)] != 1) {
@@ -562,6 +580,9 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
 
     private void carveCaves(int[][][] data, int[][] heightMap) {
         for (int x = 0; x < sizeX; x++) {
+            if ((x & 1) == 0 && !World.isCurrentChunk(this)) {
+                return;
+            }
             for (int z = 0; z < sizeZ; z++) {
                 int worldX = worldPosX + x;
                 int worldZ = worldPosY + z;
@@ -936,6 +957,9 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     private int placePlanetBoulders(int[][][] data, int[][] heightMap, int[][] surfaceMap,
                                     float[][] ruggednessMap, int preset, int highest) {
         for (int x = 2; x < sizeX - 2; x++) {
+            if ((x & 1) == 0 && !World.isCurrentChunk(this)) {
+                return highest;
+            }
             for (int z = 2; z < sizeZ - 2; z++) {
                 int y = heightMap[x][z];
                 if (y < 2 || y >= sizeY - 6) {
@@ -1272,6 +1296,9 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                                 float[][] wetlandMap,
                                 int highest) {
         for (int x = 1; x < sizeX - 1; x++) {
+            if ((x & 1) == 0 && !World.isCurrentChunk(this)) {
+                return highest;
+            }
             for (int z = 1; z < sizeZ - 1; z++) {
                 int y = heightMap[x][z];
                 if (y < 1 || y >= sizeY - 2) {
@@ -1442,6 +1469,9 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                            float[][] wetlandMap,
                            int highest) {
         for (int x = 2; x < sizeX - 2; x++) {
+            if ((x & 1) == 0 && !World.isCurrentChunk(this)) {
+                return highest;
+            }
             for (int z = 2; z < sizeZ - 2; z++) {
                 int y = heightMap[x][z];
                 int surface = surfaceMap[x][z];
@@ -2168,10 +2198,12 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             // this attempt was dropped and the chunk stayed stale (stale mesh
             // and stale light) until some later edit happened to re-trigger it.
             this.meshIsStale = true;
+            this.isBuilding = false;
             return;
         }
         if (!this.isGenerated) {
             Game.consoleMsg("Attempt to build a mesh for a chunk that is not generated.. ");
+            this.isBuilding = false;
             return;
         }
         // Decide seam paving before any corner height is sampled: a neighbour

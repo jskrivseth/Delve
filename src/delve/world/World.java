@@ -29,8 +29,11 @@ import org.joml.Vector3f;
 import java.awt.image.BufferedImage;
 
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.ConcurrentLinkedDeque;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 import java.util.*;
 import java.io.*;
@@ -122,7 +125,19 @@ public class World {
     /*
      * State
      */
-    public static ExecutorService threadPool = Executors.newFixedThreadPool(3);
+    private static final int CHUNK_WORKER_COUNT = 3;
+    private static final int MAX_QUEUED_CHUNK_TASKS = 64;
+    public static ExecutorService threadPool = createThreadPool();
+
+    private static ExecutorService createThreadPool() {
+        return new ThreadPoolExecutor(
+                CHUNK_WORKER_COUNT,
+                CHUNK_WORKER_COUNT,
+                0L,
+                TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(MAX_QUEUED_CHUNK_TASKS),
+                new ThreadPoolExecutor.AbortPolicy());
+    }
 
     /**
      * Clears all world state so a different save can be loaded in the same
@@ -159,7 +174,22 @@ public class World {
         // because the generator's permutation table is itself the field being
         // sampled, and it was previously randomised on every launch.
         PerlinNoiseGenerator.reseed(seed);
-        threadPool = Executors.newFixedThreadPool(3);
+        threadPool = createThreadPool();
+    }
+
+    /**
+     * Returns whether a queued chunk task still belongs to the active view.
+     * Fast flight can leave many generation/mesh tasks queued behind the
+     * camera; those tasks should be discarded when they finally reach a worker.
+     */
+    static boolean isChunkInCurrentBounds(WorldChunk chunk) {
+        return chunk != null
+                && chunk.posX >= CURRENT_BOUND_XL && chunk.posX <= CURRENT_BOUND_XU
+                && chunk.posY >= CURRENT_BOUND_YL && chunk.posY <= CURRENT_BOUND_YU;
+    }
+
+    static boolean isCurrentChunk(WorldChunk chunk) {
+        return chunk != null && getChunk(chunk.posX, chunk.posY) == chunk;
     }
 
     /** Stops worker threads and releases GPU meshes for the current world. */
@@ -880,7 +910,14 @@ public class World {
             int currentChunkY = (int) Math.floor(camera.position.z / WorldChunk.sizeZ);
 
             Runnable chunkSweeper = new WorldInactiveChunkSweeperThread(chunks, currentChunkX, currentChunkY, chunkRadius);
-            threadPool.execute(chunkSweeper);
+            try {
+                threadPool.execute(chunkSweeper);
+            } catch (RejectedExecutionException e) {
+                // A saturated chunk queue must not permanently suppress future
+                // sweeps; the next update will retry.
+                SWEEPER_IS_SLEEPING = true;
+                WAKE_SWEEPER = true;
+            }
         }
 
     }
@@ -981,8 +1018,12 @@ public class World {
                 // the chunk looking idle and every frame submits another job.
                 thisChunk.isGenerating = true;
                 Runnable chunkBuilder = new WorldChunkLoadThread(thisChunk);
-                threadPool.execute(chunkBuilder);
-                GEN_CHUNKS++;
+                try {
+                    threadPool.execute(chunkBuilder);
+                    GEN_CHUNKS++;
+                } catch (RejectedExecutionException e) {
+                    thisChunk.isGenerating = false;
+                }
                 return;
             }
             if (thisChunk.isGenerated && !thisChunk.isBuilt && !Game.MEMORY_BOUND && BUILT_CHUNKS < World.MAX_CHUNKS_TO_BUILD) {
@@ -995,8 +1036,13 @@ public class World {
                     thisChunk.isRefreshing = true;
                     thisChunk.isBuilding = true;
                     Runnable chunkBufferBuilder = new WorldChunkBufferBuilderThread(thisChunk);
-                    threadPool.execute(chunkBufferBuilder);
-                    BUILT_CHUNKS++;
+                    try {
+                        threadPool.execute(chunkBufferBuilder);
+                        BUILT_CHUNKS++;
+                    } catch (RejectedExecutionException e) {
+                        thisChunk.isBuilding = false;
+                        thisChunk.isRefreshing = false;
+                    }
                 }
                 return;
             }

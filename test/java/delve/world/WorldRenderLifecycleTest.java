@@ -105,6 +105,34 @@ class WorldRenderLifecycleTest {
         assertEquals(1, executor.tasks.size(), "Initial meshes need the same queue guard as refreshes");
     }
 
+    @Test
+    void meshBuildRetryReleasesBuildingFlagWhenNeighborsAreNotReady() {
+        int oldLowerX = World.CURRENT_BOUND_XL;
+        int oldUpperX = World.CURRENT_BOUND_XU;
+        int oldLowerZ = World.CURRENT_BOUND_YL;
+        int oldUpperZ = World.CURRENT_BOUND_YU;
+        try {
+            World.CURRENT_BOUND_XL = -2;
+            World.CURRENT_BOUND_XU = 2;
+            World.CURRENT_BOUND_YL = -2;
+            World.CURRENT_BOUND_YU = 2;
+            WorldChunk chunk = new WorldChunk(0, 0);
+            chunk.isGenerated = true;
+            chunk.isBuilding = true;
+
+            chunk.buildMesh();
+
+            assertTrue(chunk.meshIsStale);
+            assertFalse(chunk.isBuilding,
+                    "A failed neighbor-readiness attempt must be retryable next frame");
+        } finally {
+            World.CURRENT_BOUND_XL = oldLowerX;
+            World.CURRENT_BOUND_XU = oldUpperX;
+            World.CURRENT_BOUND_YL = oldLowerZ;
+            World.CURRENT_BOUND_YU = oldUpperZ;
+        }
+    }
+
     private static final class DrawSpy extends WorldChunk {
         int draws;
         int uploads;
