@@ -129,6 +129,12 @@ public class DevMenu {
         addRelativeKnob("OPT_CHUNK_EDGE_FADE_FRACTION", "Chunk Edge Fade Width", 0.35f, 0.05f, 0.90f,
                 () -> Game.OPT_CHUNK_EDGE_FADE_FRACTION, v -> Game.OPT_CHUNK_EDGE_FADE_FRACTION = v);
 
+        addRelativeKnob("OPT_CHUNK_FADE_RING_SQUARED", "Fade Slower Per Ring (squared)", 0.0035f, 0.0f, 0.02f,
+                () -> Game.OPT_CHUNK_FADE_RING_SQUARED, v -> Game.OPT_CHUNK_FADE_RING_SQUARED = v);
+
+        addRelativeKnob("OPT_CHUNK_RELEASE_GRACE_MS", "Chunk Release Grace", 10000.0f, 0.0f, 60000.0f,
+                () -> Game.OPT_CHUNK_RELEASE_GRACE_MS, v -> Game.OPT_CHUNK_RELEASE_GRACE_MS = v);
+
         rows.add(new Row("Cloud TAA",
                 () -> Game.OPT_CLOUD_TAA ? "On" : "Off",
                 () -> Game.OPT_CLOUD_TAA = !Game.OPT_CLOUD_TAA, null));

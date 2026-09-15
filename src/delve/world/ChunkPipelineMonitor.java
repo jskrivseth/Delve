@@ -40,6 +40,29 @@ public final class ChunkPipelineMonitor {
     private static final String[] STATE_NAMES = {
             "wait-gen", "gen", "que-mesh", "mesh", "pend-vbo", "vbo", "empty"};
 
+    /**
+     * Latest census, published for the performance overlay whether or not
+     * anything was worth printing about it.
+     */
+    public static volatile int snapshotResidentChunks;
+    public static volatile int snapshotZombieChunks;
+    public static volatile int snapshotPendingTasks;
+    public static volatile int snapshotBusyWorkers;
+    public static volatile long snapshotSubmitsPerSecond;
+    public static volatile long snapshotCompletionsPerSecond;
+    public static volatile int snapshotMissingNearField;
+    public static volatile long snapshotTakenAtMillis;
+    /** Chunks per lifecycle state within the near field of the last census. */
+    public static volatile int[] snapshotNearFieldStates = new int[STATE_COUNT];
+
+    public static String stateName(int index) {
+        return STATE_NAMES[Math.max(0, Math.min(STATE_NAMES.length - 1, index))];
+    }
+
+    public static int stateCount() {
+        return STATE_COUNT;
+    }
+
     private static volatile long lastTaskEndAtNanos = System.nanoTime();
     /** Generation/mesh completions only; sweepers keep {@link #lastTaskEndAtNanos} warm. */
     private static volatile long lastChunkTaskEndAtNanos = System.nanoTime();
@@ -95,19 +118,30 @@ public final class ChunkPipelineMonitor {
         int[] totals = census(near, far);
         int missingNear = countMissingNearField();
 
-        boolean quiet = pending == 0 && busy == 0 && taskAge < STALL_WARN_NANOS
-                && World.lastReadyFrontier >= 0 && deadlocked == null
-                && swept == 0 && missingNear == 0 && !Game.MEMORY_BOUND;
-        if (quiet && !Game.STRESS_FLIGHT) {
-            rememberBaselines(submitted, completed);
-            return;
-        }
-
         long rate = prevSubmitted < 0 ? -1
                 : (submitted - prevSubmitted) * 1000L / (TICK_NANOS / 1_000_000L);
         long done = prevCompleted < 0 ? -1
                 : (completed - prevCompleted) * 1000L / (TICK_NANOS / 1_000_000L);
         rememberBaselines(submitted, completed);
+
+        // Publish for the F6 overlay: it wants a live read of the pipeline even
+        // when everything is healthy enough that nothing needs printing.
+        snapshotResidentChunks = totals[1];
+        snapshotZombieChunks = totals[2];
+        snapshotPendingTasks = pending;
+        snapshotBusyWorkers = busy;
+        snapshotSubmitsPerSecond = rate;
+        snapshotCompletionsPerSecond = done;
+        snapshotMissingNearField = missingNear;
+        snapshotNearFieldStates = near.clone();
+        snapshotTakenAtMillis = System.currentTimeMillis();
+
+        boolean quiet = pending == 0 && busy == 0 && taskAge < STALL_WARN_NANOS
+                && World.lastReadyFrontier >= 0 && deadlocked == null
+                && swept == 0 && missingNear == 0 && !Game.MEMORY_BOUND;
+        if (quiet && !Game.STRESS_FLIGHT) {
+            return;
+        }
 
         ReentrantReadWriteLock lock = World.BLOCK_LOCK;
         int viewRadius = World.effectiveRenderDistance();

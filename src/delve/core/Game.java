@@ -101,16 +101,22 @@ public class Game {
      * the pending mesh buffer waiting to reach the GPU).
      */
     public static int OPT_MAX_DRAW_DISTANCE = maxDrawDistanceForHeap();
+    /**
+     * Absolute ceiling on view distance, whatever the heap can technically
+     * carry. Beyond ~32 rings the extra distance is bought with chunk
+     * residency, teardown churn and streaming latency that the eye cannot
+     * tell apart from the last few rings -- so the setting stops there.
+     */
+    public static final int VIEW_DISTANCE_CEILING = 32;
 
     /** Largest render distance the current heap ceiling can carry. */
     public static int maxDrawDistanceForHeap() {
         final long HEAP_BYTES_PER_CHUNK = 512L * 1024L;
-        final int HARD_CEILING = 64;
         long budget = (long) (Util.getMaxMemory() * 0.5);
         long chunksFit = Math.max(9, budget / HEAP_BYTES_PER_CHUNK);
         int side = (int) Math.floor(Math.sqrt((double) chunksFit));
         int radius = (side - 1) / 2;
-        return Math.max(2, Math.min(HARD_CEILING, radius));
+        return Math.max(2, Math.min(VIEW_DISTANCE_CEILING, radius));
     }
 
     /** Refreshes the ceiling after e.g. a heap change; returns the new cap. */
@@ -145,6 +151,26 @@ public class Game {
     /** New terrain becomes readable quickly; fade-out intentionally remains
      *  slower through OPT_CHUNK_FADE_DURATION_MS. */
     public static float OPT_CHUNK_FADE_IN_DURATION_MS = 180.0f;
+    /**
+     * Terrain emerges quickly next to the player and gradually slower with
+     * distance, so the horizon paints outward instead of snapping in: a
+     * chunk's fade-in takes OPT_CHUNK_FADE_IN_DURATION_MS multiplied by
+     * 1 + (ring * ring) * this coefficient. At the default, ring 8 takes 1.2x,
+     * ring 16 takes 1.9x and the outermost rings 4.6x. Zero disables the
+     * distance term entirely (flat fade, as before).
+     */
+    public static float OPT_CHUNK_FADE_RING_SQUARED = 0.0035f;
+    /** Upper bound on the distance multiplier, so far rings crawl but land. */
+    public static float OPT_CHUNK_FADE_RING_MAX_SCALE = 6.0f;
+    /**
+     * How long a chunk must stay outside the keep area before it is condemned.
+     * Pulling the view in temporarily (the memory governor, a sharp turn,
+     * flying backwards) therefore frees nothing, and the terrain is still there
+     * when the view returns -- instead of the whole world flashing and being
+     * repainted from the centre out. Under memory pressure the grace period
+     * collapses, because then the memory genuinely has to come back.
+     */
+    public static float OPT_CHUNK_RELEASE_GRACE_MS = 10_000.0f;
     /** Fraction of draw distance devoted to the smooth fade at the edge of
      *  view (higher = wider, more gradual falloff into fog/sky well before
      *  the actual draw-distance boundary, instead of a hard line). Tuned via
@@ -547,8 +573,14 @@ public class Game {
         this.APP_FULLSCREEN = fullscreen;
         try {
             init();
+            // The ceiling may differ from the static guess once -Xmx is settled,
+            // so a default (or stressed value) above it is pulled back here.
+            OPT_MAX_DRAW_DISTANCE = maxDrawDistanceForHeap();
+            if (OPT_DRAW_DISTANCE > OPT_MAX_DRAW_DISTANCE) {
+                OPT_DRAW_DISTANCE = OPT_MAX_DRAW_DISTANCE;
+            }
             if (STRESS_FLIGHT) {
-                OPT_DRAW_DISTANCE = Math.max(OPT_DRAW_DISTANCE, 46);
+                OPT_DRAW_DISTANCE = Math.max(OPT_DRAW_DISTANCE, OPT_MAX_DRAW_DISTANCE);
                 OPT_VSYNC = false;
                 WINDOW.setVSync(false);
                 GAME_FLYMODE = true;

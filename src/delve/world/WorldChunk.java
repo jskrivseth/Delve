@@ -70,6 +70,13 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     public volatile boolean isZombie = false;
     /** Already handed to the destroyer list; keeps the sweeper O(1) per chunk. */
     volatile boolean queuedForDestroy = false;
+    /**
+     * First sweep pass that found this chunk outside the keep area, or 0 while
+     * it is inside. Condemnation waits until the absence has lasted
+     * Game.OPT_CHUNK_RELEASE_GRACE_MS, so a brief contraction of the view does
+     * not throw away terrain that is about to be needed again.
+     */
+    volatile long offViewSinceNanos;
     public volatile boolean neighborsGenerated = false;
     public volatile boolean purgeVBO = false;
     public boolean serialize = false;
@@ -2870,6 +2877,34 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             return clamp01(t);
         }
         return 1.0f;
+    }
+
+    /**
+     * Fade-in at a given distance from the camera.
+     *
+     * A chunk's own fade-in duration is fixed, which makes far terrain emerge
+     * just as abruptly as the ground at the player's feet even though it is
+     * arriving twenty rings away. Scaling the duration with the ring -- quadr-
+     * atically, so the ramp is gentle close in and unhurried far out -- reads
+     * as terrain being painted outward from the player rather than a lot of
+     * tiles flashing up at once.
+     */
+    public float lifecycleFadeAlpha(int ring) {
+            if (this.destroyRequestedAtNanos >= 0 || this.meshReadyAtNanos < 0) {
+                return lifecycleFadeAlpha();
+            }
+            long now = System.nanoTime();
+            float duration = fadeInDurationNanos() * fadeInRingScale(ring);
+            return clamp01((now - this.meshReadyAtNanos) / duration);
+    }
+
+    /** Fade-in duration multiplier for a ring: 1 next door, quadratically longer out. */
+    public static float fadeInRingScale(int ring) {
+            if (Game.OPT_CHUNK_FADE_RING_SQUARED <= 0f || ring <= 0) {
+                return 1.0f;
+            }
+            float scaled = 1.0f + ((float) ring * (float) ring) * Game.OPT_CHUNK_FADE_RING_SQUARED;
+            return Math.min(Math.max(1.0f, Game.OPT_CHUNK_FADE_RING_MAX_SCALE), scaled);
     }
 
     /**

@@ -149,7 +149,7 @@ public class World {
     static final AtomicLong SUBMITTED_CHUNK_TASKS = new AtomicLong();
     static final AtomicLong COMPLETED_CHUNK_TASKS = new AtomicLong();
     /** Ring up to which the last frame was willing to draw. */
-    static volatile int lastReadyFrontier = -1;
+    public static volatile int lastReadyFrontier = -1;
     public static ExecutorService threadPool = createThreadPool();
 
     private static ExecutorService createThreadPool() {
@@ -221,6 +221,16 @@ public class World {
     public static int effectiveRenderDistance() {
         int wanted = Math.max(1, Game.OPT_DRAW_DISTANCE);
         return Math.min(Math.max(1, activeRenderRadius), wanted);
+    }
+
+    /** True while the memory governor holds the horizon shorter than asked. */
+    public static boolean memoryGovernorHolding() {
+        return governorHeldIn;
+    }
+
+    /** Depth the chunk task queue may reach before submits are refused. */
+    public static int maxQueuedChunkTasks() {
+        return MAX_QUEUED_CHUNK_TASKS;
     }
     /**
      * After a rejected submission the queue is by definition full, so retrying
@@ -317,17 +327,17 @@ public class World {
         submitBackoffUntilNanos = System.nanoTime() + SUBMIT_BACKOFF_NANOS;
     }
 
-    static int pendingChunkTasks() {
+    public static int pendingChunkTasks() {
         return threadPool instanceof ThreadPoolExecutor
                 ? ((ThreadPoolExecutor) threadPool).getQueue().size() : 0;
     }
 
-    static int busyChunkWorkers() {
+    public static int busyChunkWorkers() {
         return threadPool instanceof ThreadPoolExecutor
                 ? ((ThreadPoolExecutor) threadPool).getActiveCount() : 0;
     }
 
-    static int totalChunkWorkers() {
+    public static int totalChunkWorkers() {
         return CHUNK_WORKER_COUNT;
     }
 
@@ -1296,7 +1306,7 @@ public class World {
      * is the number that corresponds to what the player sees -- if this falls
      * far short of the rings on screen, something is withholding terrain.
      */
-    static int drawnChunksThisFrame;
+    public static int drawnChunksThisFrame;
     /** Rim radius (nominal draw distance + fade band) of the current frame. */
     private int renderRimRadius;
 
@@ -1551,7 +1561,7 @@ public class World {
                         float fadeMargin = Math.max(2.0f, renderRimRadius * Game.OPT_CHUNK_EDGE_FADE_FRACTION);
                         float edgeFade = Math.max(0.0f, Math.min(1.0f,
                                 (renderRimRadius - chebyshevDist) / fadeMargin));
-                        thisChunk.renderAlpha = edgeFade * thisChunk.lifecycleFadeAlpha();
+                        thisChunk.renderAlpha = edgeFade * thisChunk.lifecycleFadeAlpha(innerRadius);
                         drawnChunksThisFrame++;
                         // Upload throttling must never throttle drawing an
                         // existing GPU mesh.

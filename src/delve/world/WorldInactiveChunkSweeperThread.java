@@ -28,6 +28,8 @@ public class WorldInactiveChunkSweeperThread implements Runnable {
      * separate low-water mark is needed: the check re-runs every sweep).
      */
     private static final int CONDEMN_BACKLOG_HIGH_WATER = 1024;
+    /** Release grace while the heap is pinned, in milliseconds. */
+    private static final float GRACE_UNDER_PRESSURE_MS = 1500.0f;
 
     ArrayList<WorldChunk> chunks;
     int x, y, radius;
@@ -76,6 +78,7 @@ public class WorldInactiveChunkSweeperThread implements Runnable {
             snapshot = new ArrayList<>(World.chunks);
         }
 
+        final long now = System.nanoTime();
         for (int i = 0, n = snapshot.size(); i < n; i++) {
             WorldChunk thisChunk = snapshot.get(i);
             if (thisChunk == null || thisChunk.queuedForDestroy) {
@@ -89,6 +92,25 @@ public class WorldInactiveChunkSweeperThread implements Runnable {
                     || thisChunk.posY < yLowerBound
                     || thisChunk.posY > yUpperBound;
             if (!outsideKeepArea) {
+                if (thisChunk.offViewSinceNanos != 0) {
+                    thisChunk.offViewSinceNanos = 0;
+                }
+                continue;
+            }
+            // Absence must be sustained before anything is condemned. The view
+            // radius moves constantly -- governor, sharp turns, flying
+            // backwards -- and condemning on first sighting threw away terrain
+            // that was needed seconds later, so the world flashed and repainted
+            // itself from the centre outward. Under memory pressure the grace
+            // collapses: then the memory really does have to come back.
+            long firstAbsent = thisChunk.offViewSinceNanos;
+            if (firstAbsent == 0) {
+                firstAbsent = now;
+                thisChunk.offViewSinceNanos = now;
+            }
+            long graceNanos = (long) (1_000_000.0 * (Game.MEMORY_BOUND
+                    ? GRACE_UNDER_PRESSURE_MS : Game.OPT_CHUNK_RELEASE_GRACE_MS));
+            if (now - firstAbsent < graceNanos) {
                 continue;
             }
             if (!thisChunk.isZombie) {

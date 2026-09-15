@@ -204,6 +204,31 @@ class WorldRenderLifecycleTest {
     }
 
     @Test
+    void fadeInGetsSlowerFurtherFromThePlayer() {
+        float near = WorldChunk.fadeInRingScale(1);
+        float mid = WorldChunk.fadeInRingScale(8);
+        float far = WorldChunk.fadeInRingScale(16);
+        float rim = WorldChunk.fadeInRingScale(32);
+
+        assertTrue(near < mid, "emergence must be quicker close to the player");
+        assertTrue(mid < far, "and slower with distance");
+        assertTrue(far <= rim, "rising monotonically");
+        assertTrue(rim <= Game.OPT_CHUNK_FADE_RING_MAX_SCALE, "but bounded");
+        // Quadratic, not linear: doubling the ring more than doubles the delay.
+        assertTrue(WorldChunk.fadeInRingScale(16) - WorldChunk.fadeInRingScale(8)
+                > WorldChunk.fadeInRingScale(8) - WorldChunk.fadeInRingScale(0));
+
+        float coefficient = Game.OPT_CHUNK_FADE_RING_SQUARED;
+        try {
+            Game.OPT_CHUNK_FADE_RING_SQUARED = 0f;
+            assertEquals(1.0f, WorldChunk.fadeInRingScale(32),
+                    "the distance term must be switchable off");
+        } finally {
+            Game.OPT_CHUNK_FADE_RING_SQUARED = coefficient;
+        }
+    }
+
+    @Test
     void sweepRingKeepsClearanceBeyondTheVisibleSet() {
         // Sweeping inside the drawn radius made edge chunks blink in and out of
         // destroy fade; the keep ring must sit past the draw distance and the
