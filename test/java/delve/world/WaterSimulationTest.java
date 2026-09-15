@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class WaterSimulationTest {
@@ -14,7 +15,10 @@ class WaterSimulationTest {
 
     @AfterEach
     void tearDown() {
-        chunks.forEach(World::unregisterChunk);
+        chunks.forEach(chunk -> {
+            World.unregisterChunk(chunk);
+            World.chunks.remove(chunk);
+        });
         World.clearWaterUpdates();
     }
 
@@ -38,6 +42,100 @@ class WaterSimulationTest {
         assertEquals(0, chunk.waterLevel(4, 7, 4));
         assertEquals(7, chunk.waterLevel(3, 8, 4));
         assertEquals(8, chunk.waterLevel(4, 8, 4));
+    }
+
+    @Test
+    void globalPassScansUnqueuedWaterDownThenOutAcrossTerrain() {
+        WorldChunk chunk = chunk(0, 0);
+        World.chunks.add(chunk);
+        chunk.blocks[WorldChunk.blockIndex(2, 4, 4)] = (byte) Block.STONE;
+        chunk.blocks[WorldChunk.blockIndex(3, 4, 4)] = (byte) Block.STONE;
+        chunk.blocks[WorldChunk.blockIndex(4, 4, 4)] = (byte) Block.STONE;
+        chunk.blocks[WorldChunk.blockIndex(5, 4, 4)] = (byte) Block.STONE;
+        chunk.setWaterLevel(4, 8, 4, 8);
+
+        int evaluated = World.processGlobalWaterUpdates();
+
+        assertTrue(evaluated > 0, "active chunk water was not evaluated");
+        assertEquals(7, chunk.waterLevel(4, 7, 4));
+        assertEquals(7, chunk.waterLevel(4, 5, 4));
+        assertEquals(6, chunk.waterLevel(3, 5, 4));
+
+        World.processGlobalWaterUpdates();
+
+        assertEquals(6, chunk.waterLevel(3, 5, 4));
+        assertEquals(5, chunk.waterLevel(2, 5, 4));
+    }
+
+    @Test
+    void globalPassResumesAtItsCursorWithinTheSnapshot() {
+        WorldChunk chunk = chunk(0, 0);
+        World.chunks.add(chunk);
+        chunk.setWaterLevel(4, 8, 4, 8);
+        chunk.setWaterLevel(8, 8, 4, 8);
+
+        assertEquals(1, World.processGlobalWaterUpdates(1));
+        assertEquals(1, World.processGlobalWaterUpdates(1));
+    }
+
+    @Test
+    void adjacentWaterNeighborhoodsReachAStableFixedPoint() {
+        WorldChunk chunk = chunk(0, 0);
+        World.chunks.add(chunk);
+        for (int x = 1; x < 15; x++) {
+            chunk.blocks[WorldChunk.blockIndex(x, 4, 4)] = (byte) Block.STONE;
+        }
+        chunk.setWaterLevel(4, 8, 4, 8);
+        chunk.setWaterLevel(11, 8, 4, 8);
+
+        for (int i = 0; i < 20; i++) {
+            World.processGlobalWaterUpdates(1000);
+        }
+        byte[] settled = chunk.waterLevels.clone();
+        for (int i = 0; i < 20; i++) {
+            World.processGlobalWaterUpdates(1000);
+        }
+
+        assertArrayEquals(settled, chunk.waterLevels,
+                "adjacent water neighborhoods kept changing after settling");
+    }
+
+    @Test
+    void adjacentNeighborhoodsSettleWithPartialCursorPasses() {
+        WorldChunk chunk = chunk(0, 0);
+        World.chunks.add(chunk);
+        for (int x = 1; x < 15; x++) {
+            chunk.blocks[WorldChunk.blockIndex(x, 4, 4)] = (byte) Block.STONE;
+        }
+        chunk.setWaterLevel(4, 8, 4, 8);
+        chunk.setWaterLevel(11, 8, 4, 8);
+
+        for (int i = 0; i < 1000; i++) {
+            World.processGlobalWaterUpdates(1);
+        }
+        byte[] settled = chunk.waterLevels.clone();
+        for (int i = 0; i < 1000; i++) {
+            World.processGlobalWaterUpdates(1);
+        }
+
+        assertArrayEquals(settled, chunk.waterLevels,
+                "partial cursor passes kept adjacent neighborhoods mutating");
+    }
+
+    @Test
+    void placedSourceRunsBeforeTerrainWaterBacklog() {
+        WorldChunk chunk = chunk(0, 0);
+        chunk.blocks[WorldChunk.blockIndex(4, 7, 4)] = (byte) Block.STONE;
+        chunk.setWaterLevel(4, 8, 4, 8);
+        for (int i = 0; i < 1000; i++) {
+            World.enqueueWaterUpdate(12, 12, 12);
+        }
+
+        World.enqueueWaterUpdateImmediate(4, 8, 4);
+        World.processWaterUpdates(1);
+
+        assertEquals(7, chunk.waterLevel(3, 8, 4),
+                "placed source was starved behind terrain-water settling");
     }
 
     @Test
@@ -155,6 +253,12 @@ class WaterSimulationTest {
                 lake.setWaterLevel(x, 6, z, 1);
             }
         }
+        for (int i = 1; i <= 7; i++) {
+            lake.blocks[WorldChunk.blockIndex(1, 6, i)] = (byte) Block.STONE;
+            lake.blocks[WorldChunk.blockIndex(7, 6, i)] = (byte) Block.STONE;
+            lake.blocks[WorldChunk.blockIndex(i, 6, 1)] = (byte) Block.STONE;
+            lake.blocks[WorldChunk.blockIndex(i, 6, 7)] = (byte) Block.STONE;
+        }
         for (int x = 2; x <= 6; x++) {
             World.enqueueWaterUpdate(x, 6, 3);
         }
@@ -167,6 +271,121 @@ class WaterSimulationTest {
                         "lake water at (" + x + ",6," + z + ") evaporated");
             }
         }
+    }
+
+    @Test
+    void generatedWaterSpillsOverAnAdjacentCaveLedge() {
+        WorldChunk lake = chunk(0, 0);
+        lake.blocks[WorldChunk.blockIndex(4, 5, 4)] = (byte) Block.STONE;
+        lake.blocks[WorldChunk.blockIndex(5, 3, 4)] = (byte) Block.STONE;
+        lake.setWaterLevel(4, 6, 4, 1);
+
+        lake.enqueueGeneratedWaterOutlets();
+        World.processWaterUpdates(200);
+
+        assertEquals(1, lake.waterLevel(4, 6, 4),
+                "generated lake cell was consumed instead of acting as a source");
+        assertTrue(lake.waterLevel(5, 4, 4) > 1,
+                "generated lake did not emit flow into the adjacent cave");
+    }
+
+    @Test
+    void diggingIntoGeneratedLakeFromBelowCreatesAContinuousSource() {
+        WorldChunk lake = chunk(0, 0);
+        lake.blocks[WorldChunk.blockIndex(4, 5, 4)] = (byte) Block.STONE;
+        lake.blocks[WorldChunk.blockIndex(4, 2, 4)] = (byte) Block.STONE;
+        lake.setWaterLevel(4, 6, 4, 1);
+
+        // Simulate breaking the lake bed and the neighborhood update issued by
+        // BlockFinder after the edit.
+        lake.blocks[WorldChunk.blockIndex(4, 5, 4)] = (byte) Block.AIR;
+        World.enqueueWaterUpdate(4, 6, 4);
+        World.processWaterUpdates(200);
+
+        assertEquals(1, lake.waterLevel(4, 6, 4),
+                "the generated lake source disappeared after its bed was dug");
+        assertEquals(7, lake.waterLevel(4, 5, 4),
+                "the lake did not emit source-strength flow through the breach");
+        assertTrue(lake.waterLevel(4, 3, 4) > 1,
+                "the emitted flow did not descend to the cave floor");
+    }
+
+    /**
+     * A tunneller reaching a lake from the side expects it to pour in even
+     * though the tunnel floor is solid: the breach is covered overhead, so it
+     * is a void water can escape into, not open sky.
+     */
+    @Test
+    void diggingAHorizontalTunnelIntoALakeSpillsIntoIt() {
+        WorldChunk hill = chunk(0, 0);
+        for (int x = 2; x <= 13; x++) {
+            for (int y = 0; y <= 9; y++) {
+                for (int z = 2; z <= 6; z++) {
+                    hill.blocks[WorldChunk.blockIndex(x, y, z)] = (byte) Block.STONE;
+                }
+            }
+        }
+        for (int x = 11; x <= 12; x++) {   // buried lake pocket
+            for (int y = 7; y <= 9; y++) {
+                for (int z = 2; z <= 6; z++) {
+                    hill.blocks[WorldChunk.blockIndex(x, y, z)] = (byte) Block.WATER;
+                    hill.setWaterLevel(x, y, z, 1);
+                }
+            }
+        }
+        for (int x = 4; x <= 10; x++) {    // bore the tunnel, breaking the wall
+            hill.blocks[WorldChunk.blockIndex(x, 7, 4)] = (byte) Block.AIR;
+        }
+        World.enqueueWaterUpdate(11, 7, 4);
+        World.enqueueWaterUpdate(10, 7, 4);
+        World.processWaterUpdates(400);
+
+        assertTrue(hill.waterLevel(9, 7, 4) > 1,
+                "lake refused to spill into a breached tunnel");
+        assertTrue(hill.waterLevel(6, 7, 4) > 1,
+                "spill did not travel along the tunnel floor");
+        assertEquals(1, hill.waterLevel(11, 7, 4),
+                "the breach converted the reservoir cell into disposable flow");
+        assertEquals(1, hill.waterLevel(11, 9, 4),
+                "lake was consumed instead of acting as an anchored source");
+    }
+
+    @Test
+    void breachedReservoirKeepsEmittingAcrossSimulationTicks() {
+        WorldChunk lake = chunk(0, 0);
+        lake.blocks[WorldChunk.blockIndex(4, 5, 4)] = (byte) Block.AIR;
+        lake.blocks[WorldChunk.blockIndex(4, 2, 4)] = (byte) Block.STONE;
+        lake.setWaterLevel(4, 6, 4, 1);
+
+        World.enqueueWaterUpdateImmediate(4, 6, 4);
+        World.processWaterUpdates(1);
+        int first = lake.waterLevel(4, 5, 4);
+        World.processWaterUpdates(40);
+        int second = lake.waterLevel(4, 5, 4);
+
+        assertTrue(first > 1, "the breach did not emit its first flow cell");
+        assertTrue(second > 1,
+                "the reservoir stopped emitting after its first simulation tick");
+        assertEquals(1, lake.waterLevel(4, 6, 4),
+                "the breached reservoir cell was consumed");
+    }
+
+    @Test
+    void breakingLakeBedThroughBlockFinderStartsSpillImmediately() {
+        WorldChunk lake = chunk(0, 0);
+        lake.blocks[WorldChunk.blockIndex(4, 5, 4)] = (byte) Block.STONE;
+        lake.blocks[WorldChunk.blockIndex(4, 2, 4)] = (byte) Block.STONE;
+        lake.setWaterLevel(4, 6, 4, 1);
+        for (int i = 0; i < 1000; i++) {
+            World.enqueueWaterUpdate(12, 12, 12);
+        }
+
+        BlockFinder.setBlockType(lake, 4, 5, 4, Block.AIR);
+
+        assertEquals(1, lake.waterLevel(4, 6, 4),
+                "breaking the bed consumed the generated reservoir");
+        assertTrue(lake.waterLevel(4, 5, 4) > 1,
+                "breaking the bed did not start the spill immediately");
     }
 
     /**
@@ -214,5 +433,91 @@ class WaterSimulationTest {
         World.processWaterUpdates(40);
 
         assertEquals(expected, second.waterLevel(3, 8, 4));
+    }
+
+    /**
+     * Boundary continuity: two sloped level-1 cubes on opposite sides of a
+     * chunk edge must place the shared lattice corner at the same height, or
+     * their water meshes shear apart into a visible crack.
+     */
+    @Test
+    void adjacentChunksShareLatticeCornersAcrossTheEdge() {
+        WorldChunk left = chunk(0, 0);
+        WorldChunk right = chunk(1, 0);
+        left.setWaterLevel(WorldChunk.sizeX - 1, 6, 3, 1);
+        left.setWaterLevel(WorldChunk.sizeX - 1, 6, 4, 1);
+        right.setWaterLevel(0, 6, 3, 1);
+        right.setWaterLevel(0, 6, 4, 1);
+
+        float fromLeft = left.waterCornerHeight(WorldChunk.sizeX, 6, 4);
+        float fromRight = right.waterCornerHeight(0, 6, 4);
+
+        assertTrue(fromLeft > 0.0f, "shared corner collapsed to dry");
+        assertEquals(fromLeft, fromRight, 0.0001f);
+    }
+
+    /**
+     * Regression for the v0.8.0 crack: while the neighbour has not published
+     * its water yet, the corner its columns contribute to would collapse to
+     * a dry trough. Seam paving paves the unknown columns over with stable
+     * heights equal to what the corner will have once the neighbour is read.
+     */
+    @Test
+    void pavedCornersCoverAQuarterlyLoadedNeighbour() {
+        WorldChunk left = chunk(0, 0);
+        WorldChunk right = chunk(1, 0);
+        left.setWaterLevel(WorldChunk.sizeX - 1, 6, 3, 1);
+        left.setWaterLevel(WorldChunk.sizeX - 1, 6, 4, 1);
+        right.setWaterLevel(0, 6, 3, 1);
+        right.setWaterLevel(0, 6, 4, 1);
+        assertTrue(left.hasIncompleteNeighbor());
+
+        float withNeighbour = left.waterCornerHeight(WorldChunk.sizeX, 6, 4);
+
+        // The neighbour drops back to un-published state, as during streaming.
+        right.isGenerated = false;
+        left.seamPaved = false;
+        float unpaved = left.waterCornerHeight(WorldChunk.sizeX, 6, 4);
+        assertTrue(unpaved < withNeighbour,
+                "unpaved corner unexpectedly kept the full height (crack detector broke)");
+
+        left.seamPaved = true;
+        float paved = left.waterCornerHeight(WorldChunk.sizeX, 6, 4);
+        assertEquals(withNeighbour, paved, 0.0001f);
+        left.seamPaved = false;
+    }
+
+    /**
+     * Flow dropped at a seam while the neighbour was ungenerated used to stay
+     * dropped forever, leaving mismatched levels (and a mismatched corner) on
+     * the two sides. The publish-path boundary replay re-drives exactly that
+     * water across the edge; interior columns are untouched.
+     */
+    @Test
+    void boundaryReplayCarriesSeamWaterIntoALateNeighbour() {
+        WorldChunk left = chunk(0, 0);
+        WorldChunk late = new WorldChunk(1, 0);   // registered, still generating
+        World.registerChunk(late);
+        chunks.add(late);
+
+        left.blocks[WorldChunk.blockIndex(WorldChunk.sizeX - 2, 5, 4)] = (byte) Block.STONE;
+        left.blocks[WorldChunk.blockIndex(WorldChunk.sizeX - 1, 5, 4)] = (byte) Block.STONE;
+        left.setWaterLevel(WorldChunk.sizeX - 2, 6, 4, 8);
+        left.setWaterLevel(WorldChunk.sizeX - 1, 6, 4, 7);
+        World.enqueueWaterUpdate(WorldChunk.sizeX - 2, 6, 4);
+        World.enqueueWaterUpdate(WorldChunk.sizeX - 1, 6, 4);
+        World.processWaterUpdates(200);
+
+        assertEquals(0, late.waterLevel(0, 6, 4),
+                "seam water leaked into an ungenerated chunk");
+
+        late.blocks[WorldChunk.blockIndex(0, 5, 4)] = (byte) Block.STONE;
+        late.isGenerated = true;
+
+        left.replayBoundaryColumns();
+        World.processWaterUpdates(200);
+
+        assertTrue(late.waterLevel(0, 6, 4) > 0,
+                "boundary replay failed to carry seam water into the loaded neighbour");
     }
 }

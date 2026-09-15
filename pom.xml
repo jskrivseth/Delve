@@ -6,7 +6,7 @@
 
     <groupId>com.delve</groupId>
     <artifactId>delve</artifactId>
-    <version>1.0-SNAPSHOT</version>
+    <version>0.8.5</version>
     <packaging>jar</packaging>
     <name>Delve Voxel Engine</name>
 

@@ -30,6 +30,7 @@ import java.awt.image.BufferedImage;
 
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ConcurrentLinkedDeque;
 
 import java.util.*;
 import java.io.*;
@@ -86,7 +87,13 @@ public class World {
     public static ArrayList<WorldChunk> chunks = new ArrayList<WorldChunk>();
     public static ArrayList<WorldChunk> destroyChunks = new ArrayList<WorldChunk>();
     public static ArrayList<WorldChunk> generateChunks = new ArrayList<WorldChunk>();
-    private static final ArrayDeque<Long> waterQueue = new ArrayDeque<Long>();
+    /**
+     * Generation and mesh workers seed water while the main thread drains it.
+     * A concurrent queue prevents those legitimate publish-time additions from
+     * corrupting ArrayDeque's internal state.
+     */
+    private static final ConcurrentLinkedDeque<Long> waterQueue =
+            new ConcurrentLinkedDeque<Long>();
     /**
      * Wavefront of cells to reclaim after water was removed. Kept separate from
      * {@link #waterQueue} because it answers a different question: not "where
@@ -95,8 +102,15 @@ public class World {
     private static final ArrayDeque<Long> waterDrainQueue = new ArrayDeque<Long>();
     /** Cells already queued this episode, so the wavefront terminates. */
     private static final HashSet<Long> drainQueued = new HashSet<Long>();
+    /** Reusable primitive snapshot for the active-chunk water pass. */
+    private static long[] globalWaterCells = new long[4096];
+    private static int globalWaterCellCount;
+    private static int globalWaterCellCursor;
+    private static boolean globalWaterUpdateInProgress;
     /** Water is intentionally much slower than the render loop. */
     public static int MAX_WATER_UPDATES = 12;
+    /** Bounds active-world water work per simulation invoke. */
+    public static int MAX_GLOBAL_WATER_UPDATES = 256;
     /**
      * Drain cells reclaimed per pass. Larger than the flow budget so breaching a
      * pool visibly recedes over a few ticks rather than hanging forever.
@@ -129,6 +143,9 @@ public class World {
         waterQueue.clear();
         waterDrainQueue.clear();
         drainQueued.clear();
+        globalWaterCellCount = 0;
+        globalWaterCellCursor = 0;
+        globalWaterUpdateInProgress = false;
         nextWaterUpdateAtNanos = 0L;
         SWEEPER_IS_SLEEPING = true;
         WAKE_SWEEPER = true;
@@ -244,7 +261,7 @@ public class World {
         serializeAndFreeInactiveChunks();
         long now = System.nanoTime();
         if (now >= nextWaterUpdateAtNanos) {
-            processWaterUpdates(MAX_WATER_UPDATES);
+            processGlobalWaterUpdates();
             nextWaterUpdateAtNanos = now + WATER_UPDATE_INTERVAL_NANOS;
         }
         pickSelectedBlock();
@@ -268,10 +285,24 @@ public class World {
         }
     }
 
+    /**
+     * Player edits must not wait behind terrain-water settling queued by chunk
+     * generation. The update itself still fans out through the regular FIFO,
+     * preserving deterministic simulation order after the immediate response.
+     */
+    public static void enqueueWaterUpdateImmediate(int x, int y, int z) {
+        if (y >= 0 && y < WorldChunk.sizeY) {
+            waterQueue.addFirst(waterKey(x, y, z));
+        }
+    }
+
     public static void clearWaterUpdates() {
         waterQueue.clear();
         waterDrainQueue.clear();
         drainQueued.clear();
+        globalWaterCellCount = 0;
+        globalWaterCellCursor = 0;
+        globalWaterUpdateInProgress = false;
     }
 
     /**
@@ -386,14 +417,34 @@ public class World {
             }
             /*
              * Level 1 is terrain water: the basin it fills holds it, so it keeps
-             * its level and only leaves when the ground underneath gives way.
-             * It moves rather than copies, so a breached lake drains instead of
-             * multiplying itself into the cave below.
+             * its level. When terrain underneath or beside it opens, it behaves
+             * as an anchored reservoir source: emit reclaimable level-7 flow
+             * without consuming the lake cell. This keeps generated lakes full
+             * when dug into from below, while the emitted water still drains
+             * normally after the breach is plugged.
              */
             if (level == 1) {
+                boolean emitted = false;
                 if (Block.isWaterReplaceable(blockTypeAtWorld(x, y - 1, z))
-                        && spreadWater(x, y - 1, z, 1)) {
-                    clearWaterCell(x, y, z);
+                        && spreadWater(x, y - 1, z, 7)) {
+                    emitted = true;
+                }
+                // Spill through any adjacent cell water could actually escape
+                // into: one with open space below it (a cliff lip or shaft),
+                // or one covered overhead (a cave mouth or dug tunnel). Open
+                // sky at a shoreline is neither, so lakes do not weep thin
+                // films across every beach they touch. The emitted flow is
+                // level 7, which fades to nothing at level 2, so the lake can
+                // never creep outward the way a true source would.
+                emitted |= emitTerrainWaterOutlet(x, y, z, x - 1, z);
+                emitted |= emitTerrainWaterOutlet(x, y, z, x + 1, z);
+                emitted |= emitTerrainWaterOutlet(x, y, z, x, z - 1);
+                emitted |= emitTerrainWaterOutlet(x, y, z, x, z + 1);
+                if (emitted) {
+                    // Reservoir cells are persistent sources while breached.
+                    // Requeue only a cell that actually emitted, so sealed
+                    // lakes do not consume the simulation budget.
+                    enqueueWaterUpdate(x, y, z);
                 }
                 continue;
             }
@@ -458,12 +509,206 @@ public class World {
         return Math.min(processed, budget);
     }
 
+    /** Evaluates up to the configured active-world water budget. */
+    public static int processGlobalWaterUpdates() {
+        return processGlobalWaterUpdates(MAX_GLOBAL_WATER_UPDATES);
+    }
+
+    /**
+     * Evaluates a bounded slice of every water voxel in the active chunks. The
+     * snapshot and cursor persist between calls, so a large active world does
+     * not restart its scan or create a frame-sized hitch on every water tick.
+     * Water created during a pass enters the next snapshot, preserving the
+     * deterministic down-and-out ordering.
+     */
+    public static int processGlobalWaterUpdates(int budget) {
+        if (budget <= 0 || globalWaterUpdateInProgress) {
+            return 0;
+        }
+        globalWaterUpdateInProgress = true;
+        try {
+            return processGlobalWaterUpdatesSlice(budget);
+        } finally {
+            globalWaterUpdateInProgress = false;
+        }
+    }
+
+    private static int processGlobalWaterUpdatesSlice(int budget) {
+        processWaterDrains(MAX_WATER_DRAINS);
+
+        if (globalWaterCellCursor >= globalWaterCellCount) {
+            captureGlobalWaterSnapshot();
+        }
+
+        int processed = 0;
+        while (processed < budget && globalWaterCellCursor < globalWaterCellCount) {
+            long key = globalWaterCells[globalWaterCellCursor++];
+            int x = waterX(key), y = waterY(key), z = waterZ(key);
+            int level = waterLevelAtWorld(x, y, z);
+            if (level > 0) {
+                processGlobalWaterCell(x, y, z, level);
+            }
+            processed++;
+        }
+        // Queue notifications are still useful to the edit-path tests and
+        // boundary replay, but the active-world pass is state-driven.
+        waterQueue.clear();
+        return processed;
+    }
+
+    private static void captureGlobalWaterSnapshot() {
+        ArrayList<WorldChunk> activeChunks;
+        synchronized (chunks) {
+            activeChunks = new ArrayList<>(chunks);
+        }
+        globalWaterCellCount = 0;
+        globalWaterCellCursor = 0;
+        BLOCK_LOCK.readLock().lock();
+        try {
+            for (WorldChunk chunk : activeChunks) {
+                if (chunk == null || !chunk.isGenerated || chunk.waterLevels == null) {
+                    continue;
+                }
+                for (int cellIndex = chunk.nextWaterCellIndex(0);
+                        cellIndex >= 0;
+                        cellIndex = chunk.nextWaterCellIndex(cellIndex + 1)) {
+                    int x = cellIndex / (WorldChunk.sizeY * WorldChunk.sizeZ);
+                    int remainder = cellIndex % (WorldChunk.sizeY * WorldChunk.sizeZ);
+                    int y = remainder / WorldChunk.sizeZ;
+                    int z = remainder % WorldChunk.sizeZ;
+                    if (chunk.waterLevel(x, y, z) > 0) {
+                        appendGlobalWaterCell(
+                                chunk.worldPosX + x, y, chunk.worldPosY + z);
+                    }
+                }
+            }
+        } finally {
+            BLOCK_LOCK.readLock().unlock();
+        }
+    }
+
+    private static void appendGlobalWaterCell(int x, int y, int z) {
+        if (globalWaterCellCount == globalWaterCells.length) {
+            globalWaterCells = Arrays.copyOf(globalWaterCells, globalWaterCells.length * 2);
+        }
+        globalWaterCells[globalWaterCellCount++] = waterKey(x, y, z);
+    }
+
+    private static void processGlobalWaterCell(int x, int y, int z, int level) {
+        int columnBottomY = y;
+        boolean flowedDown = false;
+        int downwardLevel = level == 1 || level == 8 ? 7 : level;
+
+        for (int scanY = y - 1; scanY >= 0; scanY--) {
+            if (waterLevelAtWorld(x, scanY, z) > 0) {
+                columnBottomY = scanY;
+                continue;
+            }
+            int type = blockTypeAtWorld(x, scanY, z);
+            if (type < 0) {
+                return;
+            }
+            if (!Block.isWaterReplaceable(type)) {
+                break;
+            }
+            if (spreadWater(x, scanY, z, downwardLevel, false)) {
+                flowedDown = true;
+            }
+            columnBottomY = scanY;
+        }
+
+        int supportType = blockTypeAtWorld(x, columnBottomY - 1, z);
+        boolean onTerrain = isTerrainBlock(supportType);
+        if (!onTerrain) {
+            return;
+        }
+        if (level >= 2 && level < 8 && !flowedDown
+                && !hasStrongerSupport(x, y, z, level)) {
+            WorldChunk source = getChunk(Math.floorDiv(x, WorldChunk.sizeX),
+                    Math.floorDiv(z, WorldChunk.sizeZ));
+            if (source != null) {
+                int lx = Math.floorMod(x, WorldChunk.sizeX);
+                int lz = Math.floorMod(z, WorldChunk.sizeZ);
+                BLOCK_LOCK.writeLock().lock();
+                try {
+                    source.setWaterLevel(lx, y, lz, level == 2 ? 0 : level - 1);
+                } finally {
+                    BLOCK_LOCK.writeLock().unlock();
+                }
+            }
+            return;
+        }
+
+        int lateralLevel;
+        if (level == 1 || level == 8) {
+            lateralLevel = flowedDown ? 6 : 7;
+        } else {
+            lateralLevel = level - 1;
+        }
+        if (lateralLevel < 2) {
+            return;
+        }
+        spreadTerrainWater(columnBottomY, x - 1, z, lateralLevel);
+        spreadTerrainWater(columnBottomY, x + 1, z, lateralLevel);
+        spreadTerrainWater(columnBottomY, x, z - 1, lateralLevel);
+        spreadTerrainWater(columnBottomY, x, z + 1, lateralLevel);
+    }
+
+    private static void spreadTerrainWater(int y, int targetX, int targetZ, int level) {
+        if (!Block.isWaterReplaceable(blockTypeAtWorld(targetX, y, targetZ))) {
+            return;
+        }
+        if (!isTerrainBlock(blockTypeAtWorld(targetX, y - 1, targetZ))) {
+            return;
+        }
+        spreadWater(targetX, y, targetZ, level, false);
+    }
+
+    private static boolean isTerrainBlock(int type) {
+        return type >= 0 && type != Block.WATER && !Block.isWaterReplaceable(type);
+    }
+
+    /**
+     * True when the adjacent cell is open, air that water poured into it would
+     * not simply coat and dry in: open space below it gives the water
+     * somewhere to fall, and a ceiling within reach marks an enclosed void
+     * rather than a beach. Either case is a breach worth draining through;
+     * open sky is not.
+     */
+    private static boolean emitTerrainWaterOutlet(int x, int y, int z,
+                                                  int outletX, int outletZ) {
+        if (!Block.isWaterReplaceable(blockTypeAtWorld(outletX, y, outletZ))) {
+            return false;
+        }
+        boolean escapesDown = Block.isWaterReplaceable(blockTypeAtWorld(outletX, y - 1, outletZ))
+                || Block.isWaterReplaceable(blockTypeAtWorld(outletX, y - 2, outletZ));
+        if (!escapesDown && !hasCeilingAbove(outletX, y, outletZ)) {
+            return false;
+        }
+        return spreadWater(outletX, y, outletZ, 7);
+    }
+
+    /** Whether something solid roofs the outlet cell within reach. */
+    private static boolean hasCeilingAbove(int x, int y, int z) {
+        for (int up = 1; up <= MAX_WATER_DROP_DISTANCE; up++) {
+            int type = blockTypeAtWorld(x, y + up, z);
+            if (type < 0) {
+                return false;   // unloaded sky: settle when the chunk loads
+            }
+            if (!Block.isWaterReplaceable(type)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static boolean hasStrongerSupport(int x, int y, int z, int level) {
         int[][] neighbors = {{x - 1, y, z}, {x + 1, y, z},
             {x, y, z - 1}, {x, y, z + 1}, {x, y + 1, z}};
         for (int[] neighbor : neighbors) {
             int neighborLevel = waterLevelAtWorld(neighbor[0], neighbor[1], neighbor[2]);
-            if (neighborLevel > level
+            if (neighborLevel == 1
+                    || neighborLevel > level
                     || (neighbor[1] == y + 1 && neighborLevel >= level)) {
                 return true;
             }
@@ -499,6 +744,11 @@ public class World {
     }
 
     private static boolean spreadWater(int x, int y, int z, int level) {
+        return spreadWater(x, y, z, level, true);
+    }
+
+    private static boolean spreadWater(int x, int y, int z, int level,
+                                       boolean enqueueNeighbors) {
         if (y < 0 || y >= WorldChunk.sizeY) return false;
         WorldChunk target = getChunk(Math.floorDiv(x, WorldChunk.sizeX),
                 Math.floorDiv(z, WorldChunk.sizeZ));
@@ -508,14 +758,20 @@ public class World {
         if (type != Block.WATER && !Block.isWaterReplaceable(type)) return false;
         int old = target.waterLevel(lx, y, lz);
         if (old >= 8 || old >= level) return false;
+        // A level-1 cell is an anchored reservoir member. Ordinary flow must
+        // never launder it into disposable flow water, or a breach would
+        // drain the lake by converting it cell by cell instead of spilling.
+        if (old == 1) return false;
         BLOCK_LOCK.writeLock().lock();
         try {
             if (target.setWaterLevel(lx, y, lz, level)) {
-                enqueueWaterUpdate(x, y, z);
-                enqueueWaterUpdate(x - 1, y, z);
-                enqueueWaterUpdate(x + 1, y, z);
-                enqueueWaterUpdate(x, y, z - 1);
-                enqueueWaterUpdate(x, y, z + 1);
+                if (enqueueNeighbors) {
+                    enqueueWaterUpdate(x, y, z);
+                    enqueueWaterUpdate(x - 1, y, z);
+                    enqueueWaterUpdate(x + 1, y, z);
+                    enqueueWaterUpdate(x, y, z - 1);
+                    enqueueWaterUpdate(x, y, z + 1);
+                }
                 return true;
             }
         } finally {
