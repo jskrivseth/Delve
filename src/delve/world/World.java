@@ -1078,7 +1078,7 @@ public class World {
 
     private boolean chunkReadyForDraw(int x, int z) {
         WorldChunk chunk = World.getChunk(x, z);
-        return chunk != null && chunk.isReady();
+        return chunk != null && chunk.vboVertexHandle != 0;
     }
 
     private void renderChunk(int i, int j, int currentChunkX, int currentChunkY,
@@ -1150,47 +1150,35 @@ public class World {
                 thisChunk.cancelDestroyFade();
             }
             //If the chunk is done (ready to render) and is immediately within the proximity of the current chunk or is otherwise within the frustum, render
-            if (thisChunk.isReady() && drawAllowed) {
-                // Frustum culling must only skip DRAWING. Gating mesh generation on
-                // visibility leaves permanent holes, because a chunk that was once
-                // off-screen never builds and so never becomes drawable.
-                boolean cullable = Game.OPT_CULL_CHUNKS && innerRadius > 1;
-                if (!cullable || thisChunk.isVisible()) {
-                    // Stamped before computing this frame's alpha, not after
-                    // render() (which is where buildVBO() actually runs) --
-                    // see WorldChunk.ensureFadeInStarted() for why: without
-                    // this, a chunk's very first frame on screen always drew
-                    // at full opacity before its fade-in had a chance to
-                    // start.
-                    thisChunk.ensureFadeInStarted();
+            if (thisChunk.isReady()) {
+                // Promote pending meshes even outside the current draw frontier.
+                // Otherwise a pending ring cannot become drawable, so the
+                // contiguous frontier would never advance.
+                if (thisChunk.hasPendingMesh() && VBO_CHUNKS < World.MAX_CHUNKS_TO_VBO) {
+                    thisChunk.uploadPendingMesh();
+                    VBO_CHUNKS++;
+                }
+                if (drawAllowed) {
+                    // Frustum culling must only skip DRAWING. Gating mesh
+                    // generation on visibility leaves permanent holes, because
+                    // an off-screen chunk would never become drawable.
+                    boolean cullable = Game.OPT_CULL_CHUNKS && innerRadius > 1;
+                    if (!cullable || thisChunk.isVisible()) {
+                        // Stamped before computing this frame's alpha, not after
+                        // render() (which is where buildVBO() actually runs).
+                        thisChunk.ensureFadeInStarted();
 
-                    // Continuous distance from the camera's exact (fractional)
-                    // position, not the chunk's integer ring index -- the ring
-                    // index only gave a handful of discrete alpha steps (as
-                    // few as 3, with the old fixed 2-ring margin), which read
-                    // as visible concentric banding / a hard line at the edge
-                    // of view even while standing still. Real distance varies
-                    // smoothly block by block as the camera moves, and the
-                    // fade width now scales with draw distance instead of
-                    // being a fixed ring count.
-                    double dx = (i + 0.5) - (camera.position.x / WorldChunk.sizeX);
-                    double dz = (j + 0.5) - (camera.position.z / WorldChunk.sizeZ);
-                    float chebyshevDist = (float) Math.max(Math.abs(dx), Math.abs(dz));
-                    float fadeMargin = Math.max(2.0f, outerRadius * Game.OPT_CHUNK_EDGE_FADE_FRACTION);
-                    float edgeFade = Math.max(0.0f, Math.min(1.0f,
-                            (outerRadius - chebyshevDist) / fadeMargin));
-                    // Combined with the chunk's own generate/destroy lifecycle
-                    // fade, so a chunk newly popping into view and a chunk
-                    // sitting at the far draw-distance edge fade independently
-                    // but consistently.
-                    thisChunk.renderAlpha = edgeFade * thisChunk.lifecycleFadeAlpha();
-                    if (thisChunk.hasPendingMesh() && VBO_CHUNKS < World.MAX_CHUNKS_TO_VBO) {
-                        thisChunk.uploadPendingMesh();
-                        VBO_CHUNKS++;
+                        double dx = (i + 0.5) - (camera.position.x / WorldChunk.sizeX);
+                        double dz = (j + 0.5) - (camera.position.z / WorldChunk.sizeZ);
+                        float chebyshevDist = (float) Math.max(Math.abs(dx), Math.abs(dz));
+                        float fadeMargin = Math.max(2.0f, outerRadius * Game.OPT_CHUNK_EDGE_FADE_FRACTION);
+                        float edgeFade = Math.max(0.0f, Math.min(1.0f,
+                                (outerRadius - chebyshevDist) / fadeMargin));
+                        thisChunk.renderAlpha = edgeFade * thisChunk.lifecycleFadeAlpha();
+                        // Upload throttling must never throttle drawing an
+                        // existing GPU mesh.
+                        thisChunk.render();
                     }
-                    // Upload throttling must never throttle drawing an existing
-                    // GPU mesh: keep it visible until its replacement uploads.
-                    thisChunk.render();
                 }
                 thisChunk.selectedBlock = null;
             }
