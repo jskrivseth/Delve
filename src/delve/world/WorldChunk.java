@@ -2446,6 +2446,8 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         float sum = 0.0f;
         int wetSurfaces = 0;
         int unknownColumns = 0;
+        float apronSum = 0.0f;
+        int apronColumns = 0;
         for (int dx = -1; dx <= 0; dx++) {
             for (int dz = -1; dz <= 0; dz++) {
                 int cx = cornerX + dx;
@@ -2464,11 +2466,37 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                 if (level > 0 && level < 8) {
                     sum += waterSurfaceHeight(level);
                     wetSurfaces++;
+                    continue;
+                }
+                // Dry here, but liquid one row down across this corner: the
+                // sheet spills OVER that block rather than shearing off at a
+                // vertical drop. The lower surface enters the mean as a soft
+                // participant expressed in this row's units (its absolute
+                // height minus one cell), which pulls the shared corner down
+                // and ramps the sheet outward over the lip. A column with
+                // only ground beneath is not a participant at all, so an
+                // ordinary shoreline stays flush.
+                int under = waterLevelAtOrUnknown(cx, y - 1, cz);
+                if (under == 8) {
+                    apronSum += 0.0f;
+                    apronColumns++;
+                } else if (under > 0) {
+                    apronSum += waterSurfaceHeight(under) - 1.0f;
+                    apronColumns++;
                 }
             }
         }
         if (wetSurfaces == 0) {
             return 0.0f;
+        }
+        if (apronColumns > 0) {
+            // Half-strength vote: a real participant, but never enough to
+            // drown the corners of the sheet carrying the spill.
+            final float apronWeight = 0.6f;
+            float denom = wetSurfaces + apronWeight * apronColumns
+                    + (seamPaved ? 0.0f : unknownColumns);
+            float corner = (sum + apronWeight * apronSum) / denom;
+            return corner > 0.0f ? corner : 0.0f;
         }
         // Plain mean of the adjacent wet surfaces. Equal levels -- a settled
         // lake, a level flow channel, generated shallows meeting their own
@@ -2634,14 +2662,54 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         PENDING_MESH_BYTES.addAndGet(-this.pendingMeshBytes);
         this.pendingMeshBytes = 0;
         buildVBO(mesh);
-        if (mesh != PendingMesh.EMPTY && this.seamPaved
-                && this.seamPavedRetries < MAX_SEAM_PAVED_MESH_RETRIES) {
-            // Published on paved corners: ask for one more rebuild so exact
-            // heights bake once the neighbours publish. Bounded so a chunk
-            // permanently on the edge of the loaded region cannot rebuild in
-            // a loop; its paved mesh stands, replayed each publish.
-            this.seamPavedRetries++;
-            this.meshIsStale = true;
+        if (mesh == PendingMesh.EMPTY) {
+            return;
+        }
+        if (this.seamPaved) {
+            // A neighbourhood that finished filling in deserves a fresh
+            // rebuild budget: the earlier ones were spent waiting. Without
+            // the top-up, a chunk that burned its retries while the neighbour
+            // was still loading freezes a paved approximation forever -- a
+            // permanent dark slit across the water surface at the chunk line.
+            if (!hasIncompleteNeighbor()) {
+                this.seamPavedRetries = 0;
+            }
+            if (this.seamPavedRetries < MAX_SEAM_PAVED_MESH_RETRIES) {
+                // Published on paved corners: ask for one more rebuild so exact
+                // heights bake once the neighbours publish. Bounded so a chunk
+                // permanently on the edge of the loaded region cannot rebuild in
+                // a loop; its paved mesh stands, replayed each publish.
+                this.seamPavedRetries++;
+                this.meshIsStale = true;
+            }
+        } else {
+            // Fully readable publish: any neighbour still holding a mesh built
+            // on paved corners was approximating US. Force one correction pass
+            // for it, closing the staleness loop in the other direction.
+            markPavedNeighborsStale();
+        }
+    }
+
+    /** Wakes neighbouring chunks whose published mesh was paved over us. */
+    private void markPavedNeighborsStale() {
+        for (int dx = -1; dx <= 1; dx++) {
+            int cx = posX + dx;
+            if (cx < 0 || cx >= World.sizeX) {
+                continue;
+            }
+            for (int dz = -1; dz <= 1; dz++) {
+                if (dx == 0 && dz == 0) {
+                    continue;
+                }
+                int cz = posY + dz;
+                if (cz < 0 || cz >= World.sizeY) {
+                    continue;
+                }
+                WorldChunk neighbor = World.getChunk(cx, cz);
+                if (neighbor != null && neighbor.seamPaved) {
+                    neighbor.meshIsStale = true;
+                }
+            }
         }
     }
 

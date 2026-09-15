@@ -271,6 +271,46 @@ class WaterSimulationTest {
     }
 
     /**
+     * Spill-over: a sheet ending where liquid continues one row down must
+     * ramp its lip down over the block, not shear off at a vertical drop.
+     * The apron is bounded strictly between the carried sheet height and
+     * the cell floor.
+     */
+    @Test
+    void sheetEdgesAppronDownOverADrop() {
+        WorldChunk chunk = chunk(0, 0);
+        chunk.setWaterLevel(3, 6, 4, 4);
+        chunk.setWaterLevel(4, 6, 4, 4);
+        // The pool one row down, directly beyond the lip line at x=5.
+        chunk.setWaterLevel(5, 5, 3, 4);
+        chunk.setWaterLevel(5, 5, 4, 4);
+
+        float interior = chunk.waterCornerHeight(4, 6, 4);
+        float lip = chunk.waterCornerHeight(5, 6, 4);
+
+        assertEquals(WorldChunk.waterSurfaceHeight(4), interior, 0.0001f);
+        assertTrue(lip < interior, "lip stayed flush instead of spilling over");
+        assertTrue(lip > 0.0f, "apron punched through the cell floor");
+    }
+
+    /**
+     * Ground beneath a dry neighbour is NOT a participant: a shoreline over
+     * solid ground must stay flush no matter what the sheet rests on.
+     */
+    @Test
+    void flushShorelineIgnoresGroundBelow() {
+        WorldChunk chunk = chunk(0, 0);
+        chunk.setWaterLevel(4, 6, 4, 4);
+        chunk.blocks[WorldChunk.blockIndex(5, 5, 4)] = (byte) Block.STONE;
+
+        float interior = chunk.waterCornerHeight(4, 6, 4);
+        float shore = chunk.waterCornerHeight(5, 6, 4);
+
+        assertEquals(WorldChunk.waterSurfaceHeight(4), shore, 0.0001f);
+        assertEquals(interior, shore, 0.0001f);
+    }
+
+    /**
      * No corner may ever rise above the tallest wet column it touches: that
      * was the bank-climbing bump, where two shallow films stacked into a
      * corner higher than the water feeding them.
