@@ -984,6 +984,7 @@ public class World {
         
         int midX = currentChunkX;
         int midY = currentChunkY;
+        int readyFrontier = readyFrontierRadius(currentChunkX, currentChunkY, chunkRadius);
         
         Renderer.beginChunkPass();
         
@@ -994,28 +995,33 @@ public class World {
             int yRadiusUpper = Math.min(midY + radius, World.CURRENT_BOUND_YU);
             
             if (radius == 0) {
-                renderChunk(xRadiusLower, yRadiusLower, midX, midY, radius, chunkRadius);
+                renderChunk(xRadiusLower, yRadiusLower, midX, midY, radius, chunkRadius,
+                        radius <= readyFrontier);
                 continue;
             }
             
             //do all x+
             for (int i = xRadiusLower; i < xRadiusUpper; i++) {
-                renderChunk(i, yRadiusLower, midX, midY, radius, chunkRadius);
+                renderChunk(i, yRadiusLower, midX, midY, radius, chunkRadius,
+                        radius <= readyFrontier);
             }
             
             //do all y+
             for (int i = yRadiusLower; i < yRadiusUpper; i++) {
-                renderChunk(xRadiusUpper, i, midX, midY, radius, chunkRadius);
+                renderChunk(xRadiusUpper, i, midX, midY, radius, chunkRadius,
+                        radius <= readyFrontier);
             }
             
             //do all x-
             for (int i = xRadiusUpper; i > xRadiusLower; i--) {
-                renderChunk(i, yRadiusUpper, midX, midY, radius, chunkRadius);
+                renderChunk(i, yRadiusUpper, midX, midY, radius, chunkRadius,
+                        radius <= readyFrontier);
             }
             
             //do all y-
             for (int i = yRadiusUpper; i > yRadiusLower; i--) {
-                renderChunk(xRadiusLower, i, midX, midY, radius, chunkRadius);
+                renderChunk(xRadiusLower, i, midX, midY, radius, chunkRadius,
+                        radius <= readyFrontier);
             }
         }
         Game.STAT_BUILT_CHUNKS += BUILT_CHUNKS;
@@ -1039,7 +1045,49 @@ public class World {
     private static final org.joml.Matrix4f PICKER_RAY_MODEL = new org.joml.Matrix4f();
 
 
-    private void renderChunk(int i, int j, int currentChunkX, int currentChunkY, int innerRadius, int outerRadius) {
+    private int readyFrontierRadius(int centerX, int centerY, int radius) {
+        int frontier = -1;
+        for (int ring = 0; ring <= radius; ring++) {
+            int lowerX = centerX - ring;
+            int upperX = centerX + ring;
+            int lowerY = centerY - ring;
+            int upperY = centerY + ring;
+            if (ring == 0) {
+                if (!chunkReadyForDraw(lowerX, lowerY)) {
+                    break;
+                }
+                frontier = 0;
+                continue;
+            }
+            boolean complete = true;
+            for (int x = lowerX; x <= upperX; x++) {
+                complete &= chunkReadyForDraw(x, lowerY);
+                complete &= chunkReadyForDraw(x, upperY);
+            }
+            for (int z = lowerY + 1; z < upperY; z++) {
+                complete &= chunkReadyForDraw(lowerX, z);
+                complete &= chunkReadyForDraw(upperX, z);
+            }
+            if (!complete) {
+                break;
+            }
+            frontier = ring;
+        }
+        return frontier;
+    }
+
+    private boolean chunkReadyForDraw(int x, int z) {
+        WorldChunk chunk = World.getChunk(x, z);
+        return chunk != null && chunk.isReady();
+    }
+
+    private void renderChunk(int i, int j, int currentChunkX, int currentChunkY,
+                             int innerRadius, int outerRadius) {
+        renderChunk(i, j, currentChunkX, currentChunkY, innerRadius, outerRadius, true);
+    }
+
+    private void renderChunk(int i, int j, int currentChunkX, int currentChunkY,
+                             int innerRadius, int outerRadius, boolean drawAllowed) {
         WorldChunk thisChunk = World.getChunk(i, j);
         if (thisChunk == null && !Game.MEMORY_BOUND && World.GEN_CHUNKS < World.MAX_CHUNKS_TO_GEN) {
             thisChunk = new WorldChunk(i, j);
@@ -1102,7 +1150,7 @@ public class World {
                 thisChunk.cancelDestroyFade();
             }
             //If the chunk is done (ready to render) and is immediately within the proximity of the current chunk or is otherwise within the frustum, render
-            if (thisChunk.isReady()) {
+            if (thisChunk.isReady() && drawAllowed) {
                 // Frustum culling must only skip DRAWING. Gating mesh generation on
                 // visibility leaves permanent holes, because a chunk that was once
                 // off-screen never builds and so never becomes drawable.
