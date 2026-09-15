@@ -1078,7 +1078,12 @@ public class World {
 
     private boolean chunkReadyForDraw(int x, int z) {
         WorldChunk chunk = World.getChunk(x, z);
-        return chunk != null && chunk.vboVertexHandle != 0;
+        if (chunk == null || chunk.hasPendingMesh() || chunk.isGenerating || chunk.isBuilding) {
+            return false;
+        }
+        // Fully enclosed/empty chunks legitimately have no GPU buffer. Once
+        // their build has completed they still satisfy the frontier.
+        return chunk.vboVertexHandle != 0 || chunk.isBuilt;
     }
 
     private void renderChunk(int i, int j, int currentChunkX, int currentChunkY,
