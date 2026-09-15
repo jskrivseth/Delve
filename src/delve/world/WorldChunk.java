@@ -2443,15 +2443,11 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     }
 
     float waterCornerHeight(int cornerX, int y, int cornerZ) {
-        final float apronWeight = 0.6f;
         float sum = 0.0f;
         int wetSurfaces = 0;
         int unknownColumns = 0;
-        float apronSum = 0.0f;
-        int apronColumns = 0;
         boolean hasFullWater = false;
-        boolean unsupportedWet = false;
-        boolean sealedFromAbove = false;
+        int fallDistance = 0;
         for (int dx = -1; dx <= 0; dx++) {
             for (int dz = -1; dz <= 0; dz++) {
                 int cx = cornerX + dx;
@@ -2472,73 +2468,66 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                         sum += waterSurfaceHeight(level);
                     }
                     wetSurfaces++;
-                    // An apron may only issue off a carrier standing on
-                    // something: solid ground or more water. Wetness
-                    // dangling over open space undercuts a dig, and over a
-                    // dig the sheet must sheer vertically, not wing out.
-                    if (waterLevelAt(cx, y - 1, cz) == 0 && !solidBelow(cx, cz, y)) {
-                        unsupportedWet = true;
-                    }
                     continue;
                 }
-                // Dry. Solid bank votes nothing; an open cell may speak.
+                // Dry. A solid bank votes nothing; an open cell may speak.
                 if (solidHere(cx, cz, y)) {
                     continue;
                 }
-                if (waterLevelAt(cx, y + 1, cz) != 0) {
-                    // Water hangs directly above this corner. Vertical fill:
-                    // this sheet's corner drives flush to the underside of
-                    // the overhang so the surfaces weld instead of peeling
-                    // apart into a strip of exposed bank.
-                    sealedFromAbove = true;
-                    continue;
-                }
-                // Spill-over: liquid one row down across an open cell pulls
-                // this corner down toward that surface (expressed in this
-                // row's units), ramping the sheet over its block.
-                int under = waterLevelAtOrUnknown(cx, y - 1, cz);
-                if (under == 8) {
-                    apronSum += 0.0f;
-                    apronColumns++;
-                } else if (under > 0) {
-                    apronSum += waterSurfaceHeight(under) - 1.0f;
-                    apronColumns++;
+                // Waterfall: water hangs above this open column. This
+                // sheet's corner rises the full shaft distance to meet the
+                // underside of that water -- a near-vertical curtain from
+                // pool to lip, the landing of a fall, rather than a sloped
+                // chute. The falling stream's own sides hide the seam.
+                int k = waterfallColumnAbove(cx, cz, y);
+                if (k > 0) {
+                    fallDistance = Math.max(fallDistance, k);
                 }
             }
         }
         if (wetSurfaces == 0) {
             return 0.0f;
         }
-        if (sealedFromAbove) {
-            return 1.0f;
-        }
-        if (apronColumns > 0 && !unsupportedWet) {
-            // Half-strength apron vote; full water, when present, votes its
-            // 1.0 into the same mean, so even an overflowing brim tilts over
-            // the drop it feeds.
-            float denom = wetSurfaces + apronWeight * apronColumns
-                    + (seamPaved ? 0.0f : unknownColumns);
-            float corner = (sum + apronWeight * apronSum) / denom;
-            return corner > 0.0f ? corner : 0.0f;
+        if (fallDistance > 0) {
+            return fallDistance;
         }
         if (hasFullWater) {
-            // A brim shared with plain water keeps full height unless the
-            // corner is genuinely spilling; that is the trough killer.
+            // A brim shared with plain water keeps full height: the trough
+            // killer at source rims.
             return 1.0f;
         }
+        // Plain mean of adjacent wet surfaces: equal levels tile flat,
+        // unequal levels slope midway -- free-standing tapers survive,
+        // shorelines meet flush. Unreadable neighbour columns sag the corner
+        // unpaved and are neutralised while seam-paved; the boundary replay
+        // queued at publish settles the real values.
         if (seamPaved) {
             return sum / wetSurfaces;
         }
         return sum / (wetSurfaces + unknownColumns);
     }
 
+    /**
+     * Rows of open, non-solid shaft between this cell and the first water
+     * directly above it, 1..4; 0 when solid or nothing is above. Unloaded
+     * ground reads as no water, conservatively.
+     */
+    private int waterfallColumnAbove(int x, int z, int y) {
+        for (int k = 1; k <= 4; k++) {
+            int yy = y + k;
+            if (yy >= sizeY || solidHere(x, yy, z)) {
+                return 0;
+            }
+            if (waterLevelAt(x, yy, z) > 0) {
+                return k;
+            }
+        }
+        return 0;
+    }
+
     private boolean solidHere(int x, int y, int z) {
         return y < 0 || y >= sizeY
                 || World.isSolidGlobal(worldPosX + x, y, worldPosY + z);
-    }
-
-    private boolean solidBelow(int x, int z, int y) {
-        return solidHere(x, y - 1, z);
     }
 
     static float waterSurfaceHeight(int level) {

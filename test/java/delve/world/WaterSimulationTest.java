@@ -276,43 +276,50 @@ class WaterSimulationTest {
      * The apron is bounded strictly between the carried sheet height and
      * the cell floor.
      */
+    /**
+     * A full-cell drop is a waterfall, not a chute: the upper sheet holds
+     * flat to the lip, and the pool below raises a vertical curtain that
+     * meets the overhang's underside (see the corner above the pool).
+     */
     @Test
-    void sheetEdgesAppronDownOverADrop() {
+    void fullDropKeepsFlatLipAndRisesAsACurtain() {
         WorldChunk chunk = chunk(0, 0);
-        // The lip carries a block under it: aprons are lawful on sills,
-        // never on water hanging over an undercut void.
-        chunk.blocks[WorldChunk.blockIndex(3, 5, 4)] = (byte) Block.STONE;
-        chunk.blocks[WorldChunk.blockIndex(4, 5, 4)] = (byte) Block.STONE;
-        chunk.setWaterLevel(3, 6, 4, 4);
         chunk.setWaterLevel(4, 6, 4, 4);
-        // The pool one row down, directly beyond the lip line at x=5.
         chunk.setWaterLevel(5, 5, 3, 4);
         chunk.setWaterLevel(5, 5, 4, 4);
 
-        float interior = chunk.waterCornerHeight(4, 6, 4);
         float lip = chunk.waterCornerHeight(5, 6, 4);
+        assertEquals(WorldChunk.waterSurfaceHeight(4), lip, 0.0001f);
 
-        assertEquals(WorldChunk.waterSurfaceHeight(4), interior, 0.0001f);
-        assertTrue(lip < interior, "lip stayed flush instead of spilling over");
-        assertTrue(lip > 0.0f, "apron punched through the cell floor");
+        float poolAtTheFall = chunk.waterCornerHeight(6, 5, 4);
+        // Nothing hangs over the pool's FAR side; only the fall-side corner
+        // may rise. Pin that this sample stays a plain flat mean.
+        assertEquals(WorldChunk.waterSurfaceHeight(4), poolAtTheFall, 0.0001f);
+
+        float curtainBase = chunk.waterCornerHeight(5, 5, 4);
+        assertEquals(1.0f, curtainBase, 0.0001f);
     }
 
     /**
-     * Unsupported lip: the sheet's own carrier cell hangs over open space.
-     * No apron may issue; the edge holds its flat mean, and the void is
-     * dealt with by the sheet below.
+     * The curtain rises up to four open shaft rows to reach hanging water,
+     * and stops dead at solid ground -- no membrane growing through stone.
      */
     @Test
-    void apronNeedsABlockUnderTheCarrier() {
+    void curtainClimbsTheShaftButNotThroughStone() {
         WorldChunk chunk = chunk(0, 0);
-        chunk.setWaterLevel(4, 6, 4, 4);
-        chunk.setWaterLevel(5, 5, 4, 4);   // water one row down, but the
-                                           // carrier at (5?,6) has no sill:
-                                           // its own column below is open.
+        chunk.setWaterLevel(4, 4, 3, 4);
+        chunk.setWaterLevel(4, 4, 4, 4);
+        // Water two shaft rows above the pool edge at x=5.
+        chunk.setWaterLevel(5, 6, 3, 8);
+        chunk.setWaterLevel(5, 6, 4, 8);
 
-        float corner = chunk.waterCornerHeight(5, 6, 4);
-        // Wet column (4,6,4) is unsupported (air beneath) -> apron gated off.
-        assertEquals(WorldChunk.waterSurfaceHeight(4), corner, 0.0001f);
+        assertEquals(2.0f, chunk.waterCornerHeight(5, 4, 4), 0.0001f);
+
+        // Plug the shaft: the curtain must not punch through the plug.
+        chunk.blocks[WorldChunk.blockIndex(5, 5, 3)] = (byte) Block.STONE;
+        chunk.blocks[WorldChunk.blockIndex(5, 5, 4)] = (byte) Block.STONE;
+        assertEquals(WorldChunk.waterSurfaceHeight(4),
+                chunk.waterCornerHeight(5, 4, 4), 0.0001f);
     }
 
     /**
