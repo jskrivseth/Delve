@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.HashMap;
 import java.util.BitSet;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import static org.lwjgl.opengl.GL11.GL_LINES;
@@ -62,8 +63,20 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     public volatile boolean isBuilding = false;
     public volatile boolean isBuilt = false;
     public volatile boolean isGenerating = false;
+    /** Monotonic stamps of when the flags were set; watchdog fuel. */
+    volatile long isGeneratingSince;
+    volatile long isBuildingSince;
     public volatile boolean isGenerated = false;
     public volatile boolean isZombie = false;
+    /** Already handed to the destroyer list; keeps the sweeper O(1) per chunk. */
+    volatile boolean queuedForDestroy = false;
+    /**
+     * First sweep pass that found this chunk outside the keep area, or 0 while
+     * it is inside. Condemnation waits until the absence has lasted
+     * Game.OPT_CHUNK_RELEASE_GRACE_MS, so a brief contraction of the view does
+     * not throw away terrain that is about to be needed again.
+     */
+    volatile long offViewSinceNanos;
     public volatile boolean neighborsGenerated = false;
     public volatile boolean purgeVBO = false;
     public boolean serialize = false;
@@ -129,6 +142,15 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
      * </ul>
      */
     public volatile byte[] waterLevels;
+    /**
+     * Heap footprint of {@link #pendingMesh} while it waits for the GPU, and
+     * the running total across all chunks. A built mesh is duplicated work:
+     * CPU-side until glBufferData takes it, so an unbounded backlog is a heap
+     * leak shaped like geometry.
+     */
+    private long pendingMeshBytes;
+    private static final java.util.concurrent.atomic.AtomicLong PENDING_MESH_BYTES =
+            new java.util.concurrent.atomic.AtomicLong();
     /** Sparse occupancy index used by the active-world water snapshot. */
     private transient BitSet waterCellBits;
     public volatile int numVerts;
@@ -280,6 +302,9 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     }
 
     private void generateBlocks() {
+        if (!World.isCurrentChunk(this)) {
+            return;
+        }
         // A previously edited chunk is restored from disk instead of being
         // regenerated, otherwise the player's changes vanish when it reloads.
         if (this.load()) {
@@ -308,6 +333,9 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         // Climate + relief driven terrain. Temperature/moisture choose a simple
         // biome, while ruggedness controls whether an area is flat or mountainy.
         for (int x = 0; x < sizeX; x++) {
+            if ((x & 1) == 0 && !World.isCurrentChunk(this)) {
+                return;
+            }
             for (int z = 0; z < sizeZ; z++) {
                 int worldX = worldPosX + x;
                 int worldZ = worldPosY + z;
@@ -484,6 +512,9 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         }
 
         carveCaves(data, heightMap);
+        if (!World.isCurrentChunk(this)) {
+            return;
+        }
 
         if (worldPreset == WorldPreset.EARTH) {
             highest = plantTrees(data, heightMap, surfaceMap, biomeTypeMap, biomeBorderMap, tundraWeightMap, desertWeightMap, forestWeightMap, grassyWeightMap, ruggednessMap, wetlandMap, highest);
@@ -495,6 +526,9 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         this.blocks = flatten(data);
         this.waterLevels = new byte[blocks.length];
         for (int x = 0; x < sizeX; x++) {
+            if ((x & 1) == 0 && !World.isCurrentChunk(this)) {
+                return;
+            }
             for (int y = 0; y < sizeY; y++) {
                 for (int z = 0; z < sizeZ; z++) {
                     if (data[x][y][z] == Block.WATER) {
@@ -526,8 +560,14 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
      * replayBoundaryColumns() when that neighbour becomes publishable.
      */
     void enqueueGeneratedWaterOutlets() {
+        if (!World.isCurrentChunk(this)) {
+            return;
+        }
         int ceiling = Math.min(maxHeight, sizeY);
         for (int x = 0; x < sizeX; x++) {
+            if ((x & 1) == 0 && !World.isCurrentChunk(this)) {
+                return;
+            }
             for (int y = 1; y < ceiling; y++) {
                 for (int z = 0; z < sizeZ; z++) {
                     if (waterLevels[blockIndex(x, y, z)] != 1) {
@@ -562,6 +602,9 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
 
     private void carveCaves(int[][][] data, int[][] heightMap) {
         for (int x = 0; x < sizeX; x++) {
+            if ((x & 1) == 0 && !World.isCurrentChunk(this)) {
+                return;
+            }
             for (int z = 0; z < sizeZ; z++) {
                 int worldX = worldPosX + x;
                 int worldZ = worldPosY + z;
@@ -936,6 +979,9 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     private int placePlanetBoulders(int[][][] data, int[][] heightMap, int[][] surfaceMap,
                                     float[][] ruggednessMap, int preset, int highest) {
         for (int x = 2; x < sizeX - 2; x++) {
+            if ((x & 1) == 0 && !World.isCurrentChunk(this)) {
+                return highest;
+            }
             for (int z = 2; z < sizeZ - 2; z++) {
                 int y = heightMap[x][z];
                 if (y < 2 || y >= sizeY - 6) {
@@ -1272,6 +1318,9 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                                 float[][] wetlandMap,
                                 int highest) {
         for (int x = 1; x < sizeX - 1; x++) {
+            if ((x & 1) == 0 && !World.isCurrentChunk(this)) {
+                return highest;
+            }
             for (int z = 1; z < sizeZ - 1; z++) {
                 int y = heightMap[x][z];
                 if (y < 1 || y >= sizeY - 2) {
@@ -1442,6 +1491,9 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                            float[][] wetlandMap,
                            int highest) {
         for (int x = 2; x < sizeX - 2; x++) {
+            if ((x & 1) == 0 && !World.isCurrentChunk(this)) {
+                return highest;
+            }
             for (int z = 2; z < sizeZ - 2; z++) {
                 int y = heightMap[x][z];
                 int surface = surfaceMap[x][z];
@@ -2168,10 +2220,12 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             // this attempt was dropped and the chunk stayed stale (stale mesh
             // and stale light) until some later edit happened to re-trigger it.
             this.meshIsStale = true;
+            this.isBuilding = false;
             return;
         }
         if (!this.isGenerated) {
             Game.consoleMsg("Attempt to build a mesh for a chunk that is not generated.. ");
+            this.isBuilding = false;
             return;
         }
         // Decide seam paving before any corner height is sampled: a neighbour
@@ -2299,6 +2353,12 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             }
             this.pendingMesh = new PendingMesh(buffer, indices, pendingVerts,
                     pendingOpaqueVerts, pendingIndices, pendingOpaqueIndices);
+            // Untouched until it reaches the GPU: thousands of these queued at
+            // once is how a fast flight ends up spending most of the heap on
+            // geometry the card has not been given yet.
+            this.pendingMeshBytes = (long) buffer.capacity() * Float.BYTES
+                    + (long) indices.capacity() * Integer.BYTES;
+            PENDING_MESH_BYTES.addAndGet(this.pendingMeshBytes);
         } finally {
             World.BLOCK_LOCK.readLock().unlock();
         }
@@ -2543,6 +2603,20 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         return Block.isTransparent(neighborType) && neighborType != type;
     }
 
+    public static void setPendingMeshTotalBytes(long delta) {
+        PENDING_MESH_BYTES.addAndGet(delta);
+    }
+
+    /** Heap bytes currently holding meshes that have not reached the GPU. */
+    public static long pendingMeshBytesTotal() {
+        return PENDING_MESH_BYTES.get();
+    }
+
+    /** World teardown forgets every chunk at once; the tally must follow. */
+    static void resetPendingMeshAccounting() {
+        PENDING_MESH_BYTES.set(0);
+    }
+
     public boolean hasPendingMesh() {
         return this.pendingMesh != null;
     }
@@ -2553,6 +2627,8 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             return;
         }
         this.pendingMesh = null;
+        PENDING_MESH_BYTES.addAndGet(-this.pendingMeshBytes);
+        this.pendingMeshBytes = 0;
         buildVBO(mesh);
         if (mesh != PendingMesh.EMPTY && this.seamPaved
                 && this.seamPavedRetries < MAX_SEAM_PAVED_MESH_RETRIES) {
@@ -2705,6 +2781,13 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     }
 
     public void deleteVBO() {
+        // A mesh discarded without ever being uploaded must still give its
+        // bytes back to the accounting, or the total creeps upward forever.
+        if (this.pendingMesh != null) {
+            this.pendingMesh = null;
+            PENDING_MESH_BYTES.addAndGet(-this.pendingMeshBytes);
+            this.pendingMeshBytes = 0;
+        }
         Renderer.deleteChunkMesh(this);
         this.numVerts = 0;
         // purgeVBO used to stay true forever after this ran, and isBuilt
@@ -2763,6 +2846,10 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         long backdateNanos = (long) (currentAlpha * fadeInDurationNanos());
         this.destroyRequestedAtNanos = -1L;
         this.meshReadyAtNanos = System.nanoTime() - backdateNanos;
+        // The player came back before the sweep collected it: the chunk leaves
+        // the destroy list for real now, so the sweeper must be free to
+        // re-evaluate it (and re-queue it) on a later pass.
+        this.queuedForDestroy = false;
     }
 
     /** True once a requested destroy fade has fully played out -- only then is it
@@ -2790,6 +2877,34 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             return clamp01(t);
         }
         return 1.0f;
+    }
+
+    /**
+     * Fade-in at a given distance from the camera.
+     *
+     * A chunk's own fade-in duration is fixed, which makes far terrain emerge
+     * just as abruptly as the ground at the player's feet even though it is
+     * arriving twenty rings away. Scaling the duration with the ring -- quadr-
+     * atically, so the ramp is gentle close in and unhurried far out -- reads
+     * as terrain being painted outward from the player rather than a lot of
+     * tiles flashing up at once.
+     */
+    public float lifecycleFadeAlpha(int ring) {
+            if (this.destroyRequestedAtNanos >= 0 || this.meshReadyAtNanos < 0) {
+                return lifecycleFadeAlpha();
+            }
+            long now = System.nanoTime();
+            float duration = fadeInDurationNanos() * fadeInRingScale(ring);
+            return clamp01((now - this.meshReadyAtNanos) / duration);
+    }
+
+    /** Fade-in duration multiplier for a ring: 1 next door, quadratically longer out. */
+    public static float fadeInRingScale(int ring) {
+            if (Game.OPT_CHUNK_FADE_RING_SQUARED <= 0f || ring <= 0) {
+                return 1.0f;
+            }
+            float scaled = 1.0f + ((float) ring * (float) ring) * Game.OPT_CHUNK_FADE_RING_SQUARED;
+            return Math.min(Math.max(1.0f, Game.OPT_CHUNK_FADE_RING_MAX_SCALE), scaled);
     }
 
     /**
@@ -2826,8 +2941,15 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         }
         this.isRefreshing = true;
         this.isBuilding = true;
+        this.isBuildingSince = System.nanoTime();
         // Reuse the shared pool rather than spawning a raw Thread per rebuild.
-        World.threadPool.execute(new WorldChunkBufferBuilderThread(this));
+        try {
+            World.submitChunkTask(new WorldChunkBufferBuilderThread(this), this);
+        } catch (RejectedExecutionException e) {
+            this.isRefreshing = false;
+            this.isBuilding = false;
+            World.enterChunkSubmitBackoff();
+        }
     }
 
     private static final class PendingMesh {

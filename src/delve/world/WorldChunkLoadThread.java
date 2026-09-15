@@ -20,6 +20,10 @@ public class WorldChunkLoadThread implements Runnable {
     @Override
     public void run() {
         synchronized (chunkToProcess) {
+            if (!World.isChunkInCurrentBounds(chunkToProcess)) {
+                chunkToProcess.isGenerating = false;
+                return;
+            }
             // Always go through generate(). It already restores a saved chunk
             // when one exists and falls back to noise when it does not, and it
             // is what marks the chunk generated. Calling load() directly left

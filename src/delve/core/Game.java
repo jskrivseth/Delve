@@ -90,7 +90,40 @@ public class Game {
     public static boolean OPT_DRAW_WIRES = false;
     public static int OPT_DRAW_DISTANCE = 10;
     public static int OPT_MIN_DRAW_DISTANCE = 2;
-    public static int OPT_MAX_DRAW_DISTANCE = Math.max(4, (int) Util.logb(Util.getAvailableMemory() / 104857600.0, 1.10));
+    /**
+     * Largest selectable render distance, fitted to the heap.
+     *
+     * The previous estimate was log-linear in memory available at boot, which
+     * drifted exactly where it mattered: the loaded region grows with the
+     * SQUARE of the distance, so a radius fitted at r=10 badly overshoots at
+     * r=46. Fit the loaded square to about half the heap instead, using a
+     * measured ~512 KB of heap per loaded chunk (voxels, water, sky light and
+     * the pending mesh buffer waiting to reach the GPU).
+     */
+    public static int OPT_MAX_DRAW_DISTANCE = maxDrawDistanceForHeap();
+    /**
+     * Absolute ceiling on view distance, whatever the heap can technically
+     * carry. Beyond ~32 rings the extra distance is bought with chunk
+     * residency, teardown churn and streaming latency that the eye cannot
+     * tell apart from the last few rings -- so the setting stops there.
+     */
+    public static final int VIEW_DISTANCE_CEILING = 32;
+
+    /** Largest render distance the current heap ceiling can carry. */
+    public static int maxDrawDistanceForHeap() {
+        final long HEAP_BYTES_PER_CHUNK = 512L * 1024L;
+        long budget = (long) (Util.getMaxMemory() * 0.5);
+        long chunksFit = Math.max(9, budget / HEAP_BYTES_PER_CHUNK);
+        int side = (int) Math.floor(Math.sqrt((double) chunksFit));
+        int radius = (side - 1) / 2;
+        return Math.max(2, Math.min(VIEW_DISTANCE_CEILING, radius));
+    }
+
+    /** Refreshes the ceiling after e.g. a heap change; returns the new cap. */
+    public static int recomputeMaxDrawDistance() {
+        OPT_MAX_DRAW_DISTANCE = maxDrawDistanceForHeap();
+        return OPT_MAX_DRAW_DISTANCE;
+    }
     public static boolean OPT_VSYNC = true;
     public static int OPT_CHUNK_SERIALIZE_RADIUS_MULTIPLIER = 1;
     public static boolean OPT_AMBIENT_OCCLUSION = true;
@@ -118,6 +151,26 @@ public class Game {
     /** New terrain becomes readable quickly; fade-out intentionally remains
      *  slower through OPT_CHUNK_FADE_DURATION_MS. */
     public static float OPT_CHUNK_FADE_IN_DURATION_MS = 180.0f;
+    /**
+     * Terrain emerges quickly next to the player and gradually slower with
+     * distance, so the horizon paints outward instead of snapping in: a
+     * chunk's fade-in takes OPT_CHUNK_FADE_IN_DURATION_MS multiplied by
+     * 1 + (ring * ring) * this coefficient. At the default, ring 8 takes 1.2x,
+     * ring 16 takes 1.9x and the outermost rings 4.6x. Zero disables the
+     * distance term entirely (flat fade, as before).
+     */
+    public static float OPT_CHUNK_FADE_RING_SQUARED = 0.0035f;
+    /** Upper bound on the distance multiplier, so far rings crawl but land. */
+    public static float OPT_CHUNK_FADE_RING_MAX_SCALE = 6.0f;
+    /**
+     * How long a chunk must stay outside the keep area before it is condemned.
+     * Pulling the view in temporarily (the memory governor, a sharp turn,
+     * flying backwards) therefore frees nothing, and the terrain is still there
+     * when the view returns -- instead of the whole world flashing and being
+     * repainted from the centre out. Under memory pressure the grace period
+     * collapses, because then the memory genuinely has to come back.
+     */
+    public static float OPT_CHUNK_RELEASE_GRACE_MS = 10_000.0f;
     /** Fraction of draw distance devoted to the smooth fade at the edge of
      *  view (higher = wider, more gradual falloff into fog/sky well before
      *  the actual draw-distance boundary, instead of a hard line). Tuned via
@@ -231,6 +284,13 @@ public class Game {
      * Debug
      */
     public static boolean DEBUG_DRAW_CAMERA_RAY = false;
+    /**
+     * Automated streaming soak test ({@code -Ddelve.stress=true}): forces the
+     * user-reported worst case -- max draw distance, vsync off, flight -- and
+     * drives the camera at ~90 blocks/s so ChunkPipelineMonitor can gather
+     * evidence without a player.
+     */
+    public static final boolean STRESS_FLIGHT = Boolean.getBoolean("delve.stress");
     /** 0 and 1 are midnight, 0.25 sunrise, 0.5 noon, 0.75 sunset. */
     public static volatile float TIME_OF_DAY = 0.30f;
     /** Selectable day lengths in real seconds. */
@@ -411,8 +471,9 @@ public class Game {
             }
         }
         // Profiling runs need to be repeatable, and stopping at the title screen
-        // to click through to a world makes that awkward.
-        if (flag("delve.autoplay")) {
+        // to click through to a world makes that awkward. The streaming stress
+        // soak implies the same thing: nobody is at the keyboard.
+        if (flag("delve.autoplay") || STRESS_FLIGHT) {
             long seed = Long.getLong("delve.seed", new java.util.Random().nextLong());
             INSTANCE.startWorld(SaveGame.create(SaveGame.nextDefaultName(), seed, 0));
         }
@@ -512,6 +573,20 @@ public class Game {
         this.APP_FULLSCREEN = fullscreen;
         try {
             init();
+            // The ceiling may differ from the static guess once -Xmx is settled,
+            // so a default (or stressed value) above it is pulled back here.
+            OPT_MAX_DRAW_DISTANCE = maxDrawDistanceForHeap();
+            if (OPT_DRAW_DISTANCE > OPT_MAX_DRAW_DISTANCE) {
+                OPT_DRAW_DISTANCE = OPT_MAX_DRAW_DISTANCE;
+            }
+            if (STRESS_FLIGHT) {
+                OPT_DRAW_DISTANCE = Math.max(OPT_DRAW_DISTANCE, OPT_MAX_DRAW_DISTANCE);
+                OPT_VSYNC = false;
+                WINDOW.setVSync(false);
+                GAME_FLYMODE = true;
+                System.out.println("[stress] automated flight enabled "
+                        + "(draw distance " + OPT_DRAW_DISTANCE + ", vsync off)");
+            }
 
             getDelta();
             LAST_FRAMES_PER_SECOND = getTime();
@@ -588,6 +663,39 @@ public class Game {
         if (!MENU_OPEN && !DEV_MENU_OPEN) {
             GAME_CAMERA.update();
             GAME_WORLD.update();
+            ChunkPipelineMonitor.tick();
+            if (STRESS_FLIGHT) {
+                stressFlyTick();
+            }
+        }
+    }
+
+    private long stressNextHopAtNanos;
+    private long stressHops;
+
+    /**
+     * Moves the camera ~90 blocks/second along a gently wandering course, so
+     * the pipeline is continuously handed brand-new chunks the way fast fly
+     * mode does -- but reproducibly, and far longer than a wrist lasts.
+     */
+    private void stressFlyTick() {
+        long now = System.nanoTime();
+        if (now - stressNextHopAtNanos < 200_000_000L) {
+            return;
+        }
+        stressNextHopAtNanos = now;
+        GAME_FLYMODE = true;
+        stressHops++;
+        double meander = Math.sin(stressHops * 0.055) * 0.8;
+        // Reversal term, roughly a minute per cycle: half of every soak flies
+        // backwards. That is where condemned chunks pour back into view and
+        // where teardown stutter on the render thread is most visible.
+        double reversal = Math.cos(stressHops * 0.021);
+        GAME_CAMERA.position.x += Math.cos(meander) * 18.0 * reversal;
+        GAME_CAMERA.position.z += Math.sin(meander) * 18.0 + 3.0;
+        double skyFloor = WorldChunk.SEA_LEVEL + 48;
+        if (GAME_CAMERA.position.y < skyFloor) {
+            GAME_CAMERA.position.y = skyFloor;
         }
     }
 
@@ -644,6 +752,7 @@ public class Game {
             DEV_MENU.render();
         }
         PerfOverlay.render();
+        Toast.render();
         GpuProfiler.end(GpuProfiler.Zone.HUD);
         GpuProfiler.endFrame();
     }
@@ -760,6 +869,9 @@ public class Game {
         MESSAGES[2] = MESSAGES[1];
         MESSAGES[1] = MESSAGES[0];
         MESSAGES[0] = message;
+        // MESSAGES itself is a log buffer with no renderer attached; Toast is
+        // what actually puts notices in front of the player.
+        Toast.show(message);
     }
 
     private static void cleanup() {

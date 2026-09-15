@@ -4,6 +4,7 @@ import delve.render.GpuProfiler.Zone;
 import delve.render.ShaderProfiler.Probe;
 import delve.core.Game;
 import delve.core.FrameStats;
+import delve.world.ChunkPipelineMonitor;
 import delve.render.GpuProfiler;
 import delve.world.Weather;
 
@@ -207,6 +208,41 @@ public final class PerfOverlay {
         lines.add(row("god rays offscreen", Game.OFFSCREEN_QUALITY_LABELS[Game.OPT_GOD_RAYS_OFFSCREEN_QUALITY]));
         lines.add(row("draw distance", String.valueOf(Game.OPT_DRAW_DISTANCE)));
         lines.add(row("vsync / AA", onOff(Game.OPT_VSYNC) + " / " + onOff(Game.OPT_ANTIALIASING)));
+        appendStreaming();
+    }
+
+    /**
+     * Chunk streaming and memory pressure -- the numbers that explain missing
+     * or flickering terrain, which otherwise take a console window and a log
+     * file to diagnose mid-flight.
+     */
+    private static void appendStreaming() {
+        lines.add("");
+        lines.add("STREAMING");
+
+        long maxHeap = delve.core.Util.getMaxMemory();
+        long usedHeap = delve.core.Util.getMaxMemory() - delve.core.Util.getAvailableMemory();
+        lines.add(row("heap", (usedHeap >> 20) + " / " + (maxHeap >> 20) + " MB"
+                + (Game.MEMORY_BOUND ? "  LOW" : "")));
+
+        int view = delve.world.World.effectiveRenderDistance();
+        int asked = Game.OPT_DRAW_DISTANCE;
+        lines.add(row("view distance", view == asked
+                ? String.valueOf(view)
+                : view + " / " + asked + (delve.world.World.memoryGovernorHolding() ? "  governed" : "")));
+
+        lines.add(row("chunk tasks", delve.world.World.pendingChunkTasks() + " / "
+                + delve.world.World.maxQueuedChunkTasks() + "   workers "
+                + delve.world.World.busyChunkWorkers() + "/" + delve.world.World.totalChunkWorkers()));
+        lines.add(row("built / uploaded",
+                ChunkPipelineMonitor.snapshotSubmitsPerSecond + "/s  "
+                        + ChunkPipelineMonitor.snapshotCompletionsPerSecond + "/s"));
+        lines.add(row("chunks", ChunkPipelineMonitor.snapshotResidentChunks + " resident, "
+                + ChunkPipelineMonitor.snapshotZombieChunks + " retiring"));
+        lines.add(row("mesh heap", (delve.world.WorldChunk.pendingMeshBytesTotal() >> 20) + " MB"));
+        lines.add(row("drawn", delve.world.World.drawnChunksThisFrame + ", frontier "
+                + delve.world.World.lastReadyFrontier + ", holes "
+                + ChunkPipelineMonitor.snapshotMissingNearField));
     }
 
     private static void appendSky() {

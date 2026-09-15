@@ -129,7 +129,9 @@ public class FirstPersonCamera extends Camera {
     public void setup(int width, int height) {
         // The draw distance is a square of chunks, so the far plane has to reach the
         // square's diagonal (~1.42x) or the plane slices visible chunks in half.
-        CAMERA_FAR_PLANE = (Game.OPT_DRAW_DISTANCE + 1) * WorldChunk.sizeX * 1.5f;
+        // Follows the effective radius so a horizon pulled in by the memory
+        // governor tightens the clip plane too, buying depth precision back.
+        CAMERA_FAR_PLANE = (World.effectiveRenderDistance() + 1) * WorldChunk.sizeX * 1.5f;
         if (CAMERA_FAR_PLANE < CAMERA_NEAR_PLANE + 1.0f) {
             CAMERA_FAR_PLANE = CAMERA_NEAR_PLANE + 1.0f;
         }

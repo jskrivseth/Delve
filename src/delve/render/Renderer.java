@@ -1551,8 +1551,11 @@ public class Renderer {
         chunkShader.setVector3f("fogColor", fogR, fogG, fogB);
         // Keep most fog behavior in world-space units so changing draw
         // distance does not erase the atmosphere. Draw distance only caps the
-        // far blend used to hide horizon pop.
-        float fogRange = Game.OPT_DRAW_DISTANCE * (float) WorldChunk.sizeX;
+        // far blend used to hide horizon pop. Uses the EFFECTIVE radius: when
+        // the memory governor pulls the horizon in, the fog has to shorten with
+        // it or the loaded edge shows through as a hard wall of terrain.
+        int viewRadius = World.effectiveRenderDistance();
+        float fogRange = viewRadius * (float) WorldChunk.sizeX;
         float baseStart = lerp(150.0f, 125.0f, duskFactor);
         float baseEnd = lerp(380.0f, 330.0f, duskFactor);
         // Clamping fogEnd to this fixed baseEnd left a huge flat, fully-fogged
@@ -1563,7 +1566,7 @@ public class Renderer {
         // the actual boundary. Below ~12 chunks there is no such gap -- the
         // fixed atmospheric range already sits inside the visible area -- so
         // leave the small-distance behavior alone.
-        float fogEnd = Game.OPT_DRAW_DISTANCE <= 12
+        float fogEnd = viewRadius <= 12
                 ? Math.min(baseEnd, fogRange * 0.985f)
                 : Math.min(Math.max(baseEnd, fogRange * 0.80f), fogRange * 0.985f);
         float fogStart = Math.min(baseStart, fogEnd - 40.0f);
@@ -1571,7 +1574,7 @@ public class Renderer {
         if (preset == WorldPreset.VENUS) {
             fogStart = Math.min(28.0f, fogRange * 0.30f);
             fogEnd = Math.min(120.0f, fogRange * 0.56f);
-        } else if (preset == WorldPreset.EARTH && Game.OPT_DRAW_DISTANCE >= 16) {
+        } else if (preset == WorldPreset.EARTH && viewRadius >= 16) {
             // Keep far terrain from flattening into a uniform white-gray wall.
             fogEnd = Math.min(fogRange * 0.99f, fogEnd + fogRange * 0.10f);
             fogStart = Math.min(fogStart, fogEnd - 60.0f);
