@@ -153,20 +153,54 @@ class WorldRenderLifecycleTest {
     }
 
     @Test
-    void frontierFadesAcrossABandInsteadOfSnappingOff() {
-        // A hard cutoff at the ready frontier made whole shells of far terrain
-        // pop on and off as the frontier breathed during streaming.
-        assertEquals(1.0f, World.frontierFadeAlpha(5, 5));
-        assertEquals(1.0f, World.frontierFadeAlpha(0, 5));
-        float first = World.frontierFadeAlpha(6, 5);
-        assertTrue(first < 1.0f, "first ring past the frontier must start dimming");
-        float previous = first;
-        for (int radius = 7; radius < 13; radius++) {
-            float alpha = World.frontierFadeAlpha(radius, 5);
-            assertTrue(alpha < previous, "dimming must progress outward");
-            previous = alpha;
+    void terrainBehindAnUnfinishedCellIsHiddenLocallyNotByGlobalCurtain() throws Exception {
+        // Centre chunk (2000,2000); subject sits six rings north of it.
+        // Frustum culling is orthogonal to what is under test and would
+        // otherwise veto the draws for reasons of its own.
+        boolean cullChunks = Game.OPT_CULL_CHUNKS;
+        Game.OPT_CULL_CHUNKS = false;
+        try {
+            DrawSpy far = readyChunkAt(2000, 2006);
+            // Nobody between the camera and it: hold it back, so it cannot look
+            // like an island floating over a hole.
+            visit(far, 6);
+            assertEquals(0, far.draws, "unsupported terrain must wait");
+
+            // Fill in the cell on its camera side: it may draw now, even though
+            // rings elsewhere are still incomplete -- that is the point of
+            // local masking, and what a whole-world frontier got wrong.
+            DrawSpy support = readyChunkAt(2000, 2005);
+            visit(far, 6);
+            assertEquals(1, far.draws, "terrain behind finished neighbours must draw");
+
+            // The near field is never withheld, however ragged things are
+            // beyond it -- a hole behind the player must not darken the ground
+            // they are standing on.
+            DrawSpy foothold = readyChunkAt(2003, 2000);
+            visit(foothold, 3);
+            assertEquals(1, foothold.draws, "near-field terrain must always draw");
+        } finally {
+            Game.OPT_CULL_CHUNKS = cullChunks;
         }
-        assertEquals(0.0f, World.frontierFadeAlpha(13, 5), "band has a finite end");
+    }
+
+    private DrawSpy readyChunkAt(int x, int z) {
+        DrawSpy spy = new DrawSpy();
+        spy.posX = x;
+        spy.posY = z;
+        spy.isGenerated = true;
+        spy.isBuilt = true;
+        spy.vboVertexHandle = 1;
+        spy.vaoHandle = 1;
+        spy.numVerts = 24;
+        Arrays.fill(spy.blocks, (byte) Block.STONE);
+        registered.add(spy);
+        World.registerChunk(spy);
+        return spy;
+    }
+
+    private void visit(WorldChunk chunk, int ring) throws Exception {
+        renderChunk.invoke(world, chunk.posX, chunk.posY, 2000, 2000, ring, 20);
     }
 
     @Test

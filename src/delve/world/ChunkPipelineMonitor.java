@@ -84,9 +84,11 @@ public final class ChunkPipelineMonitor {
         boolean stalled = !parked && (taskAge >= STALL_WARN_NANOS
                 && (pending > 0 || busy > 0)
                 // Sweepers alone keep the generic heartbeat alive; if no real
-                // chunk work has finished for a long stretch while workers are
-                // occupied, they are occupied by something that never returns.
-                || chunkTaskAge >= STUCK_CHUNK_TASK_NANOS && busy > 0);
+                // chunk work has finished for a long stretch WHILE demand is
+                // queued and workers are occupied, they are occupied by
+                // something that never returns. (A fully loaded world sitting
+                // still has no chunk work to finish, so it must not alarm.)
+                || chunkTaskAge >= STUCK_CHUNK_TASK_NANOS && busy > 0 && pending > 0);
 
         int[] near = new int[STATE_COUNT];
         int[] far = new int[STATE_COUNT];
@@ -128,6 +130,7 @@ public final class ChunkPipelineMonitor {
                 .append('/').append(viewRadius)
                 .append(Game.OPT_DRAW_DISTANCE != viewRadius
                         ? " (want " + Game.OPT_DRAW_DISTANCE + ")" : "")
+                .append(" drawn=").append(World.drawnChunksThisFrame)
                 .append(" missingNear=").append(missingNear)
                 .append(" meshHeap=").append(WorldChunk.pendingMeshBytesTotal() >>> 20).append("MB")
                 .append(" mem=").append(Game.MEMORY_BOUND ? "LOW" : "ok")

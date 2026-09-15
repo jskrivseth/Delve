@@ -654,9 +654,13 @@ public class Game {
         stressNextHopAtNanos = now;
         GAME_FLYMODE = true;
         stressHops++;
-        double heading = Math.sin(stressHops * 0.055) * 0.8;
-        GAME_CAMERA.position.x += Math.cos(heading) * 18;
-        GAME_CAMERA.position.z += Math.sin(heading) * 18;
+        double meander = Math.sin(stressHops * 0.055) * 0.8;
+        // Reversal term, roughly a minute per cycle: half of every soak flies
+        // backwards. That is where condemned chunks pour back into view and
+        // where teardown stutter on the render thread is most visible.
+        double reversal = Math.cos(stressHops * 0.021);
+        GAME_CAMERA.position.x += Math.cos(meander) * 18.0 * reversal;
+        GAME_CAMERA.position.z += Math.sin(meander) * 18.0 + 3.0;
         double skyFloor = WorldChunk.SEA_LEVEL + 48;
         if (GAME_CAMERA.position.y < skyFloor) {
             GAME_CAMERA.position.y = skyFloor;

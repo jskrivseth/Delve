@@ -22,6 +22,12 @@ public class WorldInactiveChunkSweeperThread implements Runnable {
      * the far horizon strobes as the camera crosses chunk boundaries.
      */
     private static final int SWEEP_MARGIN_RINGS = 6;
+    /**
+     * Condemnation pauses while this many chunks wait to be freed, and resumes
+     * once the queue has drained (the sweep itself is the only producer, so no
+     * separate low-water mark is needed: the check re-runs every sweep).
+     */
+    private static final int CONDEMN_BACKLOG_HIGH_WATER = 1024;
 
     ArrayList<WorldChunk> chunks;
     int x, y, radius;
@@ -36,6 +42,21 @@ public class WorldInactiveChunkSweeperThread implements Runnable {
 
     @Override
     public void run() {
+        // Condemnation has to be paced against freeing, not against the sweep
+        // interval. Flying fast condemns far faster than the renderer can
+        // afford to tear things down; without this the queue grew into the
+        // tens of thousands, and the render thread spent its frames on
+        // glDeleteBuffers while the terrain visibly stuttered.
+        int pendingTeardown;
+        synchronized (World.destroyChunks) {
+            pendingTeardown = World.destroyChunks.size();
+        }
+        if (pendingTeardown > CONDEMN_BACKLOG_HIGH_WATER) {
+            World.SWEEPER_IS_SLEEPING = true;
+            World.WAKE_SWEEPER = true;
+            return;
+        }
+
         int outerRadius = keepRadius(radius, Game.OPT_CHUNK_SERIALIZE_RADIUS_MULTIPLIER);
         // Chunk coordinates are unbounded signed positions. World.sizeX/sizeY
         // are the world's BLOCK-space dimensions, so clamping chunk-space
