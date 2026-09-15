@@ -1623,15 +1623,12 @@ public class Renderer {
         if (opaque > 0) {
             setChunkModel(chunk);
             chunkShader.setFloat("alphaOverride", chunk.renderAlpha);
-            if (chunk.containsTransparentBlocks) {
-                glDisable(GL_CULL_FACE);
-            }
+            glEnable(GL_CULL_FACE);
+            glCullFace(GL_BACK);
+            glFrontFace(GL_CCW);
             glBindVertexArray(chunk.vaoHandle);
             glDrawElements(GL_TRIANGLES, opaque, GL_UNSIGNED_INT, 0L);
             glBindVertexArray(0);
-            if (chunk.containsTransparentBlocks) {
-                glEnable(GL_CULL_FACE);
-            }
             chunkShader.setFloat("alphaOverride", 1.0f);
         }
 

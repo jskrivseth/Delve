@@ -93,20 +93,21 @@ public class WorldChunkTest {
     @Test
     public void testWriteCrossSpriteEmitsTwoPlanesWithIndexedTriangles() {
         FloatBuffer verts = org.lwjgl.BufferUtils.createFloatBuffer(2 * 4 * Block.FLOATS_PER_VERTEX);
-        IntBuffer inds = org.lwjgl.BufferUtils.createIntBuffer(2 * Block.INDICES_PER_FACE);
+        IntBuffer inds = org.lwjgl.BufferUtils.createIntBuffer(4 * Block.INDICES_PER_FACE);
 
         Block.writeCrossSprite(verts, inds, 1, 33, 2, Block.TALL_GRASS, OPEN_SKY);
 
         assertEquals(2 * 4 * Block.FLOATS_PER_VERTEX, verts.position());
-        assertEquals(2 * Block.INDICES_PER_FACE, inds.position());
+        assertEquals(4 * Block.INDICES_PER_FACE, inds.position());
 
         inds.flip();
         int[] indexList = new int[inds.remaining()];
         inds.get(indexList);
         assertArrayEquals(
-                new int[]{0, 1, 2, 2, 3, 0, 4, 5, 6, 6, 7, 4},
+                new int[]{0, 1, 2, 2, 3, 0, 2, 1, 0, 0, 3, 2,
+                        4, 5, 6, 6, 7, 4, 6, 5, 4, 4, 7, 6},
                 indexList,
-                "two crossed planes should emit four indexed triangles without reversed duplicates");
+                "two crossed planes should emit both windings for culling-safe sprites");
     }
 
     @Test
