@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class WaterSimulationTest {
@@ -14,7 +15,10 @@ class WaterSimulationTest {
 
     @AfterEach
     void tearDown() {
-        chunks.forEach(World::unregisterChunk);
+        chunks.forEach(chunk -> {
+            World.unregisterChunk(chunk);
+            World.chunks.remove(chunk);
+        });
         World.clearWaterUpdates();
     }
 
@@ -38,6 +42,84 @@ class WaterSimulationTest {
         assertEquals(0, chunk.waterLevel(4, 7, 4));
         assertEquals(7, chunk.waterLevel(3, 8, 4));
         assertEquals(8, chunk.waterLevel(4, 8, 4));
+    }
+
+    @Test
+    void globalPassScansUnqueuedWaterDownThenOutAcrossTerrain() {
+        WorldChunk chunk = chunk(0, 0);
+        World.chunks.add(chunk);
+        chunk.blocks[WorldChunk.blockIndex(2, 4, 4)] = (byte) Block.STONE;
+        chunk.blocks[WorldChunk.blockIndex(3, 4, 4)] = (byte) Block.STONE;
+        chunk.blocks[WorldChunk.blockIndex(4, 4, 4)] = (byte) Block.STONE;
+        chunk.blocks[WorldChunk.blockIndex(5, 4, 4)] = (byte) Block.STONE;
+        chunk.setWaterLevel(4, 8, 4, 8);
+
+        int evaluated = World.processGlobalWaterUpdates();
+
+        assertTrue(evaluated > 0, "active chunk water was not evaluated");
+        assertEquals(7, chunk.waterLevel(4, 7, 4));
+        assertEquals(7, chunk.waterLevel(4, 5, 4));
+        assertEquals(6, chunk.waterLevel(3, 5, 4));
+
+        World.processGlobalWaterUpdates();
+
+        assertEquals(6, chunk.waterLevel(3, 5, 4));
+        assertEquals(5, chunk.waterLevel(2, 5, 4));
+    }
+
+    @Test
+    void globalPassResumesAtItsCursorWithinTheSnapshot() {
+        WorldChunk chunk = chunk(0, 0);
+        World.chunks.add(chunk);
+        chunk.setWaterLevel(4, 8, 4, 8);
+        chunk.setWaterLevel(8, 8, 4, 8);
+
+        assertEquals(1, World.processGlobalWaterUpdates(1));
+        assertEquals(1, World.processGlobalWaterUpdates(1));
+    }
+
+    @Test
+    void adjacentWaterNeighborhoodsReachAStableFixedPoint() {
+        WorldChunk chunk = chunk(0, 0);
+        World.chunks.add(chunk);
+        for (int x = 1; x < 15; x++) {
+            chunk.blocks[WorldChunk.blockIndex(x, 4, 4)] = (byte) Block.STONE;
+        }
+        chunk.setWaterLevel(4, 8, 4, 8);
+        chunk.setWaterLevel(11, 8, 4, 8);
+
+        for (int i = 0; i < 20; i++) {
+            World.processGlobalWaterUpdates(1000);
+        }
+        byte[] settled = chunk.waterLevels.clone();
+        for (int i = 0; i < 20; i++) {
+            World.processGlobalWaterUpdates(1000);
+        }
+
+        assertArrayEquals(settled, chunk.waterLevels,
+                "adjacent water neighborhoods kept changing after settling");
+    }
+
+    @Test
+    void adjacentNeighborhoodsSettleWithPartialCursorPasses() {
+        WorldChunk chunk = chunk(0, 0);
+        World.chunks.add(chunk);
+        for (int x = 1; x < 15; x++) {
+            chunk.blocks[WorldChunk.blockIndex(x, 4, 4)] = (byte) Block.STONE;
+        }
+        chunk.setWaterLevel(4, 8, 4, 8);
+        chunk.setWaterLevel(11, 8, 4, 8);
+
+        for (int i = 0; i < 1000; i++) {
+            World.processGlobalWaterUpdates(1);
+        }
+        byte[] settled = chunk.waterLevels.clone();
+        for (int i = 0; i < 1000; i++) {
+            World.processGlobalWaterUpdates(1);
+        }
+
+        assertArrayEquals(settled, chunk.waterLevels,
+                "partial cursor passes kept adjacent neighborhoods mutating");
     }
 
     @Test

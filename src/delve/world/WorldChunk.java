@@ -18,6 +18,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.HashMap;
+import java.util.BitSet;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import static org.lwjgl.opengl.GL11.GL_LINES;
@@ -128,6 +129,8 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
      * </ul>
      */
     public volatile byte[] waterLevels;
+    /** Sparse occupancy index used by the active-world water snapshot. */
+    private transient BitSet waterCellBits;
     public volatile int numVerts;
     public volatile boolean containsTransparentBlocks;
     /** Vertices in the leading opaque range; the remainder is translucent. */
@@ -185,12 +188,37 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         if (old == level) {
             return false;
         }
+        ensureWaterCellBits();
         waterLevels[index] = (byte) level;
+        if (level == 0) {
+            waterCellBits.clear(index);
+        } else {
+            waterCellBits.set(index);
+        }
         blocks[index] = (byte) (level == 0 ? Block.AIR : Block.WATER);
         meshIsStale = true;
         isModified = true;
         noteBlockPlacedAt(y);
         return true;
+    }
+
+    private void ensureWaterCellBits() {
+        if (waterCellBits == null) {
+            rebuildWaterCellIndex();
+        }
+    }
+
+    void rebuildWaterCellIndex() {
+        waterCellBits = new BitSet(blocks.length);
+        for (int i = 0; i < waterLevels.length; i++) {
+            if (waterLevels[i] != 0) {
+                waterCellBits.set(i);
+            }
+        }
+    }
+
+    int nextWaterCellIndex(int fromIndex) {
+        return waterCellBits == null ? -1 : waterCellBits.nextSetBit(fromIndex);
     }
 
     private static long fadeInDurationNanos() {
@@ -224,6 +252,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     public WorldChunk(int x, int y) {
         blocks = new byte[sizeX * sizeY * sizeZ];
         waterLevels = new byte[blocks.length];
+        waterCellBits = new BitSet(blocks.length);
         posX = x;
         posY = y;
         worldPosX = (int) posX * sizeX;
@@ -477,6 +506,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                 }
             }
         }
+        rebuildWaterCellIndex();
         this.maxHeight = Math.min(highest + 1, sizeY);
 
         this.isGenerated = true;
@@ -2887,6 +2917,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                 }
             }
         }
+        rebuildWaterCellIndex();
         recomputeMaxHeight();
         return true;
     }

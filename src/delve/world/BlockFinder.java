@@ -44,6 +44,7 @@ public class BlockFinder {
                         chunk.blocks[WorldChunk.blockIndex(localX, localY, localZ)] = (byte) type;
                         int level = type == Block.WATER ? 8 : 0;
                         chunk.waterLevels[WorldChunk.blockIndex(localX, localY, localZ)] = (byte) level;
+                        chunk.rebuildWaterCellIndex();
                     } finally {
                         World.BLOCK_LOCK.writeLock().unlock();
                     }
@@ -142,6 +143,7 @@ public class BlockFinder {
                         chunk.blocks[WorldChunk.blockIndex(x, y, z)] = (byte) type;
                         chunk.waterLevels[WorldChunk.blockIndex(x, y, z)] =
                                 (byte) (type == Block.WATER ? 8 : 0);
+                        chunk.rebuildWaterCellIndex();
                     } finally {
                         World.BLOCK_LOCK.writeLock().unlock();
                     }
