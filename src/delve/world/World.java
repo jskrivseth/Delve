@@ -30,10 +30,11 @@ import java.awt.image.BufferedImage;
 
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ConcurrentLinkedDeque;
-import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.PriorityBlockingQueue;
+import java.util.concurrent.atomic.AtomicLong;
 
 import java.util.*;
 import java.io.*;
@@ -127,6 +128,7 @@ public class World {
      */
     private static final int CHUNK_WORKER_COUNT = 3;
     private static final int MAX_QUEUED_CHUNK_TASKS = 64;
+    private static final AtomicLong CHUNK_TASK_SEQUENCE = new AtomicLong();
     public static ExecutorService threadPool = createThreadPool();
 
     private static ExecutorService createThreadPool() {
@@ -135,8 +137,51 @@ public class World {
                 CHUNK_WORKER_COUNT,
                 0L,
                 TimeUnit.MILLISECONDS,
-                new ArrayBlockingQueue<>(MAX_QUEUED_CHUNK_TASKS),
-                new ThreadPoolExecutor.AbortPolicy());
+                new PriorityBlockingQueue<>()) {
+            @Override
+            public void execute(Runnable command) {
+                if (getQueue().size() >= MAX_QUEUED_CHUNK_TASKS) {
+                    throw new RejectedExecutionException("chunk task queue is full");
+                }
+                super.execute(command);
+            }
+        };
+    }
+
+    static void submitChunkTask(Runnable task, WorldChunk chunk) {
+        int priority = Integer.MAX_VALUE;
+        if (chunk != null && Game.GAME_CAMERA != null) {
+            double dx = chunk.posX - Game.GAME_CAMERA.position.x / WorldChunk.sizeX;
+            double dz = chunk.posY - Game.GAME_CAMERA.position.z / WorldChunk.sizeZ;
+            priority = (int) Math.min(Integer.MAX_VALUE,
+                    Math.max(Math.abs(dx), Math.abs(dz)) * 1000.0);
+        }
+        threadPool.execute(new PrioritizedChunkTask(task, priority,
+                CHUNK_TASK_SEQUENCE.getAndIncrement()));
+    }
+
+    private static final class PrioritizedChunkTask
+            implements Runnable, Comparable<PrioritizedChunkTask> {
+        private final Runnable task;
+        private final int priority;
+        private final long sequence;
+
+        PrioritizedChunkTask(Runnable task, int priority, long sequence) {
+            this.task = task;
+            this.priority = priority;
+            this.sequence = sequence;
+        }
+
+        @Override
+        public void run() {
+            task.run();
+        }
+
+        @Override
+        public int compareTo(PrioritizedChunkTask other) {
+            int byDistance = Integer.compare(priority, other.priority);
+            return byDistance != 0 ? byDistance : Long.compare(sequence, other.sequence);
+        }
     }
 
     /**
@@ -911,7 +956,7 @@ public class World {
 
             Runnable chunkSweeper = new WorldInactiveChunkSweeperThread(chunks, currentChunkX, currentChunkY, chunkRadius);
             try {
-                threadPool.execute(chunkSweeper);
+                submitChunkTask(chunkSweeper, null);
             } catch (RejectedExecutionException e) {
                 // A saturated chunk queue must not permanently suppress future
                 // sweeps; the next update will retry.
@@ -1019,7 +1064,7 @@ public class World {
                 thisChunk.isGenerating = true;
                 Runnable chunkBuilder = new WorldChunkLoadThread(thisChunk);
                 try {
-                    threadPool.execute(chunkBuilder);
+                    submitChunkTask(chunkBuilder, thisChunk);
                     GEN_CHUNKS++;
                 } catch (RejectedExecutionException e) {
                     thisChunk.isGenerating = false;
@@ -1037,7 +1082,7 @@ public class World {
                     thisChunk.isBuilding = true;
                     Runnable chunkBufferBuilder = new WorldChunkBufferBuilderThread(thisChunk);
                     try {
-                        threadPool.execute(chunkBufferBuilder);
+                        submitChunkTask(chunkBufferBuilder, thisChunk);
                         BUILT_CHUNKS++;
                     } catch (RejectedExecutionException e) {
                         thisChunk.isBuilding = false;

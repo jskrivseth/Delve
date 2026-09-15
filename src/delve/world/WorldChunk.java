@@ -2861,7 +2861,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         this.isBuilding = true;
         // Reuse the shared pool rather than spawning a raw Thread per rebuild.
         try {
-            World.threadPool.execute(new WorldChunkBufferBuilderThread(this));
+            World.submitChunkTask(new WorldChunkBufferBuilderThread(this), this);
         } catch (RejectedExecutionException e) {
             this.isRefreshing = false;
             this.isBuilding = false;
