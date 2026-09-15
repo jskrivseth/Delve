@@ -538,13 +538,17 @@ public class Block implements Serializable {
         }
 
         float[] base = blockColors[type];
-        float r = base[0] + jitter(x, y, z, 1);
-        float g = base[1] + jitter(x, y, z, 2);
-        float b = base[2] + jitter(x, y, z, 3);
+        // Rock and vegetation speckle per voxel; water must not, or a single
+        // sheet tessellates into a checkerboard of tones along every cell
+        // border -- the colour seam, distinct from the geometric one.
+        boolean calmWater = type == WATER;
+        float r = base[0] + (calmWater ? 0.0f : jitter(x, y, z, 1));
+        float g = base[1] + (calmWater ? 0.0f : jitter(x, y, z, 2));
+        float b = base[2] + (calmWater ? 0.0f : jitter(x, y, z, 3));
 
         // Per-block brightness. Folded into the AO channel so it also varies the
         // textured blocks, where the palette color is ignored entirely.
-        float shade = 0.93f + jitter(x, y, z, 7) * 1.75f;
+        float shade = calmWater ? 1.0f : 0.93f + jitter(x, y, z, 7) * 1.75f;
 
         int[] tiles = BLOCK_TILES[type];
         int tintKind = biomeTintKind(type);

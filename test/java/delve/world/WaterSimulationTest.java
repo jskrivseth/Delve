@@ -208,8 +208,13 @@ class WaterSimulationTest {
         assertEquals(7, right.waterLevel(0, 4, 2));
     }
 
+    /**
+     * Uniform generated shallows meeting their own shoreline must tile flat:
+     * every corner of a level field derives the same height, with no meniscus
+     * bump climbing the bank. Slope comes only from genuinely unequal levels.
+     */
     @Test
-    void generatedWaterSlopesTowardTheShore() {
+    void uniformGeneratedWaterMeetsTheShoreFlat() {
         WorldChunk chunk = chunk(0, 0);
         chunk.setWaterLevel(4, 6, 4, 1);
         chunk.setWaterLevel(5, 6, 4, 1);
@@ -217,8 +222,8 @@ class WaterSimulationTest {
         float sharedEdge = chunk.waterCornerHeight(5, 6, 4);
         float shoreline = chunk.waterCornerHeight(4, 6, 4);
 
-        assertTrue(sharedEdge < 1.0f);
-        assertTrue(sharedEdge > shoreline);
+        assertEquals(WorldChunk.waterSurfaceHeight(1), sharedEdge, 0.0001f);
+        assertEquals(sharedEdge, shoreline, 0.0001f);
     }
 
     @Test
@@ -236,8 +241,50 @@ class WaterSimulationTest {
         chunk.setWaterLevel(4, 6, 4, 2);
         assertEquals(0.45f, chunk.waterCornerHeight(5, 6, 5), 0.0001f);
 
+        // Meeting a level-7 neighbour, the shared lattice corner sits midway
+        // between the two surfaces -- a slope, not a step to the high side.
         chunk.setWaterLevel(5, 6, 4, 7);
-        assertEquals(0.95f, chunk.waterCornerHeight(5, 6, 5), 0.0001f);
+        assertEquals(0.70f, chunk.waterCornerHeight(5, 6, 5), 0.0001f);
+    }
+
+    /**
+     * Free-standing water keeps its slope: a cascade over successive weaker
+     * levels must place each lattice corner strictly between the adjoining
+     * column surfaces, monotonically downhill.
+     */
+    @Test
+    void cascadeCornersSlopeMonotonicallyDownstream() {
+        WorldChunk chunk = chunk(0, 0);
+        chunk.setWaterLevel(3, 6, 4, 6);
+        chunk.setWaterLevel(4, 6, 4, 4);
+        chunk.setWaterLevel(5, 6, 4, 2);
+
+        float up = chunk.waterCornerHeight(4, 6, 4);
+        float down = chunk.waterCornerHeight(5, 6, 4);
+
+        float six = WorldChunk.waterSurfaceHeight(6);
+        float four = WorldChunk.waterSurfaceHeight(4);
+        float two = WorldChunk.waterSurfaceHeight(2);
+        assertTrue(up < six && up > four, "upstream corner not between its columns");
+        assertTrue(up > down, "cascade corner did not descend");
+        assertTrue(down < four && down > two, "downstream corner not between its columns");
+    }
+
+    /**
+     * No corner may ever rise above the tallest wet column it touches: that
+     * was the bank-climbing bump, where two shallow films stacked into a
+     * corner higher than the water feeding them.
+     */
+    @Test
+    void cornerNeverExceedsItsTallestColumn() {
+        WorldChunk chunk = chunk(0, 0);
+        chunk.setWaterLevel(4, 6, 4, 3);
+        chunk.setWaterLevel(4, 6, 5, 3);
+        chunk.setWaterLevel(5, 6, 4, 2);
+
+        // Highest participating surface: level 3 = 0.55.
+        float corner = chunk.waterCornerHeight(5, 6, 5);
+        assertTrue(corner <= WorldChunk.waterSurfaceHeight(3) + 0.0001f);
     }
 
     /**

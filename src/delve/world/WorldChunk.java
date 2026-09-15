@@ -2443,17 +2443,14 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     }
 
     float waterCornerHeight(int cornerX, int y, int cornerZ) {
-        int generatedSurfaces = 0;
-        float flowingHeight = 0.0f;
-        boolean surfaceSeen = false;
+        float sum = 0.0f;
+        int wetSurfaces = 0;
         int unknownColumns = 0;
         for (int dx = -1; dx <= 0; dx++) {
             for (int dz = -1; dz <= 0; dz++) {
                 int cx = cornerX + dx;
                 int cz = cornerZ + dz;
-                int level = seamPaved
-                        ? waterLevelAtOrUnknown(cx, y, cz)
-                        : waterLevelAt(cx, y, cz);
+                int level = waterLevelAtOrUnknown(cx, y, cz);
                 if (level < 0) {
                     unknownColumns++;
                     continue;
@@ -2464,29 +2461,36 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                 if (level == 8) {
                     return 1.0f;
                 }
-                if (level == 1) {
-                    surfaceSeen = true;
-                    generatedSurfaces++;
-                } else if (level > 1 && level < 8) {
-                    surfaceSeen = true;
-                    flowingHeight = Math.max(flowingHeight, waterSurfaceHeight(level));
+                if (level > 0 && level < 8) {
+                    sum += waterSurfaceHeight(level);
+                    wetSurfaces++;
                 }
             }
         }
-        // Pavement: while a neighbour's water field is unreadable, its lattice
-        // columns count as generated-water continuations of this corner rather
-        // than as dry ground, whenever a readable column proves the corner is
-        // a water surface. Both sides of the seam then derive matching corner
-        // heights, and the boundary replay queued at publish settles the
-        // levels into the exact values. Without this, the chunk that builds
-        // first bakes a dry trough where its neighbour will bake a surface --
-        // the crack along the edge.
-        if (seamPaved && surfaceSeen) {
-            generatedSurfaces += unknownColumns;
+        if (wetSurfaces == 0) {
+            return 0.0f;
         }
-        float generatedHeight = generatedSurfaces == 0
-                ? 0.0f : 0.55f + generatedSurfaces * 0.10f;
-        return Math.max(generatedHeight, flowingHeight);
+        // Plain mean of the adjacent wet surfaces. Equal levels -- a settled
+        // lake, a level flow channel, generated shallows meeting their own
+        // shoreline -- therefore tile FLAT: the corner height is that one
+        // surface height everywhere, with no meniscus bump climbing the bank.
+        // Unequal levels still slope: a cascade's corner sits midway between
+        // upstream and downstream, so free-standing falls keep their taper.
+        // A dry neighbour is not a participant at all: it neither drags the
+        // edge down nor lifts it, which is what keeps shoreline junctions
+        // flush instead of tented or trough-shaped.
+        //
+        // Pavement: an UNREADABLE column (neighbour absent or unpublished)
+        // is indistinguishable from dry ground, so unpaved it counts against
+        // the mean and sags -- the old crack. Seam paving refuses to guess
+        // low: unknown columns are neutralised (treated like the mean of the
+        // wet columns they stand beside), matching what the neighbour will
+        // compute from its own side. The boundary replay queued at publish
+        // then settles the real levels underneath.
+        if (seamPaved) {
+            return sum / wetSurfaces;
+        }
+        return sum / (wetSurfaces + unknownColumns);
     }
 
     static float waterSurfaceHeight(int level) {
