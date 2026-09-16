@@ -941,6 +941,61 @@ class WaterSimulationTest {
     }
 
     /**
+     * The feed slab reaches a bench pond sitting two columns back and a
+     * row up, but water perched five rows above a cliff face is another
+     * world's business and must not drag the pool's rim up.
+     */
+    @Test
+    void feedSlabReachesBackBenchButStopsBelowCliffPonds() {
+        WorldChunk chunk = chunk(0, 0);
+        chunk.blocks[WorldChunk.blockIndex(5, 5, 5)] = (byte) Block.STONE;
+        chunk.blocks[WorldChunk.blockIndex(5, 6, 5)] = (byte) Block.STONE;
+        chunk.setWaterLevel(6, 5, 5, 4);     // lower pool at the wall foot
+
+        assertEquals(0.65f, chunk.waterCornerHeight(6, 5, 5), 0.0001f);
+
+        // Bench pond two columns back, a row up the slope: in the slab.
+        chunk.setWaterLevel(5, 6, 7, 5);
+        assertEquals(1.0f, chunk.waterCornerHeight(6, 5, 5), 0.0001f);
+
+        // Swap to a pond only a tall cliff could hold: window misses it.
+        chunk.setWaterLevel(5, 6, 7, 0);
+        chunk.blocks[WorldChunk.blockIndex(5, 7, 5)] = (byte) Block.STONE;
+        chunk.blocks[WorldChunk.blockIndex(5, 8, 5)] = (byte) Block.STONE;
+        chunk.blocks[WorldChunk.blockIndex(5, 9, 5)] = (byte) Block.STONE;
+        chunk.setWaterLevel(5, 10, 5, 5);
+        assertEquals(0.65f, chunk.waterCornerHeight(6, 5, 5), 0.0001f);
+    }
+
+    /**
+     * Resting reservoir water never earns waterfall decoration: static
+     * benches around a dug hollow were draping curtains over every pillar
+     * like laundry. Flow over the same benches still spills freely.
+     */
+    @Test
+    void reservoirBenchesDrapeNoCurtainsButFlowStillDoes() {
+        WorldChunk chunk = chunk(0, 0);
+        for (int y = 0; y <= 2; y++) {
+            for (int x = 5; x <= 6; x++) {
+                chunk.blocks[WorldChunk.blockIndex(x, y, 4)] = (byte) Block.STONE;
+            }
+        }
+        chunk.blocks[WorldChunk.blockIndex(6, 0, 5)] = (byte) Block.STONE;
+        int[] dirs = new int[4];
+        float[] landings = new float[4];
+
+        chunk.setWaterLevel(5, 3, 4, 1);
+        chunk.setWaterLevel(6, 3, 4, 1);     // reservoir bench over a pit
+        assertEquals(0, chunk.collectStepCurtains(6, 3, 4, dirs, landings),
+                "resting reservoir spilled a curtain");
+
+        chunk.setWaterLevel(5, 3, 4, 6);
+        chunk.setWaterLevel(6, 3, 4, 6);     // same bench, live flow
+        assertTrue(chunk.collectStepCurtains(6, 3, 4, dirs, landings) > 0,
+                "live flow lost its rightful curtain");
+    }
+
+    /**
      * The image-3 fixture: a wall spans a lower pool, and the spilling
      * pond sits one row BACK from the brim -- the cell directly above the
      * wall column reads dry. Flow crossing toward the lip is still a

@@ -2615,48 +2615,36 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     }
 
     /**
-     * Whether credible spill feed crowns this bank column's brim: water
-     * riding the crest, flow a row back still crossing toward the lip, or
-     * a pond seated atop a one- or two-block wall. Five arms climb from
-     * the row just above the bank -- the column itself plus its cardinal
-     * neighbours -- and die at the first solid. Only a few rows are read,
-     * and the vote only ever lifts corners that already touch a wet sheet,
-     * so ordinary dry shorelines keep voting nothing.
+     * Whether credible spill feed overlooks this bank column: water on
+     * the crest, one row back, or seated on the bench a few rows up and
+     * a couple of columns back -- a bounded slab above and behind the
+     * bank. Steeper water above that window belongs to another world and
+     * cannot vote, so cliff faces keep their honest foot, and ordinary
+     * dry shorelines still vote nothing. Lift is only ever offered to
+     * corners that already touch a wet sheet.
      */
     private boolean feedAboveBrim(int cx, int cz, int y) {
-        int alive = 0b11110;   // center handled apart; +x, -x, +z, -z arms
-        int buried = 0;        // center's own wall course it tunnels
         for (int k = 1; k <= 4; k++) {
-            int yy = y + k;
-            if (buried < 2) {
-                if (waterLevelAt(cx, yy, cz) > 0) {
-                    return true;
-                }
-                if (solidHere(cx, yy, cz)) {
-                    // Passing through one's own short crest is the wall a
-                    // pond sits on; a taller mass is a cliff, not a bank.
-                    buried++;
-                }
+            if (waterLevelAt(cx, y + k, cz) > 0) {
+                return true;
             }
-            for (int arm = 1; arm < 5 && alive != 0; arm++) {
-                if ((alive & (1 << arm)) == 0) {
-                    continue;
-                }
-                int ax = switch (arm) {
-                    case 1 -> cx + 1;
-                    case 2 -> cx - 1;
-                    default -> cx;
-                };
-                int az = switch (arm) {
-                    case 3 -> cz + 1;
-                    case 4 -> cz - 1;
-                    default -> cz;
-                };
-                if (waterLevelAt(ax, yy, az) > 0) {
-                    return true;
-                }
-                if (solidHere(ax, yy, az)) {
-                    alive &= ~(1 << arm);   // buried: this arm stops climbing
+        }
+        for (int dir = 0; dir < 4; dir++) {
+            int ox = switch (dir) {
+                case 0 -> 1;
+                case 1 -> -1;
+                default -> 0;
+            };
+            int oz = switch (dir) {
+                case 2 -> 1;
+                case 3 -> -1;
+                default -> 0;
+            };
+            for (int d = 1; d <= 2; d++) {
+                for (int k = 1; k <= 4; k++) {
+                    if (waterLevelAt(cx + ox * d, y + k, cz + oz * d) > 0) {
+                        return true;
+                    }
                 }
             }
         }
@@ -2676,6 +2664,9 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     boolean springOverFall(int x, int y, int z, byte[] voxels) {
         if (y < 3) {
             return false;
+        }
+        if (waterLevelAt(x, y, z) == 1) {
+            return false;  // a reservoir's own rim earns no collar or plug
         }
         if (voxels[blockIndex(x, y - 1, z)] != 0 && waterLevelAt(x, y - 1, z) == 0) {
             return false;   // solid: no fall here at all
@@ -2751,6 +2742,9 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     int collectStepCurtains(int x, int y, int z, int[] dirs, float[] landings) {
         if (y < 2) {
             return 0;
+        }
+        if (waterLevelAt(x, y, z) == 1) {
+            return 0;   // resting reservoir benches drape no waterfalls
         }
         if (waterLevelAt(x, y - 1, z) == 0
                 && !World.isSolidGlobal(worldPosX + x, y - 1, worldPosY + z)) {
