@@ -202,8 +202,6 @@ public class World {
     /** Teardown backlog that counts as pressure: queued, not yet reclaimed. */
     private static final int TEARDOWN_SQUEEZE = 8192;
     private static final int TEARDOWN_RELAX_LIMIT = TEARDOWN_SQUEEZE / 4;
-    /** Rings added per governor sample while walking the radius back out. */
-    private static final int GOVERNOR_GROW_STEP = 2;
     /** Never blind the player completely, however tight memory gets. */
     private static final int GOVERNOR_MIN_RADIUS = 6;
     /** Minimum spacing between "view distance pulled in" toasts. */
@@ -590,11 +588,28 @@ public class World {
      * Fits the view radius to the memory actually available.
      *
      * Pulling the ring in is graded (roughly an eighth per sample down to a
-     * floor) and releasing it is slow (two rings per sample), so the horizon
-     * breathes instead of oscillating. A large teardown backlog also counts as
-     * squeeze: those chunks are memory the sweep has promised but not yet
-     * surrendered, which is exactly the state fast travel pushes the game into.
+     * floor) and releasing it is slow (one ring per sample after a dwell),
+     * so the horizon commits to a value instead of chasing the GC sawtooth.
+     * A large teardown backlog also counts as squeeze: those chunks are
+     * memory the sweep has promised but not yet surrendered, which is
+     * exactly the state fast travel pushes the game into.
      */
+    /**
+     * Rolling worst-headroom window. Available memory is a sawtooth: it dips
+     * before each collection and rebounds after. Deciding on the live sample
+     * let that noise walk the horizon in and out every few seconds, and rings
+     * crossing the keep boundary fade-out-then-cancel in a loop -- visible
+     * flicker far out. Shrinking reacts to the WORST sample of the last two
+     * seconds (never complacent), growing additionally demands a dwell since
+     * any radius change, so the horizon commits to a value and stays.
+     */
+    private static final int GOVERNOR_WINDOW = 10;
+    private static final long GOVERNOR_GROW_DWELL_NANOS = 3_000_000_000L;
+    private static final float[] headroomWindow = new float[GOVERNOR_WINDOW];
+    private static int headroomWindowFill;
+    private static int headroomWindowNext;
+    private static long lastRadiusChangeAtNanos;
+
     private static void tuneRenderRadiusToMemory() {
         long now = System.nanoTime();
         if (now < nextGovernorSampleAtNanos) {
@@ -605,12 +620,23 @@ public class World {
         int wanted = Math.max(1, Game.OPT_DRAW_DISTANCE);
         int floor = Math.min(GOVERNOR_MIN_RADIUS, wanted);
         float headroom = (float) Util.getAvailableMemory() / (float) Util.getMaxMemory();
+        headroomWindow[headroomWindowNext] = headroom;
+        headroomWindowNext = (headroomWindowNext + 1) % GOVERNOR_WINDOW;
+        if (headroomWindowFill < GOVERNOR_WINDOW) {
+            headroomWindowFill++;
+        }
+        float worst = headroom;
+        for (int i = 0; i < headroomWindowFill; i++) {
+            worst = Math.min(worst, headroomWindow[i]);
+        }
         int queuedTeardown;
         synchronized (destroyChunks) {
             queuedTeardown = destroyChunks.size();
         }
-        boolean squeezed = headroom < HEADROOM_SHRINK_BELOW || queuedTeardown > TEARDOWN_SQUEEZE;
-        boolean relaxed = headroom > HEADROOM_GROW_ABOVE && queuedTeardown < TEARDOWN_RELAX_LIMIT;
+        boolean squeezed = worst < HEADROOM_SHRINK_BELOW || queuedTeardown > TEARDOWN_SQUEEZE;
+        boolean dwelling = now - lastRadiusChangeAtNanos < GOVERNOR_GROW_DWELL_NANOS;
+        boolean relaxed = !dwelling && worst > HEADROOM_GROW_ABOVE
+                && queuedTeardown < TEARDOWN_RELAX_LIMIT;
 
         int current = activeRenderRadius;
         if (current > wanted) {
@@ -618,9 +644,17 @@ public class World {
             current = wanted;
         }
         if (squeezed) {
-            current = Math.max(floor, current - Math.max(1, current / 8));
+            int reduced = Math.max(floor, current - Math.max(1, current / 8));
+            if (reduced != current) {
+                lastRadiusChangeAtNanos = now;
+            }
+            current = reduced;
         } else if (relaxed && current < wanted) {
-            current = Math.min(wanted, current + GOVERNOR_GROW_STEP);
+            int grown = Math.min(wanted, current + 1);
+            if (grown != current) {
+                lastRadiusChangeAtNanos = now;
+            }
+            current = grown;
         }
 
         boolean heldIn = current < wanted;
