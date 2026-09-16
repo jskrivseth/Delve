@@ -367,12 +367,14 @@ class WaterSimulationTest {
 
     /**
      * Spring detection scans DOWN THROUGH flowing columns: an active fall
-     * (flow cells in transit above a resting pool) is detected, a rim
-     * sitting directly on resting water is not.
+     * (flow cells in transit above a resting pool, at least ~2 cells down)
+     * is detected; a resting sheet over a dug hollow or a rim sitting on
+     * its own pool is not.
      */
     @Test
     void springDetectionSeesThroughFallingColumns() {
         WorldChunk chunk = chunk(0, 0);
+        byte[] voxels = chunk.blocks;
         chunk.blocks[WorldChunk.blockIndex(5, 3, 4)] = (byte) Block.STONE;
         chunk.setWaterLevel(5, 4, 4, 1);    // resting pool
         chunk.setWaterLevel(5, 5, 4, 7);    // flow in transit
@@ -381,14 +383,17 @@ class WaterSimulationTest {
 
         assertEquals(-3.0f + WorldChunk.waterSurfaceHeight(1),
                 chunk.waterfallFallRelY(5, 7, 4), 0.0001f);
+        assertTrue(chunk.springOverFall(5, 8, 4, voxels)
+                        || chunk.springOverFall(5, 7, 4, voxels),
+                "active fall missed its spring flag");
 
-        // Rim directly on resting water: contact, not a fall.
+        // A resting sheet over a shallow dug hollow: geometry trivia, no.
         chunk.setWaterLevel(5, 5, 4, 0);
         chunk.setWaterLevel(5, 6, 4, 0);
         chunk.setWaterLevel(5, 7, 4, 0);
-        chunk.setWaterLevel(5, 6, 4, 1);
-        assertTrue(chunk.waterfallFallRelY(5, 7, 4) > -0.95f,
-                "contact pool mistaken for a fall");
+        chunk.setWaterLevel(5, 6, 4, 1);    // resting water, one cell down
+        assertFalse(chunk.springOverFall(5, 7, 4, voxels),
+                "rest sheet mistaken for a waterfall");
     }
 
     /**

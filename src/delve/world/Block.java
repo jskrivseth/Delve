@@ -628,73 +628,72 @@ public class Block implements Serializable {
     }
 
     /**
-     * Connector assembly where a fall plunges from a ledge into a pool:
-     * a wide-shouldered inverted-pyramid plug descends from the shaft's
-     * bottom rim, its frustum walls narrowing to a blunt tip at the pool
-     * surface, and an inner sheet (the falling water itself) blends from
-     * the ledge's top surface down through the plug and into the water
-     * below the socket. Emitted at the ledge cell, so vertices are offsets
-     * from that cell's base; poolRelY is the (negative) offset of the pool
-     * surface. Outer and inner layers share water's flat palette -- the
-     * doubled translucency reads as a thicker, brighter fall column.
+     * Connector for an active fall: a short collar throats the shaft rim,
+     * and a two-layer stream -- bright core inside fuller skin -- falls
+     * rim to pool through it. No coaxial sleeves: those read as pipes.
+     * Vertices are offsets from the ledge cell's base; poolRelY is the
+     * pool surface's (negative) offset.
      */
     static void writeWaterfallConnector(FloatBuffer buffer, IntBuffer indices,
                                         int x, int y, int z,
                                         float springTop, float poolRelY, float light) {
         float[] base = blockColors[WATER];
         float r = base[0], g = base[1], b = base[2];
-        float rT = 0.52f, rBot = 0.74f, rPlug = 0.30f, rSheet = 0.24f;
-        float yTop = 0.0f;                    // shaft rim = ledge cell floor
-        float ySocket = poolRelY - 0.18f;     // outer skirt sinks past pool skin
-        float yTip = poolRelY + 0.02f;        // plug tip kisses pool surface
-        float ySheetTop = springTop;          // merge into the ledge's own top skin
-        float ySheetFoot = poolRelY - 0.34f;  // vanish inside the socket
+        float rRim = 0.52f, rThroat = 0.32f;
+        float rSkin = 0.26f, rCore = 0.15f;
+        float yThroat = Math.max(poolRelY, -0.62f);      // short collar only
+        float ySkinFoot = poolRelY - 0.32f;              // skin dunks into pool
+        float yCoreFoot = poolRelY - 0.45f;              // core plunges deeper
+        float yc = 0.12f;                                // core brightening
 
         for (int side = 0; side < 4; side++) {
             double a1 = Math.PI / 2.0 * side + Math.PI / 4.0;
             double a2 = Math.PI / 2.0 * (side + 1) + Math.PI / 4.0;
             float c1 = (float) Math.cos(a1), s1 = (float) Math.sin(a1);
             float c2 = (float) Math.cos(a2), s2 = (float) Math.sin(a2);
-            // Outer skirt: top rim ring to a wider pool ring (inverted cone).
+            // Collar: rim ring drawing inward to the throat (the constriction
+            // a real fall draws at its lip) -- kept short, so nothing trails
+            // through the shaft like a pipe.
             quad(buffer, indices, x, y, z,
-                    c1 * rT, yTop, s1 * rT,
-                    c2 * rT, yTop, s2 * rT,
-                    c2 * rBot, ySocket, s2 * rBot,
-                    c1 * rBot, ySocket, s1 * rBot,
-                    c1 * 0.15f, -0.98f, s1 * 0.15f,
-                    r, g, b, 0.86f, light,
+                    c1 * rRim, 0.0f, s1 * rRim,
+                    c2 * rRim, 0.0f, s2 * rRim,
+                    c2 * rThroat, yThroat, s2 * rThroat,
+                    c1 * rThroat, yThroat, s1 * rThroat,
+                    c1, -0.45f, s1,
+                    r, g, b, 0.95f, light,
                     0.5f + c1 * 0.5f, 0.0f, 0.5f + c2 * 0.5f,
-                    Math.min(1.0f, Math.abs(ySocket) * 0.7f));
-            // Plug: the corresponding narrowing from shaft rim to blunt tip.
+                    Math.min(1.0f, -yThroat * 0.8f));
+            // Stream skin: the fall's body, rim to below the pool surface.
             quad(buffer, indices, x, y, z,
-                    c1 * rT, yTop, s1 * rT,
-                    c2 * rT, yTop, s2 * rT,
-                    c2 * rPlug, yTip, s2 * rPlug,
-                    c1 * rPlug, yTip, s1 * rPlug,
-                    c1, -0.25f, s1,
+                    c1 * rSkin, springTop, s1 * rSkin,
+                    c2 * rSkin, springTop, s2 * rSkin,
+                    c2 * rSkin, ySkinFoot, s2 * rSkin,
+                    c1 * rSkin, ySkinFoot, s1 * rSkin,
+                    c1 * 0.6f, 0.8f, s1 * 0.6f,
                     r, g, b, 1.0f, light,
                     0.5f + c1 * 0.5f, 0.0f, 0.5f + c2 * 0.5f,
-                    Math.min(1.0f, Math.abs(yTip) * 0.62f));
-            // The falling sheet, blended rim to rim through the plug.
+                    Math.min(1.0f, (springTop - ySkinFoot) * 0.5f));
+            // Bright core: sightlines stack skin+core+skin into heavy water.
             quad(buffer, indices, x, y, z,
-                    c1 * rSheet, ySheetTop, s1 * rSheet,
-                    c2 * rSheet, ySheetTop, s2 * rSheet,
-                    c2 * rSheet, ySheetFoot, s2 * rSheet,
-                    c1 * rSheet, ySheetFoot, s1 * rSheet,
-                    c1 * 0.5f, 0.87f, s1 * 0.5f,
-                    r, g, b, 1.0f, light,
+                    c1 * rCore, springTop * 0.98f, s1 * rCore,
+                    c2 * rCore, springTop * 0.98f, s2 * rCore,
+                    c2 * rCore, yCoreFoot, s2 * rCore,
+                    c1 * rCore, yCoreFoot, s1 * rCore,
+                    c1 * 0.6f, 0.8f, s1 * 0.6f,
+                    Math.min(1.0f, r + yc), Math.min(1.0f, g + yc),
+                    Math.min(1.0f, b + yc), 1.0f, light,
                     0.5f + c1 * 0.5f, 0.0f, 0.5f + c2 * 0.5f,
-                    Math.min(1.0f, (ySheetTop - ySheetFoot) * 0.6f));
+                    Math.min(1.0f, (springTop - yCoreFoot) * 0.5f));
         }
-        // Blunt cap closing the plug tip.
+        // Throat cap the stream passes through.
         quad(buffer, indices, x, y, z,
-                -rPlug, yTip, -rPlug,
-                rPlug, yTip, -rPlug,
-                rPlug, yTip, rPlug,
-                -rPlug, yTip, rPlug,
+                -rThroat, yThroat, -rThroat,
+                rThroat, yThroat, -rThroat,
+                rThroat, yThroat, rThroat,
+                -rThroat, yThroat, rThroat,
                 0.0f, -1.0f, 0.0f,
-                r, g, b, 0.9f, light,
-                0.5f, 0.0f, 0.5f, 0.62f);
+                r, g, b, 0.85f, light,
+                0.5f, 0.0f, 0.5f, 0.5f);
     }
 
     private static final float WATER_U0 = BLOCK_TILES[WATER][2] / ATLAS_TILES + UV_INSET;

@@ -2592,39 +2592,48 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     private static final int MAX_FALL_SCAN = 8;
 
     /**
-     * A spring ledge: falling water or open air directly beneath, and
-     * something to land on -- resting water or stone -- at least a cell
-     * below. Active falls (flow-filled shafts) count; a pool sitting right
-     * under the rim does not.
+     * A spring ledge: a fall's FEED, not a damp floor. Requires water in
+     * transit (levels 2-7) somewhere down the shaft -- a resting sheet over
+     * a dug hollow is geometry trivia, not a waterfall -- and a landing at
+     * least about two cells down, so spread-flow over shallow troughs keeps
+     * its plain skin.
      */
-    private boolean springOverFall(int x, int y, int z, byte[] voxels) {
+    boolean springOverFall(int x, int y, int z, byte[] voxels) {
         if (y < 3) {
             return false;
         }
-        // Below is anything water can travel through: air or flow.
         if (voxels[blockIndex(x, y - 1, z)] != 0 && waterLevelAt(x, y - 1, z) == 0) {
             return false;   // solid: no fall here at all
         }
-        return waterfallFallRelY(x, y, z) <= -0.95f;
+        float rel = waterfallFallRelY(x, y, z);
+        return rel <= -1.7f && lastFallHadTransit;
     }
+
+    private boolean lastFallHadTransit;
 
     /**
      * Resting surface (pool skin or shaft floor) below a spring, relative
      * to this cell's floor: scan down THROUGH flowing columns (levels 2-7
      * are transit, not a landing) until resting water (level 1 or 8), a
      * solid floor, or the scan budget ends. Zero means no credible fall.
+     * Also records whether any transit water stood in the shaft.
      */
     float waterfallFallRelY(int x, int y, int z) {
+        lastFallHadTransit = false;
         for (int d = 1; d <= MAX_FALL_SCAN && y - d >= 0; d++) {
             int level = waterLevelAt(x, y - d, z);
             if (level == 1 || level == 8) {
                 return -d + waterSurfaceHeight(level);
             }
+            if (level >= 2 && level <= 7) {
+                lastFallHadTransit = true;
+                continue;   // in transit: not a landing, keep scanning
+            }
             int type = getBlock(x, y - d, z);
             if (type != 0 && type != Block.WATER) {
                 return -d + 0.98f;   // dry shaft floor, skimmed
             }
-            // Air, or flow in transit: keep falling down the column.
+            // Air: open shaft, keep falling.
         }
         return 0.0f;
     }
