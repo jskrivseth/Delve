@@ -996,6 +996,32 @@ class WaterSimulationTest {
     }
 
     /**
+     * The shore-placed column that spread into a full block over a dug
+     * pit: its feet ride the pool's row but wear more water above, so the
+     * old sampler let them vote nothing and the pool's near corners sagged
+     * into a missed stitch. A covered water column is a wet step wall --
+     * the pool's back corners weld to its face.
+     */
+    @Test
+    void poolStitchesToCoveredWaterStepNotJustStone() {
+        WorldChunk chunk = chunk(0, 0);
+        for (int x = 5; x <= 7; x++) {
+            for (int z = 4; z <= 5; z++) {
+                chunk.blocks[WorldChunk.blockIndex(x, 4, z)] = (byte) Block.STONE;
+            }
+        }
+        chunk.setWaterLevel(6, 5, 5, 4);     // low pool in front
+        chunk.setWaterLevel(5, 5, 5, 1);     // step's wet foot, same row
+        chunk.setWaterLevel(5, 6, 5, 1);     // ...covered by its own body
+
+        assertEquals(1.0f, chunk.waterCornerHeight(6, 5, 5), 0.0001f);
+
+        // Unstack the step: an open same-row neighbour is just a slope.
+        chunk.setWaterLevel(5, 6, 5, 0);
+        assertEquals(0.60f, chunk.waterCornerHeight(6, 5, 5), 0.0001f);
+    }
+
+    /**
      * The image-3 fixture: a wall spans a lower pool, and the spilling
      * pond sits one row BACK from the brim -- the cell directly above the
      * wall column reads dry. Flow crossing toward the lip is still a

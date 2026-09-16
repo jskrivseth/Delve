@@ -2523,6 +2523,11 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                 }
                 if (level > 0) {
                     if (waterLevelAt(cx, y + 1, cz) != 0) {
+                        // A water column wearing its own body above is the
+                        // wall of a step behind a lower sheet. The lower
+                        // surface must meet the step's face, not sag beside
+                        // it: same contact weld a soaked stone bank earns.
+                        bankContact = true;
                         continue;
                     }
                     if (level == 8) {
