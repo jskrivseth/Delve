@@ -627,6 +627,125 @@ public class Block implements Serializable {
         }
     }
 
+    /**
+     * Connector assembly where a fall plunges from a ledge into a pool:
+     * a wide-shouldered inverted-pyramid plug descends from the shaft's
+     * bottom rim, its frustum walls narrowing to a blunt tip at the pool
+     * surface, and an inner sheet (the falling water itself) blends from
+     * the ledge's top surface down through the plug and into the water
+     * below the socket. Emitted at the ledge cell, so vertices are offsets
+     * from that cell's base; poolRelY is the (negative) offset of the pool
+     * surface. Outer and inner layers share water's flat palette -- the
+     * doubled translucency reads as a thicker, brighter fall column.
+     */
+    static void writeWaterfallConnector(FloatBuffer buffer, IntBuffer indices,
+                                        int x, int y, int z,
+                                        float springTop, float poolRelY, float light) {
+        float[] base = blockColors[WATER];
+        float r = base[0], g = base[1], b = base[2];
+        float rT = 0.52f, rBot = 0.74f, rPlug = 0.30f, rSheet = 0.24f;
+        float yTop = 0.0f;                    // shaft rim = ledge cell floor
+        float ySocket = poolRelY - 0.18f;     // outer skirt sinks past pool skin
+        float yTip = poolRelY + 0.02f;        // plug tip kisses pool surface
+        float ySheetTop = springTop;          // merge into the ledge's own top skin
+        float ySheetFoot = poolRelY - 0.34f;  // vanish inside the socket
+
+        for (int side = 0; side < 4; side++) {
+            double a1 = Math.PI / 2.0 * side + Math.PI / 4.0;
+            double a2 = Math.PI / 2.0 * (side + 1) + Math.PI / 4.0;
+            float c1 = (float) Math.cos(a1), s1 = (float) Math.sin(a1);
+            float c2 = (float) Math.cos(a2), s2 = (float) Math.sin(a2);
+            // Outer skirt: top rim ring to a wider pool ring (inverted cone).
+            quad(buffer, indices, x, y, z,
+                    c1 * rT, yTop, s1 * rT,
+                    c2 * rT, yTop, s2 * rT,
+                    c2 * rBot, ySocket, s2 * rBot,
+                    c1 * rBot, ySocket, s1 * rBot,
+                    c1 * 0.15f, -0.98f, s1 * 0.15f,
+                    r, g, b, 0.86f, light,
+                    0.5f + c1 * 0.5f, 0.0f, 0.5f + c2 * 0.5f,
+                    Math.min(1.0f, Math.abs(ySocket) * 0.7f));
+            // Plug: the corresponding narrowing from shaft rim to blunt tip.
+            quad(buffer, indices, x, y, z,
+                    c1 * rT, yTop, s1 * rT,
+                    c2 * rT, yTop, s2 * rT,
+                    c2 * rPlug, yTip, s2 * rPlug,
+                    c1 * rPlug, yTip, s1 * rPlug,
+                    c1, -0.25f, s1,
+                    r, g, b, 1.0f, light,
+                    0.5f + c1 * 0.5f, 0.0f, 0.5f + c2 * 0.5f,
+                    Math.min(1.0f, Math.abs(yTip) * 0.62f));
+            // The falling sheet, blended rim to rim through the plug.
+            quad(buffer, indices, x, y, z,
+                    c1 * rSheet, ySheetTop, s1 * rSheet,
+                    c2 * rSheet, ySheetTop, s2 * rSheet,
+                    c2 * rSheet, ySheetFoot, s2 * rSheet,
+                    c1 * rSheet, ySheetFoot, s1 * rSheet,
+                    c1 * 0.5f, 0.87f, s1 * 0.5f,
+                    r, g, b, 1.0f, light,
+                    0.5f + c1 * 0.5f, 0.0f, 0.5f + c2 * 0.5f,
+                    Math.min(1.0f, (ySheetTop - ySheetFoot) * 0.6f));
+        }
+        // Blunt cap closing the plug tip.
+        quad(buffer, indices, x, y, z,
+                -rPlug, yTip, -rPlug,
+                rPlug, yTip, -rPlug,
+                rPlug, yTip, rPlug,
+                -rPlug, yTip, rPlug,
+                0.0f, -1.0f, 0.0f,
+                r, g, b, 0.9f, light,
+                0.5f, 0.0f, 0.5f, 0.62f);
+    }
+
+    private static final float WATER_U0 = BLOCK_TILES[WATER][2] / ATLAS_TILES + UV_INSET;
+    private static final float WATER_U1 = (BLOCK_TILES[WATER][2] + 1) / ATLAS_TILES - UV_INSET;
+    private static final float WATER_V0 = BLOCK_TILES[WATER][3] / ATLAS_TILES + UV_INSET;
+    private static final float WATER_V1 = (BLOCK_TILES[WATER][3] + 1) / ATLAS_TILES - UV_INSET;
+
+    /**
+     * Emits one arbitrary quad: four positions relative to the cell base,
+     * a shared normal, flat water color, AO-ish alpha and UVs whose v is a
+     * 0..1 fraction across the water tile for the falling skin.
+     */
+    private static void quad(FloatBuffer buffer, IntBuffer indices, int x, int y, int z,
+                             float x1, float y1, float z1, float x2, float y2, float z2,
+                             float x3, float y3, float z3, float x4, float y4, float z4,
+                             float nx, float ny, float nz,
+                             float r, float g, float b, float ao, float light,
+                             float ua, float va, float uc, float vc) {
+        int vi = buffer.position() / FLOATS_PER_VERTEX;
+        float uu0 = WATER_U0 + (WATER_U1 - WATER_U0) * ua;
+        float uu1 = WATER_U0 + (WATER_U1 - WATER_U0) * uc;
+        float vv0 = WATER_V0 + (WATER_V1 - WATER_V0) * Math.min(1.0f, Math.max(0.0f, va));
+        float vv1 = WATER_V0 + (WATER_V1 - WATER_V0) * Math.min(1.0f, Math.max(0.0f, vc));
+        vertex(buffer, x, y, z, x1, y1, z1, nx, ny, nz, r, g, b, ao, uu0, vv0, light);
+        vertex(buffer, x, y, z, x2, y2, z2, nx, ny, nz, r, g, b, ao, uu1, vv0, light);
+        vertex(buffer, x, y, z, x3, y3, z3, nx, ny, nz, r, g, b, ao, uu1, vv1, light);
+        vertex(buffer, x, y, z, x4, y4, z4, nx, ny, nz, r, g, b, ao, uu0, vv1, light);
+        indices.put(vi).put(vi + 1).put(vi + 2).put(vi + 2).put(vi + 3).put(vi);
+    }
+
+    private static void vertex(FloatBuffer buffer, int x, int y, int z,
+                               float ox, float oy, float oz,
+                               float nx, float ny, float nz,
+                               float r, float g, float b, float ao,
+                               float u, float v, float light) {
+        buffer.put(x + ox);
+        buffer.put(y + oy);
+        buffer.put(z + oz);
+        buffer.put(nx);
+        buffer.put(ny);
+        buffer.put(nz);
+        buffer.put(r);
+        buffer.put(g);
+        buffer.put(b);
+        buffer.put(ao);
+        buffer.put(u);
+        buffer.put(v);
+        buffer.put(light);
+        buffer.put(NO_TINT);
+    }
+
     private static float cornerHeight(float[] corner, float fallback, float[] topHeights) {
         if (topHeights == null || corner[1] == 0.0f) {
             return fallback;

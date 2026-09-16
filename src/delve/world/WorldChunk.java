@@ -2306,7 +2306,12 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                                     faceCount += 8; // centered closed rock mesh (octahedron)
                                 }
                             } else {
-                                faceCount += computeExposedFaces(voxels, i, j, k, EXPOSED_FACES);
+                                int exposed = computeExposedFaces(voxels, i, j, k, EXPOSED_FACES);
+                                faceCount += exposed;
+                                if (exposed > 0 && type == Block.WATER
+                                        && springOverFall(i, j, k, voxels)) {
+                                    faceCount += WATERFALL_CONNECTOR_FACES;
+                                }
                             }
                             blockCount++;
                         }
@@ -2365,6 +2370,20 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                                 fillWaterCornerHeights(i, j, k, waterTopHeights);
                                 Block.writeWaterCube(buffer, indices, i, j, k,
                                         EXPOSED_FACES, this, waterTopHeights);
+                                if (springOverFall(i, j, k, voxels)) {
+                                    // The ledge of a fall: seat an inverted-pyramid
+                                    // plug beneath it whose socket mates with the
+                                    // pool surface, and drape the falling sheet
+                                    // from this cell's own skin down through it.
+                                    float fallRelY = waterfallFallRelY(i, j, k);
+                                    if (fallRelY < -0.02f) {
+                                        float springTop = (waterTopHeights[0] + waterTopHeights[1]
+                                                + waterTopHeights[2] + waterTopHeights[3]) * 0.25f;
+                                        Block.writeWaterfallConnector(buffer, indices,
+                                                i, j, k, springTop, fallRelY,
+                                                lightAt(i, j - 1, k) / 15.0f);
+                                    }
+                                }
                             } else {
                                 Block.writeCube(buffer, indices, i, j, k,
                                         EXPOSED_FACES, type, this);
@@ -2523,8 +2542,12 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         if (wetSurfaces == 0) {
             return 0.0f;
         }
-        if (fallDistance > 0) {
-            return fallDistance;
+        if (fallDistance == 1) {
+            // Contact weld: a sheet under an overhang one cell up rises to
+            // the overhanging water's underside and glues the seam. Taller
+            // falls get dedicated connector geometry (see
+            // writeWaterfallConnector) instead of warp-stretching corners.
+            return 1.0f;
         }
         if (hasFullWater) {
             // A brim shared with plain water keeps full height: the trough
@@ -2563,6 +2586,37 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     private boolean solidHere(int x, int y, int z) {
         return y < 0 || y >= sizeY
                 || World.isSolidGlobal(worldPosX + x, y, worldPosY + z);
+    }
+
+    private static final int WATERFALL_CONNECTOR_FACES = 13;
+    private static final int MAX_FALL_SCAN = 8;
+
+    /**
+     * A spring ledge: this water cell has open air directly beneath (the
+     * shaft) and something to land on -- water or stone -- within scan
+     * range. Column-local on purpose: near chunk borders the scan simply
+     * finds nothing and the connector politely abstains.
+     */
+    private boolean springOverFall(int x, int y, int z, byte[] voxels) {
+        if (y < 3 || waterLevelAt(x, y - 1, z) != 0
+                || voxels[blockIndex(x, y - 1, z)] != 0) {
+            return false;
+        }
+        return waterfallFallRelY(x, y, z) < -0.02f;
+    }
+
+    /** Pool (or plunge floor) surface height relative to this cell's floor. */
+    float waterfallFallRelY(int x, int y, int z) {
+        for (int d = 2; d <= MAX_FALL_SCAN && y - d >= 0; d++) {
+            int level = waterLevelAt(x, y - d, z);
+            if (level > 0) {
+                return -d + waterSurfaceHeight(level);
+            }
+            if (getBlock(x, y - d, z) != 0) {
+                return -d + 0.98f;   // dry shaft floor, skimmed
+            }
+        }
+        return 0.0f;
     }
 
     static float waterSurfaceHeight(int level) {

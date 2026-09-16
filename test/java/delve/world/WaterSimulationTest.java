@@ -302,8 +302,9 @@ class WaterSimulationTest {
     }
 
     /**
-     * The curtain rises up to four open shaft rows to reach hanging water,
-     * and stops dead at solid ground -- no membrane growing through stone.
+     * Tall overhangs no longer warp lattice corners upward (that produced
+     * glass fins); they earn connector geometry instead -- the corners stay
+     * flat means, and solid plugs the scan cannot see through.
      */
     @Test
     void curtainClimbsTheShaftButNotThroughStone() {
@@ -314,13 +315,14 @@ class WaterSimulationTest {
         chunk.setWaterLevel(5, 6, 3, 8);
         chunk.setWaterLevel(5, 6, 4, 8);
 
-        assertEquals(2.0f, chunk.waterCornerHeight(5, 4, 4), 0.0001f);
-
-        // Plug the shaft: the curtain must not punch through the plug.
-        chunk.blocks[WorldChunk.blockIndex(5, 5, 3)] = (byte) Block.STONE;
-        chunk.blocks[WorldChunk.blockIndex(5, 5, 4)] = (byte) Block.STONE;
+        // Two-row fall: flat means now; geometry handles the bridge.
         assertEquals(WorldChunk.waterSurfaceHeight(4),
                 chunk.waterCornerHeight(5, 4, 4), 0.0001f);
+
+        // One-row contact still welds to the underside.
+        chunk.setWaterLevel(5, 5, 3, 8);
+        chunk.setWaterLevel(5, 5, 4, 8);
+        assertEquals(1.0f, chunk.waterCornerHeight(5, 4, 4), 0.0001f);
     }
 
     /**
@@ -361,6 +363,24 @@ class WaterSimulationTest {
 
         assertEquals(WorldChunk.waterSurfaceHeight(4), shore, 0.0001f);
         assertEquals(interior, shore, 0.0001f);
+    }
+
+    /**
+     * The waterfall connector (plug + skirt + sheet + cap = 13 quads) emits
+     * its full vertex/index budget with finite coordinates.
+     */
+    @Test
+    void waterfallConnectorEmitsCompleteFiniteAssembly() {
+        java.nio.FloatBuffer buffer = org.lwjgl.BufferUtils.createFloatBuffer(13 * 56);
+        java.nio.IntBuffer indices = org.lwjgl.BufferUtils.createIntBuffer(13 * 6);
+
+        Block.writeWaterfallConnector(buffer, indices, 3, 40, 5, 0.875f, -1.45f, 0.9f);
+
+        assertEquals(13 * 56, buffer.position());
+        assertEquals(13 * 6, indices.position());
+        for (int i = 0; i < buffer.position(); i++) {
+            assertFalse(Float.isNaN(buffer.get(i)), "NaN at vertex float " + i);
+        }
     }
 
     @Test
