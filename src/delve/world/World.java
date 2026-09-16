@@ -865,7 +865,13 @@ public class World {
             }
 
             boolean flowedDown = false;
-            int downwardLevel = level == 8 ? 7 : level;
+            /*
+             * Falling water recharges to a full flow height. Whatever crested
+             * a lip lands as a full-height column, so a plunge pool beneath a
+             * drop fills flush with the lip instead of mirroring however thin
+             * the stream had faded upstream. Sources still cap at flow level.
+             */
+            int downwardLevel = 7;
             for (int drop = 1; drop <= MAX_WATER_DROP_DISTANCE && y - drop >= 0; drop++) {
                 if (!spreadWater(x, y - drop, z, downwardLevel)) {
                     break;
@@ -1102,7 +1108,12 @@ public class World {
             int neighborLevel = waterLevelAtWorld(neighbor[0], neighbor[1], neighbor[2]);
             if (neighborLevel == 1
                     || neighborLevel > level
-                    || (neighbor[1] == y + 1 && neighborLevel >= level)) {
+                    || (neighbor[1] == y + 1 && neighborLevel >= 2)) {
+                // Living water anywhere overhead feeds this cell, even a thin
+                // trickle: that is what keeps a recharged waterfall column
+                // standing over a lip it spilled from. Drying stays assured,
+                // because feeders lose their own support first and the empty
+                // space marches down through the column.
                 return true;
             }
         }

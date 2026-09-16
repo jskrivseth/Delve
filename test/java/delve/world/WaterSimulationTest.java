@@ -837,4 +837,37 @@ class WaterSimulationTest {
         assertTrue(late.waterLevel(0, 6, 4) > 0,
                 "boundary replay failed to carry seam water into the loaded neighbour");
     }
+
+    @Test
+    void waterDroppingOverALedgeLandsWithFullHeightAgain() {
+        WorldChunk chunk = chunk(0, 0);
+        // Terrace floor at y=4 (x=1..4); the ground below the lip drops to y=2.
+        for (int x = 1; x <= 4; x++) {
+            chunk.blocks[WorldChunk.blockIndex(x, 4, 4)] = (byte) Block.STONE;
+        }
+        for (int x = 4; x <= 7; x++) {
+            chunk.blocks[WorldChunk.blockIndex(x, 2, 4)] = (byte) Block.STONE;
+        }
+        // A stream that has faded to mid strength as it crosses the terrace.
+        chunk.setWaterLevel(1, 5, 4, 8);
+        World.enqueueWaterUpdate(1, 5, 4);
+
+        World.processWaterUpdates(300);
+
+        // The lip cell spilled thinner than full (5 reached (4,5), 4 at (5,5)),
+        // but the drop itself recharges: the whole fall column and the plunge
+        // pool at its foot arrive at full flow height, not the faded level.
+        assertEquals(7, chunk.waterLevel(5, 4, 4),
+                "falling water kept the thin stream's level instead of recharging");
+        assertEquals(7, chunk.waterLevel(5, 3, 4),
+                "plunge pool did not land at full height");
+
+        // And it stays there: the trickle feeding the drop must support the
+        // recharged column instead of rotting it back down tick by tick.
+        World.processWaterUpdates(300);
+        assertEquals(7, chunk.waterLevel(5, 3, 4),
+                "recharged plunge pool decayed despite continuing feed");
+        assertEquals(7, chunk.waterLevel(5, 4, 4),
+                "waterfall column decayed despite continuing feed");
+    }
 }
