@@ -696,47 +696,78 @@ public class Block implements Serializable {
                 0.5f, 0.0f, 0.5f, 0.5f);
     }
 
+    private static final float CURTAIN_LIP = 0.42f;   // ~45 degrees: out equals drop
+
     /**
-     * One-quad fall curtain closing a step between water cells: its top
-     * edge rides the shared boundary's two exact lattice-corner heights
-     * (seamless weld to the ledge face), its bottom reaches the landing
-     * surface one side down. Corners are (-x,-z), (+x,-z), (-x,+z), (+x,+z).
+     * Two-quad spill closing a step between water cells: a short lip tilts
+     * outward at roughly 45 degrees from this cell's flat floor edge (y=0,
+     * the same edge every ordinary side face already ends at -- not the
+     * sloped water-surface corners, so nothing overlaps the block's own side
+     * face and z-fights it), then a vertical stream falls from the lip's
+     * outer edge down to the landing. Offsetting the stream past the cell
+     * boundary also keeps it off whatever solid wall's own face sits exactly
+     * on that boundary plane one row down.
      */
     static void writeWaterfallCurtain(FloatBuffer buffer, IntBuffer indices,
                                       int x, int y, int z, int dir,
-                                      float[] corners, float dropRel, float light) {
+                                      float landingRel, float light) {
         float[] base = blockColors[WATER];
         float r = base[0], g = base[1], b = base[2];
-        float vLen = Math.min(1.0f, -dropRel * 0.45f);
-        float c0 = corners[0], c1 = corners[1], c2 = corners[2], c3 = corners[3];
+        // The lip cannot punch through a landing shallower than its own drop.
+        float lipDrop = Math.min(CURTAIN_LIP, -landingRel);
+        float lipOut = lipDrop;
+        float vLenLip = Math.min(1.0f, lipDrop * 1.2f);
+        float vLenStream = Math.min(1.0f, (-landingRel - lipDrop) * 0.45f);
+        float nDiag = 0.7071f;
+
         switch (dir) {
-            case 0: // +X face: weld plane x+1, weld c1..c3, drop to the landing
+            case 0: // +X: lip leans out past the boundary, stream falls beyond it
                 quad(buffer, indices, x, y, z,
-                        1.0f, c1, 0.0f, 1.0f, c3, 1.0f,
-                        1.0f, dropRel, 1.0f, 1.0f, dropRel, 0.0f,
-                        1.0f, 0.0f, 0.0f, r, g, b, 0.92f, light,
-                        0.0f, 0.0f, 1.0f, vLen);
+                        1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 1.0f,
+                        1.0f + lipOut, -lipDrop, 1.0f, 1.0f + lipOut, -lipDrop, 0.0f,
+                        nDiag, nDiag, 0.0f, r, g, b, 0.92f, light,
+                        0.0f, 0.0f, 1.0f, vLenLip);
+                quad(buffer, indices, x, y, z,
+                        1.0f + lipOut, -lipDrop, 0.0f, 1.0f + lipOut, -lipDrop, 1.0f,
+                        1.0f + lipOut, landingRel, 1.0f, 1.0f + lipOut, landingRel, 0.0f,
+                        1.0f, 0.0f, 0.0f, r, g, b, 0.95f, light,
+                        0.0f, 0.0f, 1.0f, vLenStream);
                 break;
-            case 1: // -X face
+            case 1: // -X
                 quad(buffer, indices, x, y, z,
-                        0.0f, c2, 1.0f, 0.0f, c0, 0.0f,
-                        0.0f, dropRel, 0.0f, 0.0f, dropRel, 1.0f,
-                        -1.0f, 0.0f, 0.0f, r, g, b, 0.92f, light,
-                        0.0f, 0.0f, 1.0f, vLen);
+                        0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f,
+                        -lipOut, -lipDrop, 0.0f, -lipOut, -lipDrop, 1.0f,
+                        -nDiag, nDiag, 0.0f, r, g, b, 0.92f, light,
+                        0.0f, 0.0f, 1.0f, vLenLip);
+                quad(buffer, indices, x, y, z,
+                        -lipOut, -lipDrop, 1.0f, -lipOut, -lipDrop, 0.0f,
+                        -lipOut, landingRel, 0.0f, -lipOut, landingRel, 1.0f,
+                        -1.0f, 0.0f, 0.0f, r, g, b, 0.95f, light,
+                        0.0f, 0.0f, 1.0f, vLenStream);
                 break;
-            case 2: // +Z face
+            case 2: // +Z
                 quad(buffer, indices, x, y, z,
-                        1.0f, c3, 1.0f, 0.0f, c2, 1.0f,
-                        0.0f, dropRel, 1.0f, 1.0f, dropRel, 1.0f,
-                        0.0f, 0.0f, 1.0f, r, g, b, 0.92f, light,
-                        0.0f, 0.0f, 1.0f, vLen);
+                        1.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f,
+                        0.0f, -lipDrop, 1.0f + lipOut, 1.0f, -lipDrop, 1.0f + lipOut,
+                        0.0f, nDiag, nDiag, r, g, b, 0.92f, light,
+                        0.0f, 0.0f, 1.0f, vLenLip);
+                quad(buffer, indices, x, y, z,
+                        0.0f, -lipDrop, 1.0f + lipOut, 1.0f, -lipDrop, 1.0f + lipOut,
+                        1.0f, landingRel, 1.0f + lipOut, 0.0f, landingRel, 1.0f + lipOut,
+                        0.0f, 0.0f, 1.0f, r, g, b, 0.95f, light,
+                        0.0f, 0.0f, 1.0f, vLenStream);
                 break;
-            default: // -Z face
+            default: // -Z
                 quad(buffer, indices, x, y, z,
-                        0.0f, c0, 0.0f, 1.0f, c1, 0.0f,
-                        1.0f, dropRel, 0.0f, 0.0f, dropRel, 0.0f,
-                        0.0f, 0.0f, -1.0f, r, g, b, 0.92f, light,
-                        0.0f, 0.0f, 1.0f, vLen);
+                        0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+                        1.0f, -lipDrop, -lipOut, 0.0f, -lipDrop, -lipOut,
+                        0.0f, nDiag, -nDiag, r, g, b, 0.92f, light,
+                        0.0f, 0.0f, 1.0f, vLenLip);
+                quad(buffer, indices, x, y, z,
+                        1.0f, -lipDrop, -lipOut, 0.0f, -lipDrop, -lipOut,
+                        0.0f, landingRel, -lipOut, 1.0f, landingRel, -lipOut,
+                        0.0f, 0.0f, -1.0f, r, g, b, 0.95f, light,
+                        0.0f, 0.0f, 1.0f, vLenStream);
                 break;
         }
     }

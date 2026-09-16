@@ -397,51 +397,73 @@ class WaterSimulationTest {
     }
 
     /**
-     * A terrace edge with nothing spring-fed below it still gets a curtain:
-     * the ledge finds the dry step, picks the deepest landing, and the quad
-     * welds exactly to its own lattice-corner heights at the shared edge.
+     * A pit corner has two open walls, not one: both must earn a curtain, or
+     * one of them stays an open slit of sky. A flush shelf still gets none.
      */
     @Test
-    void stepCurtainBridgeTerraceStepsWithExactWelds() {
+    void stepCurtainDetectsEveryQualifyingEdge() {
         WorldChunk chunk = chunk(0, 0);
+        // A supporting shelf under both water cells.
         for (int y = 0; y <= 2; y++) {
             for (int x = 4; x <= 6; x++) {
                 chunk.blocks[WorldChunk.blockIndex(x, y, 4)] = (byte) Block.STONE;
             }
         }
+        // +X of (6,3,4): a modest one-row step down.
         for (int y = 0; y <= 1; y++) {
             chunk.blocks[WorldChunk.blockIndex(7, y, 4)] = (byte) Block.STONE;
         }
+        // +Z of (6,3,4): a deeper step down.
+        chunk.blocks[WorldChunk.blockIndex(6, 0, 5)] = (byte) Block.STONE;
+        // -Z of (6,3,4): a solid bank, not a step.
+        chunk.blocks[WorldChunk.blockIndex(6, 3, 3)] = (byte) Block.STONE;
+
         chunk.setWaterLevel(5, 3, 4, 6);
         chunk.setWaterLevel(6, 3, 4, 6);
 
-        float[] out = new float[1];
-        assertEquals(0, chunk.stepCurtainBest(6, 3, 4, out),
-                "terrace edge +X should earn a curtain");
-        assertEquals(-2.0f + 0.98f, out[0], 0.001f,
-                "curtain should reach the step's ground, skimmed");
+        int[] dirs = new int[4];
+        float[] landings = new float[4];
+        int count = chunk.collectStepCurtains(6, 3, 4, dirs, landings);
 
-        // The middle of a flush shelf has no dry step anywhere near.
-        assertEquals(-1, chunk.stepCurtainBest(5, 3, 4, out));
+        assertEquals(2, count, "both open steps should earn a curtain, not just the deepest");
+        boolean sawShallow = false;
+        boolean sawDeep = false;
+        for (int i = 0; i < count; i++) {
+            if (dirs[i] == 0) {
+                assertEquals(-2.0f + 0.98f, landings[i], 0.001f);
+                sawShallow = true;
+            } else if (dirs[i] == 2) {
+                assertEquals(-3.0f + 0.98f, landings[i], 0.001f);
+                sawDeep = true;
+            }
+        }
+        assertTrue(sawShallow && sawDeep, "expected both +X and +Z directions to qualify");
+
+        // The middle of a flush shelf (wet or banked all round) has no step.
+        assertEquals(0, chunk.collectStepCurtains(5, 3, 4, dirs, landings));
     }
 
     /**
-     * The curtain quad: one face, finite, welded at plane x+1 to corner
-     * heights c1 and c3, foot at the landing depth.
+     * The curtain assembly: a 45-degree lip off the cell's flat floor edge
+     * (not the sloped water-surface top, so it never overlaps the block's
+     * own side face) plus a stream falling from the lip's outer edge to the
+     * landing -- two quads, finite, offset past the cell boundary.
      */
     @Test
-    void stepCurtainQuadWeldsAndLandsExactly() {
-        java.nio.FloatBuffer buffer = org.lwjgl.BufferUtils.createFloatBuffer(56);
-        java.nio.IntBuffer indices = org.lwjgl.BufferUtils.createIntBuffer(6);
+    void stepCurtainAssemblyClearsTheBoundaryPlane() {
+        java.nio.FloatBuffer buffer = org.lwjgl.BufferUtils.createFloatBuffer(2 * 56);
+        java.nio.IntBuffer indices = org.lwjgl.BufferUtils.createIntBuffer(2 * 6);
 
-        Block.writeWaterfallCurtain(buffer, indices, 6, 3, 4, 0,
-                new float[]{0.8f, 0.85f, 0.8f, 0.85f}, -1.02f, 0.8f);
+        Block.writeWaterfallCurtain(buffer, indices, 6, 3, 4, 0, -1.02f, 0.8f);
 
-        assertEquals(56, buffer.position());
-        assertEquals(6, indices.position());
-        assertEquals(7.0f, buffer.get(0), 0.0001f);       // plane x+1
-        assertEquals(3.85f, buffer.get(1), 0.0001f);      // corner height c1
-        assertEquals(4.0f, buffer.get(2), 0.0001f);       // weld at z
+        assertEquals(2 * 56, buffer.position());
+        assertEquals(2 * 6, indices.position());
+        assertEquals(7.0f, buffer.get(0), 0.0001f);        // lip starts at plane x+1
+        assertEquals(3.0f, buffer.get(1), 0.0001f);        // ... at this cell's flat floor
+        assertEquals(4.0f, buffer.get(2), 0.0001f);        // weld at z
+        // The stream quad (second, at offset 56) must stand past the boundary
+        // plane, not on it -- otherwise it re-coincides with a wall's own face.
+        assertTrue(buffer.get(56) > 7.0f, "stream should be offset past the cell boundary");
         for (int i = 0; i < buffer.position(); i++) {
             assertFalse(Float.isNaN(buffer.get(i)), "NaN at vertex float " + i);
         }
