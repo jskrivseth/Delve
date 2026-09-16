@@ -2510,6 +2510,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         int wetSurfaces = 0;
         int unknownColumns = 0;
         boolean hasFullWater = false;
+        boolean bankContact = false;
         int fallDistance = 0;
         for (int dx = -1; dx <= 0; dx++) {
             for (int dz = -1; dz <= 0; dz++) {
@@ -2533,10 +2534,19 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                     wetSurfaces++;
                     continue;
                 }
-                // Dry. A solid bank votes nothing; an open cell may speak.
-                if (solidHere(cx, cz, y)) {
+                // Dry. An ordinary solid bank votes nothing, but a bank
+                // that carries water over its brim is a spill: every
+                // corner touching it must meet the bank's top, or the
+                // lower sheet leaves a visible strip of wall behind the
+                // lip. Any edge can qualify; symmetric column sampling
+                // makes north, south, east, west, and pit walls alike.
+                if (solidHere(cx, y, cz)) {
+                    if (waterLevelAt(cx, y + 1, cz) > 0) {
+                        bankContact = true;
+                    }
                     continue;
                 }
+
                 // Waterfall: water hangs above this open column. This
                 // sheet's corner rises the full shaft distance to meet the
                 // underside of that water -- a near-vertical curtain from
@@ -2561,6 +2571,13 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         if (hasFullWater) {
             // A brim shared with plain water keeps full height: the trough
             // killer at source rims.
+            return 1.0f;
+        }
+        if (bankContact) {
+            // Spill contact weld: a corner grazing a bank that carries
+            // water over its brim meets the bank top exactly. Sharing the
+            // same four-column vote on both sides of the wall or pit rim
+            // keeps the lattice continuous on every edge, not just one.
             return 1.0f;
         }
         // Plain mean of adjacent wet surfaces: equal levels tile flat,

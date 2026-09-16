@@ -870,4 +870,53 @@ class WaterSimulationTest {
         assertEquals(7, chunk.waterLevel(5, 4, 4),
                 "waterfall column decayed despite continuing feed");
     }
+
+    /**
+     * Spill contact weld: every lattice corner touching a bank that carries
+     * water over its brim must meet the bank's top, whichever side spills.
+     * A one-block hole's walls are banks too, so the rule is symmetric --
+     * north, south, east, west all weld; the far edge of each lower sheet
+     * keeps its level-derived height.
+     */
+    @Test
+    void brimmingBankWeldsEveryTouchingCornerOnAllFourSides() {
+        WorldChunk chunk = chunk(0, 0);
+        chunk.blocks[WorldChunk.blockIndex(5, 5, 5)] = (byte) Block.STONE;
+        chunk.setWaterLevel(5, 6, 5, 5);     // feed brimming the bank's brim
+        chunk.setWaterLevel(6, 5, 5, 4);     // east lower sheet
+        chunk.setWaterLevel(4, 5, 5, 4);     // west
+        chunk.setWaterLevel(5, 5, 6, 4);     // +z
+        chunk.setWaterLevel(5, 5, 4, 4);     // -z
+
+        // All four lattice corners of the bank touch both the bank and a
+        // lower sheet: each meets the bank top exactly.
+        assertEquals(1.0f, chunk.waterCornerHeight(5, 5, 5), 0.0001f);
+        assertEquals(1.0f, chunk.waterCornerHeight(6, 5, 5), 0.0001f);
+        assertEquals(1.0f, chunk.waterCornerHeight(5, 5, 6), 0.0001f);
+        assertEquals(1.0f, chunk.waterCornerHeight(6, 5, 6), 0.0001f);
+
+        // The east sheet's far edge is untouched: level 4 votes 0.65.
+        assertEquals(0.65f, chunk.waterCornerHeight(7, 5, 5), 0.0001f);
+
+        // Pull the feed back and the weld releases: an ordinary dry bank
+        // still votes nothing, so the shared corners sag to the flow mean.
+        chunk.setWaterLevel(5, 6, 5, 0);
+        assertEquals(0.65f, chunk.waterCornerHeight(5, 5, 5), 0.0001f);
+        assertEquals(0.65f, chunk.waterCornerHeight(6, 5, 5), 0.0001f);
+    }
+
+    /**
+     * The bank probe reads (x, y, z) -- unequal coordinates would sail past
+     * a transposed lookup: the bank sits at z=10 while the buggy probe
+     * would interrogate y=10 in vain and vote the bank dry and open.
+     */
+    @Test
+    void brimmingBankProbeUsesRealHeightsNotTransposedCoordinates() {
+        WorldChunk chunk = chunk(0, 0);
+        chunk.blocks[WorldChunk.blockIndex(3, 6, 10)] = (byte) Block.STONE;
+        chunk.setWaterLevel(3, 7, 10, 5);    // feed brimming the bank's brim
+        chunk.setWaterLevel(4, 6, 10, 4);    // east lower sheet
+
+        assertEquals(1.0f, chunk.waterCornerHeight(4, 6, 10), 0.0001f);
+    }
 }
