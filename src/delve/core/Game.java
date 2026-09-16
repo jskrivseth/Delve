@@ -148,9 +148,9 @@ public class Game {
      *  F9 dev menu -- longer makes new terrain visibly ease in/out instead
      *  of popping. */
     public static float OPT_CHUNK_FADE_DURATION_MS = 1500.0f;
-    /** New terrain becomes readable quickly; fade-out intentionally remains
-     *  slower through OPT_CHUNK_FADE_DURATION_MS. */
-    public static float OPT_CHUNK_FADE_IN_DURATION_MS = 180.0f;
+    /** New terrain eases in over about half a second -- enough to read as a
+     *  fade rather than a pop -- while fade-out remains slower. */
+    public static float OPT_CHUNK_FADE_IN_DURATION_MS = 550.0f;
     /**
      * Terrain emerges quickly next to the player and gradually slower with
      * distance, so the horizon paints outward instead of snapping in: a
@@ -170,7 +170,7 @@ public class Game {
      * repainted from the centre out. Under memory pressure the grace period
      * collapses, because then the memory genuinely has to come back.
      */
-    public static float OPT_CHUNK_RELEASE_GRACE_MS = 10_000.0f;
+    public static float OPT_CHUNK_RELEASE_GRACE_MS = 15_000.0f;
     /** Fraction of draw distance devoted to the smooth fade at the edge of
      *  view (higher = wider, more gradual falloff into fog/sky well before
      *  the actual draw-distance boundary, instead of a hard line). Tuned via
