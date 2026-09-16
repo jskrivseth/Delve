@@ -2541,15 +2541,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                 // lip. Any edge can qualify; symmetric column sampling
                 // makes north, south, east, west, and pit walls alike.
                 if (solidHere(cx, y, cz)) {
-                    // Brim water crowns this bank directly, or flow one
-                    // row back is still crossing toward the lip: both
-                    // count as a spill the lower sheet must meet.
-                    int brim = y + 1;
-                    if (waterLevelAt(cx, brim, cz) > 0
-                            || waterLevelAt(cx + 1, brim, cz) > 0
-                            || waterLevelAt(cx - 1, brim, cz) > 0
-                            || waterLevelAt(cx, brim, cz + 1) > 0
-                            || waterLevelAt(cx, brim, cz - 1) > 0) {
+                    if (feedAboveBrim(cx, cz, y)) {
                         bankContact = true;
                     }
                     continue;
@@ -2620,6 +2612,55 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     private boolean solidHere(int x, int y, int z) {
         return y < 0 || y >= sizeY
                 || World.isSolidGlobal(worldPosX + x, y, worldPosY + z);
+    }
+
+    /**
+     * Whether credible spill feed crowns this bank column's brim: water
+     * riding the crest, flow a row back still crossing toward the lip, or
+     * a pond seated atop a one- or two-block wall. Five arms climb from
+     * the row just above the bank -- the column itself plus its cardinal
+     * neighbours -- and die at the first solid. Only a few rows are read,
+     * and the vote only ever lifts corners that already touch a wet sheet,
+     * so ordinary dry shorelines keep voting nothing.
+     */
+    private boolean feedAboveBrim(int cx, int cz, int y) {
+        int alive = 0b11110;   // center handled apart; +x, -x, +z, -z arms
+        int buried = 0;        // center's own wall course it tunnels
+        for (int k = 1; k <= 4; k++) {
+            int yy = y + k;
+            if (buried < 2) {
+                if (waterLevelAt(cx, yy, cz) > 0) {
+                    return true;
+                }
+                if (solidHere(cx, yy, cz)) {
+                    // Passing through one's own short crest is the wall a
+                    // pond sits on; a taller mass is a cliff, not a bank.
+                    buried++;
+                }
+            }
+            for (int arm = 1; arm < 5 && alive != 0; arm++) {
+                if ((alive & (1 << arm)) == 0) {
+                    continue;
+                }
+                int ax = switch (arm) {
+                    case 1 -> cx + 1;
+                    case 2 -> cx - 1;
+                    default -> cx;
+                };
+                int az = switch (arm) {
+                    case 3 -> cz + 1;
+                    case 4 -> cz - 1;
+                    default -> cz;
+                };
+                if (waterLevelAt(ax, yy, az) > 0) {
+                    return true;
+                }
+                if (solidHere(ax, yy, az)) {
+                    alive &= ~(1 << arm);   // buried: this arm stops climbing
+                }
+            }
+        }
+        return false;
     }
 
     private static final int WATERFALL_CONNECTOR_FACES = 13;

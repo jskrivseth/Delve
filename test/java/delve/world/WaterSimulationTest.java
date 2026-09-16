@@ -921,6 +921,26 @@ class WaterSimulationTest {
     }
 
     /**
+     * A wall two blocks tall with its pond seated on top: the crest row
+     * beside the bank reads dry masonry, but the feed sits two rows up.
+     * The corner at the pool's back edge must still reach the wall top.
+     */
+    @Test
+    void pondAtopTallerWallWeldsPoolBackEdge() {
+        WorldChunk chunk = chunk(0, 0);
+        chunk.blocks[WorldChunk.blockIndex(5, 5, 5)] = (byte) Block.STONE;
+        chunk.blocks[WorldChunk.blockIndex(5, 6, 5)] = (byte) Block.STONE;
+        chunk.setWaterLevel(6, 5, 5, 4);     // lower pool at the wall foot
+
+        // Pond absent: dry masonry above the foot. No lift.
+        assertEquals(0.65f, chunk.waterCornerHeight(6, 5, 5), 0.0001f);
+
+        // Pond seated two rows up, crowning the taller wall.
+        chunk.setWaterLevel(5, 7, 5, 5);
+        assertEquals(1.0f, chunk.waterCornerHeight(6, 5, 5), 0.0001f);
+    }
+
+    /**
      * The image-3 fixture: a wall spans a lower pool, and the spilling
      * pond sits one row BACK from the brim -- the cell directly above the
      * wall column reads dry. Flow crossing toward the lip is still a
