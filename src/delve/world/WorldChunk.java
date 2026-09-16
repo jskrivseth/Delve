@@ -2308,9 +2308,8 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                             } else {
                                 int exposed = computeExposedFaces(voxels, i, j, k, EXPOSED_FACES);
                                 faceCount += exposed;
-                                if (exposed > 0 && type == Block.WATER
-                                        && springOverFall(i, j, k, voxels)) {
-                                    faceCount += WATERFALL_CONNECTOR_FACES;
+                                if (exposed > 0 && type == Block.WATER) {
+                                    faceCount += waterConnectorFaces(i, j, k, voxels);
                                 }
                             }
                             blockCount++;
@@ -2360,6 +2359,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             this.pendingOpaqueIndices = indices.position();
 
             float[] waterTopHeights = new float[4];
+            float[] curtainOut = new float[1];
             for (int i = 0; i < sizeX; i++) {
                 for (int j = 0; j < ceiling; j++) {
                     for (int k = 0; k < sizeZ; k++) {
@@ -2383,6 +2383,12 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                                                 i, j, k, springTop, fallRelY,
                                                 lightAt(i, j - 1, k) / 15.0f);
                                     }
+                                }
+                                int curtainDir = stepCurtainBest(i, j, k, curtainOut);
+                                if (curtainDir >= 0) {
+                                    Block.writeWaterfallCurtain(buffer, indices,
+                                            i, j, k, curtainDir, waterTopHeights,
+                                            curtainOut[0], lightAt(i, j - 1, k) / 15.0f);
                                 }
                             } else {
                                 Block.writeCube(buffer, indices, i, j, k,
@@ -2634,6 +2640,90 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                 return -d + 0.98f;   // dry shaft floor, skimmed
             }
             // Air: open shaft, keep falling.
+        }
+        return 0.0f;
+    }
+
+    private static final float[] CURTAIN_FACES_OUT = new float[1];
+
+    /**
+     * Connector faces this water surface cell emits: 13 for a spring's
+     * collar+stream, 1 for a step curtain. Both build passes call this
+     * identical predicate, so the exact-fit buffers always hold the geometry.
+     */
+    private int waterConnectorFaces(int x, int y, int z, byte[] voxels) {
+        int faces = 0;
+        if (springOverFall(x, y, z, voxels)) {
+            faces += WATERFALL_CONNECTOR_FACES;
+        }
+        if (stepCurtainBest(x, y, z, CURTAIN_FACES_OUT) >= 0) {
+            faces++;
+        }
+        return faces;
+    }
+
+    private static final int[] CURTAIN_DX = {1, -1, 0, 0};
+    private static final int[] CURTAIN_DZ = {0, 0, 1, -1};
+    private static final float CURTAIN_MIN_DROP = -0.9f;
+    private static final float CURTAIN_MAX_DROP = -5.6f;
+
+    /**
+     * A gap-filling fall curtain: this ledge cell carries a visible surface
+     * and looks across into a bone-dry, unobstructed step that finishes its
+     * drop within a few cells -- a terrace edge, a dug-out brink, a pool-side
+     * shelf too far below to tile flush. The curtain welds to the exact
+     * lattice-corner heights of the shared edge and drapes to the landing,
+     * so no slit of sky survives at the seam. Springs own the vertical story;
+     * a cell hanging over a shaft (nothing supporting it) emits no curtain.
+     * Returns the direction index of the deepest qualifying step (-1 if
+     * none), with the landing's negative offset in out[0].
+     */
+    int stepCurtainBest(int x, int y, int z, float[] out) {
+        out[0] = 0.0f;
+        if (y < 2) {
+            return -1;
+        }
+        if (waterLevelAt(x, y - 1, z) == 0
+                && !World.isSolidGlobal(worldPosX + x, y - 1, worldPosY + z)) {
+            return -1;   // unsupported: a shaft cell, the stream connector's own turf
+        }
+        int bestDir = -1;
+        float deepest = 0.0f;
+        for (int d = 0; d < 4; d++) {
+            int nx = x + CURTAIN_DX[d];
+            int nz = z + CURTAIN_DZ[d];
+            if (waterLevelAt(nx, y, nz) != 0) {
+                continue;   // wet neighbour: the lattice surface already tiles across
+            }
+            if (World.isSolidGlobal(worldPosX + nx, y, worldPosY + nz)) {
+                continue;   // a bank, not a step
+            }
+            float rel = curtainLanding(nx, y, nz);
+            if (rel <= CURTAIN_MIN_DROP && rel >= CURTAIN_MAX_DROP && rel < deepest) {
+                deepest = rel;
+                bestDir = d;
+            }
+        }
+        out[0] = deepest;
+        return bestDir;
+    }
+
+    /**
+     * The offset a step curtain should reach: descend a column until resting
+     * or transit water (whose surface is taken) or solid ground (skimmed just
+     * proud of its top). Zero means no landing worth welding to -- bottomless
+     * or the very first row below already holds water, so there is no open
+     * step here.
+     */
+    private float curtainLanding(int x, int y, int z) {
+        for (int d = 1; d <= 6 && y - d >= 0; d++) {
+            int level = waterLevelAt(x, y - d, z);
+            if (level > 0) {
+                return -d + waterSurfaceHeight(level);
+            }
+            if (World.isSolidGlobal(worldPosX + x, y - d, worldPosY + z)) {
+                return -d + 0.98f;
+            }
         }
         return 0.0f;
     }

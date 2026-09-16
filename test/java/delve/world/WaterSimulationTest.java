@@ -397,6 +397,57 @@ class WaterSimulationTest {
     }
 
     /**
+     * A terrace edge with nothing spring-fed below it still gets a curtain:
+     * the ledge finds the dry step, picks the deepest landing, and the quad
+     * welds exactly to its own lattice-corner heights at the shared edge.
+     */
+    @Test
+    void stepCurtainBridgeTerraceStepsWithExactWelds() {
+        WorldChunk chunk = chunk(0, 0);
+        for (int y = 0; y <= 2; y++) {
+            for (int x = 4; x <= 6; x++) {
+                chunk.blocks[WorldChunk.blockIndex(x, y, 4)] = (byte) Block.STONE;
+            }
+        }
+        for (int y = 0; y <= 1; y++) {
+            chunk.blocks[WorldChunk.blockIndex(7, y, 4)] = (byte) Block.STONE;
+        }
+        chunk.setWaterLevel(5, 3, 4, 6);
+        chunk.setWaterLevel(6, 3, 4, 6);
+
+        float[] out = new float[1];
+        assertEquals(0, chunk.stepCurtainBest(6, 3, 4, out),
+                "terrace edge +X should earn a curtain");
+        assertEquals(-2.0f + 0.98f, out[0], 0.001f,
+                "curtain should reach the step's ground, skimmed");
+
+        // The middle of a flush shelf has no dry step anywhere near.
+        assertEquals(-1, chunk.stepCurtainBest(5, 3, 4, out));
+    }
+
+    /**
+     * The curtain quad: one face, finite, welded at plane x+1 to corner
+     * heights c1 and c3, foot at the landing depth.
+     */
+    @Test
+    void stepCurtainQuadWeldsAndLandsExactly() {
+        java.nio.FloatBuffer buffer = org.lwjgl.BufferUtils.createFloatBuffer(56);
+        java.nio.IntBuffer indices = org.lwjgl.BufferUtils.createIntBuffer(6);
+
+        Block.writeWaterfallCurtain(buffer, indices, 6, 3, 4, 0,
+                new float[]{0.8f, 0.85f, 0.8f, 0.85f}, -1.02f, 0.8f);
+
+        assertEquals(56, buffer.position());
+        assertEquals(6, indices.position());
+        assertEquals(7.0f, buffer.get(0), 0.0001f);       // plane x+1
+        assertEquals(3.85f, buffer.get(1), 0.0001f);      // corner height c1
+        assertEquals(4.0f, buffer.get(2), 0.0001f);       // weld at z
+        for (int i = 0; i < buffer.position(); i++) {
+            assertFalse(Float.isNaN(buffer.get(i)), "NaN at vertex float " + i);
+        }
+    }
+
+    /**
      * The waterfall connector (plug + skirt + sheet + cap = 13 quads) emits
      * its full vertex/index budget with finite coordinates.
      */

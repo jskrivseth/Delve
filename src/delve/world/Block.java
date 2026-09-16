@@ -696,6 +696,51 @@ public class Block implements Serializable {
                 0.5f, 0.0f, 0.5f, 0.5f);
     }
 
+    /**
+     * One-quad fall curtain closing a step between water cells: its top
+     * edge rides the shared boundary's two exact lattice-corner heights
+     * (seamless weld to the ledge face), its bottom reaches the landing
+     * surface one side down. Corners are (-x,-z), (+x,-z), (-x,+z), (+x,+z).
+     */
+    static void writeWaterfallCurtain(FloatBuffer buffer, IntBuffer indices,
+                                      int x, int y, int z, int dir,
+                                      float[] corners, float dropRel, float light) {
+        float[] base = blockColors[WATER];
+        float r = base[0], g = base[1], b = base[2];
+        float vLen = Math.min(1.0f, -dropRel * 0.45f);
+        float c0 = corners[0], c1 = corners[1], c2 = corners[2], c3 = corners[3];
+        switch (dir) {
+            case 0: // +X face: weld plane x+1, weld c1..c3, drop to the landing
+                quad(buffer, indices, x, y, z,
+                        1.0f, c1, 0.0f, 1.0f, c3, 1.0f,
+                        1.0f, dropRel, 1.0f, 1.0f, dropRel, 0.0f,
+                        1.0f, 0.0f, 0.0f, r, g, b, 0.92f, light,
+                        0.0f, 0.0f, 1.0f, vLen);
+                break;
+            case 1: // -X face
+                quad(buffer, indices, x, y, z,
+                        0.0f, c2, 1.0f, 0.0f, c0, 0.0f,
+                        0.0f, dropRel, 0.0f, 0.0f, dropRel, 1.0f,
+                        -1.0f, 0.0f, 0.0f, r, g, b, 0.92f, light,
+                        0.0f, 0.0f, 1.0f, vLen);
+                break;
+            case 2: // +Z face
+                quad(buffer, indices, x, y, z,
+                        1.0f, c3, 1.0f, 0.0f, c2, 1.0f,
+                        0.0f, dropRel, 1.0f, 1.0f, dropRel, 1.0f,
+                        0.0f, 0.0f, 1.0f, r, g, b, 0.92f, light,
+                        0.0f, 0.0f, 1.0f, vLen);
+                break;
+            default: // -Z face
+                quad(buffer, indices, x, y, z,
+                        0.0f, c0, 0.0f, 1.0f, c1, 0.0f,
+                        1.0f, dropRel, 0.0f, 0.0f, dropRel, 0.0f,
+                        0.0f, 0.0f, -1.0f, r, g, b, 0.92f, light,
+                        0.0f, 0.0f, 1.0f, vLen);
+                break;
+        }
+    }
+
     private static final float WATER_U0 = BLOCK_TILES[WATER][2] / ATLAS_TILES + UV_INSET;
     private static final float WATER_U1 = (BLOCK_TILES[WATER][2] + 1) / ATLAS_TILES - UV_INSET;
     private static final float WATER_V0 = BLOCK_TILES[WATER][3] / ATLAS_TILES + UV_INSET;
