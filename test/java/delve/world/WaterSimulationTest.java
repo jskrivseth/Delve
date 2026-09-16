@@ -366,6 +366,32 @@ class WaterSimulationTest {
     }
 
     /**
+     * Spring detection scans DOWN THROUGH flowing columns: an active fall
+     * (flow cells in transit above a resting pool) is detected, a rim
+     * sitting directly on resting water is not.
+     */
+    @Test
+    void springDetectionSeesThroughFallingColumns() {
+        WorldChunk chunk = chunk(0, 0);
+        chunk.blocks[WorldChunk.blockIndex(5, 3, 4)] = (byte) Block.STONE;
+        chunk.setWaterLevel(5, 4, 4, 1);    // resting pool
+        chunk.setWaterLevel(5, 5, 4, 7);    // flow in transit
+        chunk.setWaterLevel(5, 6, 4, 7);    // flow in transit
+        chunk.setWaterLevel(5, 7, 4, 7);    // flow leaving the rim
+
+        assertEquals(-3.0f + WorldChunk.waterSurfaceHeight(1),
+                chunk.waterfallFallRelY(5, 7, 4), 0.0001f);
+
+        // Rim directly on resting water: contact, not a fall.
+        chunk.setWaterLevel(5, 5, 4, 0);
+        chunk.setWaterLevel(5, 6, 4, 0);
+        chunk.setWaterLevel(5, 7, 4, 0);
+        chunk.setWaterLevel(5, 6, 4, 1);
+        assertTrue(chunk.waterfallFallRelY(5, 7, 4) > -0.95f,
+                "contact pool mistaken for a fall");
+    }
+
+    /**
      * The waterfall connector (plug + skirt + sheet + cap = 13 quads) emits
      * its full vertex/index budget with finite coordinates.
      */

@@ -2376,7 +2376,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                                     // pool surface, and drape the falling sheet
                                     // from this cell's own skin down through it.
                                     float fallRelY = waterfallFallRelY(i, j, k);
-                                    if (fallRelY < -0.02f) {
+                                    if (fallRelY <= -0.95f) {
                                         float springTop = (waterTopHeights[0] + waterTopHeights[1]
                                                 + waterTopHeights[2] + waterTopHeights[3]) * 0.25f;
                                         Block.writeWaterfallConnector(buffer, indices,
@@ -2592,29 +2592,39 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     private static final int MAX_FALL_SCAN = 8;
 
     /**
-     * A spring ledge: this water cell has open air directly beneath (the
-     * shaft) and something to land on -- water or stone -- within scan
-     * range. Column-local on purpose: near chunk borders the scan simply
-     * finds nothing and the connector politely abstains.
+     * A spring ledge: falling water or open air directly beneath, and
+     * something to land on -- resting water or stone -- at least a cell
+     * below. Active falls (flow-filled shafts) count; a pool sitting right
+     * under the rim does not.
      */
     private boolean springOverFall(int x, int y, int z, byte[] voxels) {
-        if (y < 3 || waterLevelAt(x, y - 1, z) != 0
-                || voxels[blockIndex(x, y - 1, z)] != 0) {
+        if (y < 3) {
             return false;
         }
-        return waterfallFallRelY(x, y, z) < -0.02f;
+        // Below is anything water can travel through: air or flow.
+        if (voxels[blockIndex(x, y - 1, z)] != 0 && waterLevelAt(x, y - 1, z) == 0) {
+            return false;   // solid: no fall here at all
+        }
+        return waterfallFallRelY(x, y, z) <= -0.95f;
     }
 
-    /** Pool (or plunge floor) surface height relative to this cell's floor. */
+    /**
+     * Resting surface (pool skin or shaft floor) below a spring, relative
+     * to this cell's floor: scan down THROUGH flowing columns (levels 2-7
+     * are transit, not a landing) until resting water (level 1 or 8), a
+     * solid floor, or the scan budget ends. Zero means no credible fall.
+     */
     float waterfallFallRelY(int x, int y, int z) {
-        for (int d = 2; d <= MAX_FALL_SCAN && y - d >= 0; d++) {
+        for (int d = 1; d <= MAX_FALL_SCAN && y - d >= 0; d++) {
             int level = waterLevelAt(x, y - d, z);
-            if (level > 0) {
+            if (level == 1 || level == 8) {
                 return -d + waterSurfaceHeight(level);
             }
-            if (getBlock(x, y - d, z) != 0) {
+            int type = getBlock(x, y - d, z);
+            if (type != 0 && type != Block.WATER) {
                 return -d + 0.98f;   // dry shaft floor, skimmed
             }
+            // Air, or flow in transit: keep falling down the column.
         }
         return 0.0f;
     }
