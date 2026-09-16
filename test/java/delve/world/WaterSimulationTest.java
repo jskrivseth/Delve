@@ -919,4 +919,25 @@ class WaterSimulationTest {
 
         assertEquals(1.0f, chunk.waterCornerHeight(4, 6, 10), 0.0001f);
     }
+
+    /**
+     * The image-3 fixture: a wall spans a lower pool, and the spilling
+     * pond sits one row BACK from the brim -- the cell directly above the
+     * wall column reads dry. Flow crossing toward the lip is still a
+     * spill, so the corner touching that wall must weld to its top.
+     */
+    @Test
+    void flowApproachingTheBrimFromBehindStillWelds() {
+        WorldChunk chunk = chunk(0, 0);
+        chunk.blocks[WorldChunk.blockIndex(5, 5, 5)] = (byte) Block.STONE;
+        chunk.setWaterLevel(6, 5, 5, 4);     // east lower sheet at wall foot
+        chunk.setWaterLevel(5, 5, 6, 4);     // south lower sheet
+
+        // Crest dry: nothing above the wall, nothing behind it.
+        assertEquals(0.65f, chunk.waterCornerHeight(6, 5, 5), 0.0001f);
+
+        // Pond one row back and a step up -- classic over-the-bank feed.
+        chunk.setWaterLevel(5, 6, 6, 5);
+        assertEquals(1.0f, chunk.waterCornerHeight(6, 5, 5), 0.0001f);
+    }
 }

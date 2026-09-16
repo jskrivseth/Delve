@@ -2541,7 +2541,15 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                 // lip. Any edge can qualify; symmetric column sampling
                 // makes north, south, east, west, and pit walls alike.
                 if (solidHere(cx, y, cz)) {
-                    if (waterLevelAt(cx, y + 1, cz) > 0) {
+                    // Brim water crowns this bank directly, or flow one
+                    // row back is still crossing toward the lip: both
+                    // count as a spill the lower sheet must meet.
+                    int brim = y + 1;
+                    if (waterLevelAt(cx, brim, cz) > 0
+                            || waterLevelAt(cx + 1, brim, cz) > 0
+                            || waterLevelAt(cx - 1, brim, cz) > 0
+                            || waterLevelAt(cx, brim, cz + 1) > 0
+                            || waterLevelAt(cx, brim, cz - 1) > 0) {
                         bankContact = true;
                     }
                     continue;
