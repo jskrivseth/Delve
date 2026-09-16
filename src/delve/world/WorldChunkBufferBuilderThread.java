@@ -19,18 +19,23 @@ public class WorldChunkBufferBuilderThread implements Runnable {
 
     @Override
     public void run() {
-        synchronized (chunkToProcess) {
-            if (!World.isChunkInCurrentBounds(chunkToProcess)) {
-                chunkToProcess.isBuilding = false;
-                chunkToProcess.isRefreshing = false;
-                return;
+        long ticket = PipeTimer.begin();
+        try {
+            synchronized (chunkToProcess) {
+                if (!World.isChunkInCurrentBounds(chunkToProcess)) {
+                    chunkToProcess.isBuilding = false;
+                    chunkToProcess.isRefreshing = false;
+                    return;
+                }
+                try {
+                    chunkToProcess.buildMesh();
+                } finally {
+                    chunkToProcess.isBuilding = false;
+                    chunkToProcess.isRefreshing = false;
+                }
             }
-            try {
-                chunkToProcess.buildMesh();
-            } finally {
-                chunkToProcess.isBuilding = false;
-                chunkToProcess.isRefreshing = false;
-            }
+        } finally {
+            PipeTimer.end(PipeTimer.MESH, ticket);
         }
     }
 }

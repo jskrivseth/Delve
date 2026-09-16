@@ -21,7 +21,7 @@ public class WorldInactiveChunkSweeperThread implements Runnable {
      * be marked zombie, or its destroy fade competes with normal rendering and
      * the far horizon strobes as the camera crosses chunk boundaries.
      */
-    private static final int SWEEP_MARGIN_RINGS = 6;
+    private static final int SWEEP_MARGIN_RINGS = 4;
     /**
      * Condemnation pauses while this many chunks wait to be freed, and resumes
      * once the queue has drained (the sweep itself is the only producer, so no
@@ -108,8 +108,10 @@ public class WorldInactiveChunkSweeperThread implements Runnable {
                 firstAbsent = now;
                 thisChunk.offViewSinceNanos = now;
             }
-            long graceNanos = (long) (1_000_000.0 * (Game.MEMORY_BOUND
-                    ? GRACE_UNDER_PRESSURE_MS : Game.OPT_CHUNK_RELEASE_GRACE_MS));
+            float graceMs = Game.MEMORY_BOUND
+                    ? Math.min(GRACE_UNDER_PRESSURE_MS, Game.OPT_CHUNK_RELEASE_GRACE_MS)
+                    : Game.OPT_CHUNK_RELEASE_GRACE_MS;
+            long graceNanos = (long) (1_000_000.0 * graceMs);
             if (now - firstAbsent < graceNanos) {
                 continue;
             }
@@ -129,6 +131,7 @@ public class WorldInactiveChunkSweeperThread implements Runnable {
                         // scan of a multi-thousand entry list per candidate
                         // chunk made this sweep quadratic.
                         thisChunk.queuedForDestroy = true;
+                        thisChunk.queuedForDestroyAtNanos = System.nanoTime();
                         World.destroyChunks.add(thisChunk);
                     }
                 }

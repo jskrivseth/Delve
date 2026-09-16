@@ -64,10 +64,13 @@ public class TerrainGenerator {
                 (worldX + 401) / 62.0,
                 (surfaceY - 19) / 42.0,
                 (worldZ - 337) / 62.0));
+        double aperture = 0.105 + depth * 0.019;
+        if (broad * 0.84 >= aperture) {
+            return false;   // edge >= 0 can only push the blend past the gate
+        }
         double edge = Math.abs(PerlinNoiseGenerator.getNoise(
                 (worldX - 149) / 21.0,
                 (worldZ + 263) / 21.0));
-        double aperture = 0.105 + depth * 0.019;
         return broad * 0.84 + edge * 0.16 < aperture;
     }
 
@@ -85,10 +88,21 @@ public class TerrainGenerator {
                 (worldX + warp) / CAVE_TUNNEL_SCALE_XZ,
                 (y - warp * 0.35) / CAVE_TUNNEL_SCALE_Y,
                 (worldZ - warp) / CAVE_TUNNEL_SCALE_XZ));
+        // Early outs, provably lossless: sheets are magnitudes (>= 0), the
+        // predicate is max(first, second) + detail * 0.08 < radius, and most
+        // underground is solid. If firstSheet already meets the radius the
+        // verdict is decided; skip two thirds of the noise for the voxels
+        // that were never going to be air.
+        if (firstSheet >= radius) {
+            return false;
+        }
         double secondSheet = Math.abs(PerlinNoiseGenerator.getNoise(
                 (worldZ + 353 - warp) / (CAVE_TUNNEL_SCALE_XZ * 1.12),
                 (worldX - 127 + warp) / (CAVE_TUNNEL_SCALE_XZ * 1.12),
                 (y + 211 + warp * 0.35) / (CAVE_TUNNEL_SCALE_Y * 1.12)));
+        if (Math.max(firstSheet, secondSheet) >= radius) {
+            return false;
+        }
         double detail = Math.abs(PerlinNoiseGenerator.getNoise(
                 (worldX + 173) / CAVE_DETAIL_SCALE,
                 (y - 67) / CAVE_DETAIL_SCALE,

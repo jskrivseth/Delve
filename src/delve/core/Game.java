@@ -97,21 +97,21 @@ public class Game {
      * drifted exactly where it mattered: the loaded region grows with the
      * SQUARE of the distance, so a radius fitted at r=10 badly overshoots at
      * r=46. Fit the loaded square to about half the heap instead, using a
-     * measured ~512 KB of heap per loaded chunk (voxels, water, sky light and
-     * the pending mesh buffer waiting to reach the GPU).
+     * a conservative ~320 KB of heap per resident chunk. The dedicated
+     * sweeper now keeps residency bounded, and recent r32 stress runs measured
+     * roughly 140-200 KB/chunk including pending meshes, leaving ample margin.
      */
     public static int OPT_MAX_DRAW_DISTANCE = maxDrawDistanceForHeap();
     /**
      * Absolute ceiling on view distance, whatever the heap can technically
-     * carry. Beyond ~32 rings the extra distance is bought with chunk
-     * residency, teardown churn and streaming latency that the eye cannot
-     * tell apart from the last few rings -- so the setting stops there.
+     * carry. Forty-six restores the original long-horizon option; the
+     * heap-aware calculation still lowers this on constrained JVMs.
      */
-    public static final int VIEW_DISTANCE_CEILING = 32;
+    public static final int VIEW_DISTANCE_CEILING = 46;
 
     /** Largest render distance the current heap ceiling can carry. */
     public static int maxDrawDistanceForHeap() {
-        final long HEAP_BYTES_PER_CHUNK = 512L * 1024L;
+        final long HEAP_BYTES_PER_CHUNK = 320L * 1024L;
         long budget = (long) (Util.getMaxMemory() * 0.5);
         long chunksFit = Math.max(9, budget / HEAP_BYTES_PER_CHUNK);
         int side = (int) Math.floor(Math.sqrt((double) chunksFit));
@@ -147,10 +147,10 @@ public class Game {
     /** Chunk generate/destroy fade duration, in milliseconds. Tuned via the
      *  F9 dev menu -- longer makes new terrain visibly ease in/out instead
      *  of popping. */
-    public static float OPT_CHUNK_FADE_DURATION_MS = 1500.0f;
-    /** New terrain eases in over about half a second -- enough to read as a
+    public static float OPT_CHUNK_FADE_DURATION_MS = 1800.0f;
+    /** New terrain eases in over a third of a second -- enough to read as a
      *  fade rather than a pop -- while fade-out remains slower. */
-    public static float OPT_CHUNK_FADE_IN_DURATION_MS = 550.0f;
+    public static float OPT_CHUNK_FADE_IN_DURATION_MS = 400.0f;
     /**
      * Terrain emerges quickly next to the player and gradually slower with
      * distance, so the horizon paints outward instead of snapping in: a
@@ -159,18 +159,15 @@ public class Game {
      * ring 16 takes 1.9x and the outermost rings 4.6x. Zero disables the
      * distance term entirely (flat fade, as before).
      */
-    public static float OPT_CHUNK_FADE_RING_SQUARED = 0.0035f;
+    public static float OPT_CHUNK_FADE_RING_SQUARED = 0.00355f;
     /** Upper bound on the distance multiplier, so far rings crawl but land. */
-    public static float OPT_CHUNK_FADE_RING_MAX_SCALE = 6.0f;
+    public static float OPT_CHUNK_FADE_RING_MAX_SCALE = 3.0f;
     /**
-     * How long a chunk must stay outside the keep area before it is condemned.
-     * Pulling the view in temporarily (the memory governor, a sharp turn,
-     * flying backwards) therefore frees nothing, and the terrain is still there
-     * when the view returns -- instead of the whole world flashing and being
-     * repainted from the centre out. Under memory pressure the grace period
-     * collapses, because then the memory genuinely has to come back.
+     * Optional delay before condemning a chunk outside the keep area. The keep
+     * ring and destroy fade already provide safe hysteresis, so the tuned
+     * default releases immediately rather than retaining a huge travelled halo.
      */
-    public static float OPT_CHUNK_RELEASE_GRACE_MS = 15_000.0f;
+    public static float OPT_CHUNK_RELEASE_GRACE_MS = 0.0f;
     /** Fraction of draw distance devoted to the smooth fade at the edge of
      *  view (higher = wider, more gradual falloff into fog/sky well before
      *  the actual draw-distance boundary, instead of a hard line). Tuned via

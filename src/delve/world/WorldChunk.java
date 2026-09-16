@@ -79,6 +79,8 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     volatile long offViewSinceNanos;
     public volatile boolean neighborsGenerated = false;
     public volatile boolean purgeVBO = false;
+    /** Nanos this chunk joined the destroy queue; 0 when not queued. PipeTimer ages it. */
+    public transient volatile long queuedForDestroyAtNanos;
     public boolean serialize = false;
     /** Set when the player edits this chunk, so it is persisted before unloading. */
     public volatile boolean isModified = false;
@@ -196,6 +198,13 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
     public transient int BLOCK_COUNT = 0;
     public transient int FACE_COUNT = 0;
     public transient float renderAlpha = 1.0f;
+    /** Alpha from the previous drawn observation; powers fade-dip traces. */
+    transient float visAlpha = 1.0f;
+
+    /** Lifecycle pulses for the flash-watch observer. */
+    public static void traceLifecycle(char tag) {
+        ChunkVisibilityWatch.pulse(tag);
+    }
     private static long fadeOutDurationNanos() {
         return (long) (Game.OPT_CHUNK_FADE_DURATION_MS * 1_000_000.0);
     }
@@ -288,7 +297,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
      * and never pass back through the "first build" branch), so editing blocks
      * near an already-visible chunk never restarts its fade-in.
      */
-    private transient volatile long meshReadyAtNanos = -1L;
+    transient volatile long meshReadyAtNanos = -1L;
     /**
      * Wall-clock time this chunk was first detected as due for destruction, or
      * -1 while it isn't. Deliberately time-based rather than frame-counted: the
@@ -2990,14 +2999,11 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             this.opaqueIndices = 0;
             return;
         }
-        if (this.meshReadyAtNanos < 0) {
-            // First time this chunk instance has ever had a mesh uploaded --
-            // starts its fade-in. Never touched again by later rebuilds (block
-            // edits, seam invalidation, etc.), which reuse the existing VBO
-            // handle and never pass through this branch a second time.
-            this.meshReadyAtNanos = System.nanoTime();
-        }
+        boolean firstUpload = this.vboVertexHandle == 0;
         Renderer.uploadChunkMesh(this, data, indexData);
+        if (firstUpload) {
+            ChunkVisibilityWatch.pulse('U');
+        }
         // Only now are the counts valid for the buffers the GPU holds.
         this.numVerts = mesh.verticesCount;
         this.opaqueVerts = mesh.opaqueVertices;
@@ -3160,6 +3166,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             float currentAlpha = lifecycleFadeAlpha();
             long backdateNanos = (long) ((1.0f - currentAlpha) * fadeOutDurationNanos());
             this.destroyRequestedAtNanos = System.nanoTime() - backdateNanos;
+            ChunkVisibilityWatch.pulse('Q');
         }
     }
 
@@ -3180,6 +3187,7 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         float currentAlpha = lifecycleFadeAlpha();
         long backdateNanos = (long) (currentAlpha * fadeInDurationNanos());
         this.destroyRequestedAtNanos = -1L;
+        ChunkVisibilityWatch.pulse('Z');
         this.meshReadyAtNanos = System.nanoTime() - backdateNanos;
         // The player came back before the sweep collected it: the chunk leaves
         // the destroy list for real now, so the sweeper must be free to
@@ -3247,17 +3255,11 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
      * draw call. World.renderChunk() computes this frame's renderAlpha
      * (which reads {@link #lifecycleFadeAlpha()}) BEFORE calling
      * {@link #render()} -- and render() is what actually calls
-     * {@link #buildVBO()}, which is where meshReadyAtNanos first gets
-     * stamped. Left alone, that ordering meant a chunk's first-ever frame on
-     * screen always evaluated lifecycleFadeAlpha() while meshReadyAtNanos was
-     * still -1 (not yet stamped this frame), falling through to the "not
-     * tracked yet" 1.0 fallback -- so every newly built chunk rendered at
-     * full opacity for exactly one frame before the fade-in formula ever
-     * engaged, which is indistinguishable from "not fading in at all" when
-     * chunks build faster than a human notices a single dropped frame (e.g.
-     * flying forward into freshly generated terrain). Calling this first
-     * closes that gap by stamping the clock proactively, so the very first
-     * frame already reads a fresh (near-zero) alpha.
+     * {@link #buildVBO()}. Uploading is deliberately not the publication
+     * event: a ready far-ring mesh may wait behind the contiguous frontier,
+     * and starting its clock at upload would make it pop in fully opaque once
+     * licensed. Calling this immediately before first draw makes publication
+     * begin at alpha zero.
      */
     public void ensureFadeInStarted() {
         if (this.meshReadyAtNanos < 0) {
