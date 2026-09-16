@@ -19,6 +19,7 @@ public class WorldChunkLoadThread implements Runnable {
 
     @Override
     public void run() {
+        long ticket = delve.world.PipeTimer.begin();
         synchronized (chunkToProcess) {
             if (!World.isChunkInCurrentBounds(chunkToProcess)) {
                 chunkToProcess.isGenerating = false;
@@ -31,5 +32,6 @@ public class WorldChunkLoadThread implements Runnable {
             // it was queued for loading every frame and never drawn.
             chunkToProcess.generate();
         }
+        delve.world.PipeTimer.end(delve.world.PipeTimer.GEN, ticket);
     }
 }

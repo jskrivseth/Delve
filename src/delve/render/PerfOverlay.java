@@ -240,9 +240,25 @@ public final class PerfOverlay {
         lines.add(row("chunks", ChunkPipelineMonitor.snapshotResidentChunks + " resident, "
                 + ChunkPipelineMonitor.snapshotZombieChunks + " retiring"));
         lines.add(row("mesh heap", (delve.world.WorldChunk.pendingMeshBytesTotal() >> 20) + " MB"));
+        // Wrapped pipeline timers: which stage owns the latency. gen/mesh =
+        // worker throughput; upld = GL time; pend = how long finished meshes
+        // wait to be uploaded; tear = condemned-to-freed delay.
+        lines.add(row("pipe", delve.world.PipeTimer.line(delve.world.PipeTimer.GEN)
+                + "  " + delve.world.PipeTimer.line(delve.world.PipeTimer.MESH)));
+        lines.add(row("", delve.world.PipeTimer.line(delve.world.PipeTimer.UPLD)
+                + "  " + delve.world.PipeTimer.line(delve.world.PipeTimer.PEND)
+                + "  " + delve.world.PipeTimer.line(delve.world.PipeTimer.TEAR)));
+        long pendMB = delve.world.WorldChunk.pendingMeshBytesTotal() >> 20;
+        long barMB = delve.world.World.meshAdmissionBarBytes() >> 20;
+        lines.add(row("vbo", delve.world.World.vboSliceMillisNow() + "ms slice  spent "
+                + (delve.world.World.lastFrameVboSpendNanos / 1_000_000L) + "ms  meshgate "
+                + (pendMB > barMB ? "SHUT(" + pendMB + ">" + barMB + ")" : "open")));
         lines.add(row("drawn", delve.world.World.drawnChunksThisFrame + ", frontier "
                 + delve.world.World.lastReadyFrontier + ", holes "
                 + ChunkPipelineMonitor.snapshotMissingNearField));
+        lines.add(row("paint wave", "<=" + delve.world.World.lastPublicationRadius
+                + "  new " + delve.world.World.newlyPublishedThisFrame
+                + "  held " + delve.world.World.heldForPublicationThisFrame));
     }
 
     private static void appendSky() {

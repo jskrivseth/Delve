@@ -20,6 +20,7 @@ class WorldRenderLifecycleTest {
     private final boolean originalMemoryBound = Game.MEMORY_BOUND;
     private final int originalVboBudget = World.MAX_CHUNKS_TO_VBO;
     private final int originalVboCount = World.VBO_CHUNKS;
+    private final int originalReadyFrontier = World.lastReadyFrontier;
     private final ManualExecutor executor = new ManualExecutor();
     private final List<WorldChunk> registered = new ArrayList<>();
     private World world;
@@ -33,6 +34,7 @@ class WorldRenderLifecycleTest {
         Game.GAME_CAMERA = world.camera;
         World.MAX_CHUNKS_TO_VBO = 1;
         World.VBO_CHUNKS = 0;
+        World.lastReadyFrontier = -1;
         renderChunk = World.class.getDeclaredMethod("renderChunk",
                 int.class, int.class, int.class, int.class, int.class, int.class);
         renderChunk.setAccessible(true);
@@ -46,6 +48,7 @@ class WorldRenderLifecycleTest {
         Game.MEMORY_BOUND = originalMemoryBound;
         World.MAX_CHUNKS_TO_VBO = originalVboBudget;
         World.VBO_CHUNKS = originalVboCount;
+        World.lastReadyFrontier = originalReadyFrontier;
     }
 
     private void visit(WorldChunk chunk) throws Exception {
@@ -153,35 +156,49 @@ class WorldRenderLifecycleTest {
     }
 
     @Test
-    void terrainBehindAnUnfinishedCellIsHiddenLocallyNotByGlobalCurtain() throws Exception {
-        // Centre chunk (2000,2000); subject sits six rings north of it.
-        // Frustum culling is orthogonal to what is under test and would
-        // otherwise veto the draws for reasons of its own.
+    void newTerrainPublishesOnlyAtContiguousFrontier() throws Exception {
         boolean cullChunks = Game.OPT_CULL_CHUNKS;
         Game.OPT_CULL_CHUNKS = false;
         try {
-            DrawSpy far = readyChunkAt(2000, 2006);
-            // Nobody between the camera and it: hold it back, so it cannot look
-            // like an island floating over a hole.
-            visit(far, 6);
-            assertEquals(0, far.draws, "unsupported terrain must wait");
+            World.lastReadyFrontier = 4;
+            DrawSpy outer = readyChunkAt(2000, 2006);
+            visit(outer, 6);
+            assertEquals(0, outer.draws,
+                    "a ready outer chunk must not appear ahead of the contiguous wave");
+            assertEquals(-1L, outer.meshReadyAtNanos,
+                    "waiting behind the frontier must not consume its fade-in");
 
-            // Fill in the cell on its camera side: it may draw now, even though
-            // rings elsewhere are still incomplete -- that is the point of
-            // local masking, and what a whole-world frontier got wrong.
-            DrawSpy support = readyChunkAt(2000, 2005);
-            visit(far, 6);
-            assertEquals(1, far.draws, "terrain behind finished neighbours must draw");
+            World.lastReadyFrontier = 5;
+            visit(outer, 6);
+            assertEquals(1, outer.draws, "the next complete ring may publish");
+            assertTrue(outer.meshReadyAtNanos >= 0,
+                    "publication starts the fade clock");
 
-            // The near field is never withheld, however ragged things are
-            // beyond it -- a hole behind the player must not darken the ground
-            // they are standing on.
+            World.lastReadyFrontier = 0;
+            visit(outer, 6);
+            assertEquals(2, outer.draws,
+                    "recentering must never hide terrain that was already published");
+
             DrawSpy foothold = readyChunkAt(2003, 2000);
             visit(foothold, 3);
-            assertEquals(1, foothold.draws, "near-field terrain must always draw");
+            assertEquals(1, foothold.draws, "near-field terrain must always publish");
         } finally {
             Game.OPT_CULL_CHUNKS = cullChunks;
         }
+    }
+
+    @Test
+    void chunkTasksAreStrictlyPrioritizedByCurrentPlayerRing() {
+        WorldChunk ringTwoCorner = new WorldChunk(2002, 2002);
+        WorldChunk ringThreeAxis = new WorldChunk(2003, 2000);
+        assertTrue(World.taskPriority(ringTwoCorner, 2000, 2000)
+                        < World.taskPriority(ringThreeAxis, 2000, 2000),
+                "no farther ring may leapfrog a nearer ring");
+
+        WorldChunk ringTwoAxis = new WorldChunk(2002, 2000);
+        assertTrue(World.taskPriority(ringTwoAxis, 2000, 2000)
+                        < World.taskPriority(ringTwoCorner, 2000, 2000),
+                "within a ring, radial distance should round the painting wave");
     }
 
     private DrawSpy readyChunkAt(int x, int z) {
@@ -235,6 +252,8 @@ class WorldRenderLifecycleTest {
         // render loop's fade-out band.
         assertTrue(WorldInactiveChunkSweeperThread.keepRadius(10, 1) > 10 + 3,
                 "keep ring must clear the fade band");
+        assertEquals(14, WorldInactiveChunkSweeperThread.keepRadius(10, 1),
+                "default retention should use only the minimum safe clearance");
         assertTrue(WorldInactiveChunkSweeperThread.keepRadius(46, 1) > 46 + 3);
         assertEquals(30, WorldInactiveChunkSweeperThread.keepRadius(10, 3),
                 "an explicit multiplier still wins over the margin");

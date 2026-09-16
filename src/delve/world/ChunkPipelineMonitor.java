@@ -90,6 +90,11 @@ public final class ChunkPipelineMonitor {
             return;
         }
         nextTickAtNanos = now + TICK_NANOS;
+        PipeTimer.roll();
+
+        // Surplus idle capacity finishes the next contiguous ring before the
+        // player reaches it. It must never leapfrog rings.
+        World.prewarmLookahead();
 
         long submitted = World.SUBMITTED_CHUNK_TASKS.get();
         long completed = World.COMPLETED_CHUNK_TASKS.get();

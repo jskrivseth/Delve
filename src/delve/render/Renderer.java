@@ -270,6 +270,7 @@ public class Renderer {
     }
 
     public static void deleteChunkMesh(WorldChunk chunk) {
+        WorldChunk.traceLifecycle('V');
         if (chunk.vboVertexHandle != 0) {
             glDeleteBuffers(chunk.vboVertexHandle);
             chunk.vboVertexHandle = 0;

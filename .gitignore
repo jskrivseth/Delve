@@ -51,6 +51,7 @@ lwjgl-*/
 *.log
 errors.log
 perf.csv
+dev-tuning.properties
 # Frame-by-frame PNG captures from the profiling/frame-capture tooling.
 perf-frames/
 chunks/
