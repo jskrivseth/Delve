@@ -2505,13 +2505,26 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         out[3] = waterCornerHeight(x + 1, y, z + 1);
     }
 
+    /**
+     * The surface-tension law for one shared lattice corner, sampled from
+     * the same four columns by every incident cell (crisp across blocks
+     * and chunks). Each column presents exactly one of:
+     *  - a cohesion vote: an open water surface, averaged so unequal
+     *    levels meet in an honest slope rather than a step or a tent;
+     *  - a tension vertex: something a wet edge should cling to -- water
+     *    wearing its own body (a step wall of water), a stone bank with
+     *    feed riding or overlooking its brim, a one-row overhang drip, a
+     *    source brim -- which forces the corner to meet it exactly;
+     *  - nothing: bare dry stone, an open hole, or an unknown column.
+     *    Dry material offers no vertex to join, so lakes hug water and
+     *    spills, never every shoreline.
+     */
     float waterCornerHeight(int cornerX, int y, int cornerZ) {
         float sum = 0.0f;
         int wetSurfaces = 0;
         int unknownColumns = 0;
         boolean hasFullWater = false;
-        boolean bankContact = false;
-        int fallDistance = 0;
+        boolean tensionWeld = false;
         for (int dx = -1; dx <= 0; dx++) {
             for (int dz = -1; dz <= 0; dz++) {
                 int cx = cornerX + dx;
@@ -2523,11 +2536,10 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                 }
                 if (level > 0) {
                     if (waterLevelAt(cx, y + 1, cz) != 0) {
-                        // A water column wearing its own body above is the
-                        // wall of a step behind a lower sheet. The lower
-                        // surface must meet the step's face, not sag beside
-                        // it: same contact weld a soaked stone bank earns.
-                        bankContact = true;
+                        // Tension vertex: a water column wearing its own
+                        // body is a step wall of water; the lower sheet
+                        // clings to its face rather than sagging beside it.
+                        tensionWeld = true;
                         continue;
                     }
                     if (level == 8) {
@@ -2539,50 +2551,38 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                     wetSurfaces++;
                     continue;
                 }
-                // Dry. An ordinary solid bank votes nothing, but a bank
-                // that carries water over its brim is a spill: every
-                // corner touching it must meet the bank's top, or the
-                // lower sheet leaves a visible strip of wall behind the
-                // lip. Any edge can qualify; symmetric column sampling
-                // makes north, south, east, west, and pit walls alike.
+                // Dry. Tension vertex only when soaked: a bank with feed
+                // riding or overlooking its brim is part of a spill and
+                // its top is a joinable vertex; any edge can qualify, and
+                // an ordinary dry shoreline still offers nothing.
                 if (solidHere(cx, y, cz)) {
                     if (feedAboveBrim(cx, cz, y)) {
-                        bankContact = true;
+                        tensionWeld = true;
                     }
                     continue;
                 }
 
-                // Waterfall: water hangs above this open column. This
-                // sheet's corner rises the full shaft distance to meet the
-                // underside of that water -- a near-vertical curtain from
-                // pool to lip, the landing of a fall, rather than a sloped
-                // chute. The falling stream's own sides hide the seam.
+                // Tension vertex for a one-row overhang drip: the sheet
+                // under it glues to the dripping water's underside. Taller
+                // shafts earn dedicated connector geometry instead, so the
+                // surface never tents after far-away water.
                 int k = waterfallColumnAbove(cx, cz, y);
-                if (k > 0) {
-                    fallDistance = Math.max(fallDistance, k);
+                if (k == 1) {
+                    tensionWeld = true;
                 }
             }
         }
         if (wetSurfaces == 0) {
             return 0.0f;
         }
-        if (fallDistance == 1) {
-            // Contact weld: a sheet under an overhang one cell up rises to
-            // the overhanging water's underside and glues the seam. Taller
-            // falls get dedicated connector geometry (see
-            // writeWaterfallConnector) instead of warp-stretching corners.
-            return 1.0f;
-        }
         if (hasFullWater) {
             // A brim shared with plain water keeps full height: the trough
             // killer at source rims.
             return 1.0f;
         }
-        if (bankContact) {
-            // Spill contact weld: a corner grazing a bank that carries
-            // water over its brim meets the bank top exactly. Sharing the
-            // same four-column vote on both sides of the wall or pit rim
-            // keeps the lattice continuous on every edge, not just one.
+        if (tensionWeld) {
+            // Something joinable touched this corner: meet its vertex
+            // exactly instead of blending an unreconciled gap beside it.
             return 1.0f;
         }
         // Plain mean of adjacent wet surfaces: equal levels tile flat,
