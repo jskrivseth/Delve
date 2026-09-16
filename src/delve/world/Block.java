@@ -715,7 +715,9 @@ public class Block implements Serializable {
         float r = base[0], g = base[1], b = base[2];
         // The lip cannot punch through a landing shallower than its own drop.
         float lipDrop = Math.min(CURTAIN_LIP, -landingRel);
-        float lipOut = lipDrop;
+        // Half-projection: a full 0.42 cantilever reads as a sail from
+        // pond level; half keeps the fall's silhouette without the wing.
+        float lipOut = lipDrop * 0.5f;
         float vLenLip = Math.min(1.0f, lipDrop * 1.2f);
         float vLenStream = Math.min(1.0f, (-landingRel - lipDrop) * 0.45f);
         float nDiag = 0.7071f;

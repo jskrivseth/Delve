@@ -2372,24 +2372,6 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                                 fillWaterCornerHeights(i, j, k, waterTopHeights);
                                 Block.writeWaterCube(buffer, indices, i, j, k,
                                         EXPOSED_FACES, this, waterTopHeights);
-                                if (springOverFall(i, j, k, voxels)) {
-                                    // The ledge of a fall: seat an inverted-pyramid
-                                    // plug beneath it whose socket mates with the
-                                    // pool surface, and drape the falling sheet
-                                    // from this cell's own skin down through it.
-                                    float fallRelY = waterfallFallRelY(i, j, k);
-                                    if (fallRelY <= -0.95f) {
-                                        float springTop = (waterTopHeights[0] + waterTopHeights[1]
-                                                + waterTopHeights[2] + waterTopHeights[3]) * 0.25f;
-                                        Block.writeWaterfallConnector(buffer, indices,
-                                                i, j, k, springTop, fallRelY,
-                                                // Sheets belong to the ledge's water, not the
-                                                // hollow below: take the brighter of lip and
-                                                // foot light so shade never paints them black.
-                                                Math.max(lightAt(i, j, k),
-                                                        lightAt(i, j - 1, k)) / 15.0f);
-                                    }
-                                }
                                 int curtainCount = collectStepCurtains(i, j, k,
                                         curtainDirs, curtainLandings);
                                 float fallLight = Math.max(
@@ -2662,15 +2644,16 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         return false;
     }
 
-    private static final int WATERFALL_CONNECTOR_FACES = 13;
     private static final int MAX_FALL_SCAN = 8;
 
     /**
-     * A spring ledge: a fall's FEED, not a damp floor. Requires water in
-     * transit (levels 2-7) somewhere down the shaft -- a resting sheet over
-     * a dug hollow is geometry trivia, not a waterfall -- and a landing at
-     * least about two cells down, so spread-flow over shallow troughs keeps
-     * its plain skin.
+     * A spring ledge: a fall's FEED, not a damp floor. Detector retained
+     * for fall-aware styling experiments; meshing no longer emits bespoke
+     * connector geometry -- the fall's own water cells render the stream.
+     * Requires water in transit (levels 2-7) somewhere down the shaft -- a
+     * resting sheet over a dug hollow is geometry trivia, not a waterfall
+     * -- and a landing at least about two cells down, so spread-flow over
+     * shallow troughs keeps its plain skin.
      */
     boolean springOverFall(int x, int y, int z, byte[] voxels) {
         if (y < 3) {
@@ -2725,18 +2708,18 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
      */
     private int waterConnectorFaces(int x, int y, int z, byte[] voxels,
                                     int[] curtainDirs, float[] curtainLandings) {
-        int faces = 0;
-        if (springOverFall(x, y, z, voxels)) {
-            faces += WATERFALL_CONNECTOR_FACES;
-        }
-        faces += collectStepCurtains(x, y, z, curtainDirs, curtainLandings)
+        // Spring connectors retired: the fall's own water cells render as
+        // the stream column, and tension welds close its joints. A bespoke
+        // collar/skin/cap only added a glass box around the water.
+        return collectStepCurtains(x, y, z, curtainDirs, curtainLandings)
                 * CURTAIN_FACES_PER_SPILL;
-        return faces;
     }
 
     private static final int[] CURTAIN_DX = {1, -1, 0, 0};
     private static final int[] CURTAIN_DZ = {0, 0, 1, -1};
-    private static final float CURTAIN_MIN_DROP = -0.9f;
+    // A curtain dresses a real fall only: one-row terraces tile flush on
+    // the tension law alone, so the sill below must be at least ~2 down.
+    private static final float CURTAIN_MIN_DROP = -1.5f;
     private static final float CURTAIN_MAX_DROP = -8.6f;
 
     /**

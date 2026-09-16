@@ -397,8 +397,9 @@ class WaterSimulationTest {
     }
 
     /**
-     * A pit corner has two open walls, not one: both must earn a curtain, or
-     * one of them stays an open slit of sky. A flush shelf still gets none.
+     * Curtains dress real falls only: a two-row-plus open step earns one,
+     * a one-row terrace now tiles flush on the tension law alone, and a
+     * flush shelf or solid bank earns none.
      */
     @Test
     void stepCurtainDetectsEveryQualifyingEdge() {
@@ -425,19 +426,14 @@ class WaterSimulationTest {
         float[] landings = new float[4];
         int count = chunk.collectStepCurtains(6, 3, 4, dirs, landings);
 
-        assertEquals(2, count, "both open steps should earn a curtain, not just the deepest");
-        boolean sawShallow = false;
+        assertEquals(1, count, "a one-row step now tiles flush and earns no curtain");
         boolean sawDeep = false;
         for (int i = 0; i < count; i++) {
-            if (dirs[i] == 0) {
-                assertEquals(-2.0f + 0.98f, landings[i], 0.001f);
-                sawShallow = true;
-            } else if (dirs[i] == 2) {
-                assertEquals(-3.0f + 0.98f, landings[i], 0.001f);
-                sawDeep = true;
-            }
+            assertEquals(2, dirs[i]);
+            assertEquals(-3.0f + 0.98f, landings[i], 0.001f);
+            sawDeep = true;
         }
-        assertTrue(sawShallow && sawDeep, "expected both +X and +Z directions to qualify");
+        assertTrue(sawDeep, "the two-row drop should still earn a curtain");
 
         // The middle of a flush shelf (wet or banked all round) has no step.
         assertEquals(0, chunk.collectStepCurtains(5, 3, 4, dirs, landings));
