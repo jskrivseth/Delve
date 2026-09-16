@@ -2383,15 +2383,21 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                                                 + waterTopHeights[2] + waterTopHeights[3]) * 0.25f;
                                         Block.writeWaterfallConnector(buffer, indices,
                                                 i, j, k, springTop, fallRelY,
-                                                lightAt(i, j - 1, k) / 15.0f);
+                                                // Sheets belong to the ledge's water, not the
+                                                // hollow below: take the brighter of lip and
+                                                // foot light so shade never paints them black.
+                                                Math.max(lightAt(i, j, k),
+                                                        lightAt(i, j - 1, k)) / 15.0f);
                                     }
                                 }
                                 int curtainCount = collectStepCurtains(i, j, k,
                                         curtainDirs, curtainLandings);
+                                float fallLight = Math.max(
+                                        lightAt(i, j, k), lightAt(i, j - 1, k)) / 15.0f;
                                 for (int c = 0; c < curtainCount; c++) {
                                     Block.writeWaterfallCurtain(buffer, indices,
                                             i, j, k, curtainDirs[c], curtainLandings[c],
-                                            lightAt(i, j - 1, k) / 15.0f);
+                                            fallLight);
                                 }
                             } else {
                                 Block.writeCube(buffer, indices, i, j, k,
