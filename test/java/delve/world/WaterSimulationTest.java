@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -360,6 +361,59 @@ class WaterSimulationTest {
 
         assertEquals(WorldChunk.waterSurfaceHeight(4), shore, 0.0001f);
         assertEquals(interior, shore, 0.0001f);
+    }
+
+    @Test
+    void weakLateralCadenceOpensAfterItsWindow() {
+        WorldChunk chunk = chunk(0, 0);
+        chunk.setWaterLevel(4, 6, 4, 4);
+
+        // First sighting loiters, then spreads on each window expiry.
+        assertFalse(chunk.lateralFlowTurn(4, 6, 4, 10));
+        assertFalse(chunk.lateralFlowTurn(4, 6, 4, 11));
+        assertFalse(chunk.lateralFlowTurn(4, 6, 4, 13));
+        assertTrue(chunk.lateralFlowTurn(4, 6, 4, 14), "window never opened");
+        assertFalse(chunk.lateralFlowTurn(4, 6, 4, 15));
+        assertTrue(chunk.lateralFlowTurn(4, 6, 4, 18), "cadence went one-shot");
+
+        // Epoch recycling keeps counting, never sticks open or shut.
+        assertFalse(chunk.lateralFlowTurn(4, 6, 5, 126));   // arms at 4(130)
+        assertFalse(chunk.lateralFlowTurn(4, 6, 5, 1));     // delta 3 across wrap
+        assertTrue(chunk.lateralFlowTurn(4, 6, 5, 4));      // opens on schedule
+    }
+
+    /**
+     * Integration: a source-fed channel races outward at full speed until
+     * the head weakens; the last rings arrive only ring-by-ring, opening
+     * once per cadence window instead of soaking the corridor in one wash.
+     */
+    @Test
+    void sourceFedChannelCreepsItsWeakTailRingByRing() {
+        WorldChunk chunk = chunk(0, 0);
+        World.chunks.add(chunk);
+        for (int x = 1; x <= 13; x++) {
+            for (int z = 2; z <= 6; z++) {
+                chunk.blocks[WorldChunk.blockIndex(x, 5, z)] = (byte) Block.STONE;
+            }
+        }
+        chunk.setWaterLevel(5, 6, 4, 8);
+
+        // Legs down to a level-5 emitter run ungated: source(8)->7->6->5.
+        for (int i = 0; i < 4; i++) {
+            World.processGlobalWaterUpdates(1 << 20);
+        }
+        assertTrue(chunk.waterLevel(8, 6, 4) > 0, "strong head stalled too early");
+
+        // The level-5 emitter's ring and everything past it wait a window.
+        World.processGlobalWaterUpdates(1 << 20);
+        World.processGlobalWaterUpdates(1 << 20);
+        World.processGlobalWaterUpdates(1 << 20);
+        assertEquals(0, chunk.waterLevel(9, 6, 4), "weak tail ran a full wash");
+        for (int i = 0; i < 20; i++) {
+            World.processGlobalWaterUpdates(1 << 20);
+        }
+        assertTrue(chunk.waterLevel(9, 6, 4) > 0, "weak tail never arrived");
+        assertTrue(chunk.waterLevel(10, 6, 4) > 0, "cadence froze the front");
     }
 
     /**

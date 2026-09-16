@@ -118,6 +118,8 @@ public class World {
     private static int globalWaterCellCount;
     private static int globalWaterCellCursor;
     private static boolean globalWaterUpdateInProgress;
+    /** Advance-one-per-global-slice clock backing weak-flow cadence. */
+    private static byte waterEpoch;
     /** Water is intentionally much slower than the render loop. */
     public static int MAX_WATER_UPDATES = 12;
     /** Bounds active-world water work per simulation invoke. */
@@ -911,6 +913,7 @@ public class World {
 
     private static int processGlobalWaterUpdatesSlice(int budget) {
         processWaterDrains(MAX_WATER_DRAINS);
+        waterEpoch++;
 
         if (globalWaterCellCursor >= globalWaterCellCount) {
             captureGlobalWaterSnapshot();
@@ -1023,6 +1026,20 @@ public class World {
         }
         if (lateralLevel < 2) {
             return;
+        }
+        if (lateralLevel <= 4) {
+            // Weak head: ambient spread gets one turn per cadence window.
+            // Claiming the turn is not granting it: the front oozes.
+            WorldChunk cadence = getChunk(Math.floorDiv(x, WorldChunk.sizeX),
+                    Math.floorDiv(z, WorldChunk.sizeZ));
+            if (cadence == null) {
+                return;
+            }
+            int clx = Math.floorMod(x, WorldChunk.sizeX);
+            int clz = Math.floorMod(z, WorldChunk.sizeZ);
+            if (!cadence.lateralFlowTurn(clx, y, clz, waterEpoch)) {
+                return;
+            }
         }
         spreadTerrainWater(columnBottomY, x - 1, z, lateralLevel);
         spreadTerrainWater(columnBottomY, x + 1, z, lateralLevel);

@@ -204,6 +204,41 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         return waterLevels[blockIndex(x, y, z)] & 0xFF;
     }
 
+    /*
+     * Flow cadence for ambient spread. Weak-headed cells spread sideways at
+     * most once every few global-pass epochs -- oozing like seepage instead
+     * of flash-soaking the neighborhood at once -- while strong heads and
+     * queued (player-driven) water keep acting immediately. Pure tempo: the
+     * fixed point and every reached cell are unchanged; only when.
+     */
+    private transient byte[] lateralFlowClock;
+    private static final int LATERAL_PAUSE_EPOCHS = 4;
+
+    /**
+     * Claims this cell's spread turn. False = hold; true = spread now.
+     * First sighting loiters one window, then each window expiry grants
+     * one spread burst. Clock is the low 7 bits of the epoch counter, so
+     * it recycles every 128 slices; a recycled collision only ever mis-times
+     * a seepage beat, which is scenery tempo, not state.
+     */
+    boolean lateralFlowTurn(int x, int y, int z, int epoch) {
+        if (lateralFlowClock == null) {
+            lateralFlowClock = new byte[waterLevels.length];
+        }
+        int index = blockIndex(x, y, z);
+        int stored = lateralFlowClock[index] & 0x7F;
+        if (stored == 0) {
+            lateralFlowClock[index] = (byte) (((byte) (epoch + LATERAL_PAUSE_EPOCHS)) & 0x7F | 0x00);
+            return false;
+        }
+        int delta = (stored - (epoch & 0x7F) + 128) & 0x7F;
+        if (delta >= 1 && delta <= LATERAL_PAUSE_EPOCHS) {
+            return false;   // window still closing
+        }
+        lateralFlowClock[index] = (byte) (((epoch + LATERAL_PAUSE_EPOCHS) & 0x7F));
+        return true;
+    }
+
     public boolean setWaterLevel(int x, int y, int z, int level) {
         int index = blockIndex(x, y, z);
         int old = waterLevels[index] & 0xFF;
