@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -208,8 +209,13 @@ class WaterSimulationTest {
         assertEquals(7, right.waterLevel(0, 4, 2));
     }
 
+    /**
+     * Uniform generated shallows meeting their own shoreline must tile flat:
+     * every corner of a level field derives the same height, with no meniscus
+     * bump climbing the bank. Slope comes only from genuinely unequal levels.
+     */
     @Test
-    void generatedWaterSlopesTowardTheShore() {
+    void uniformGeneratedWaterMeetsTheShoreFlat() {
         WorldChunk chunk = chunk(0, 0);
         chunk.setWaterLevel(4, 6, 4, 1);
         chunk.setWaterLevel(5, 6, 4, 1);
@@ -217,8 +223,8 @@ class WaterSimulationTest {
         float sharedEdge = chunk.waterCornerHeight(5, 6, 4);
         float shoreline = chunk.waterCornerHeight(4, 6, 4);
 
-        assertTrue(sharedEdge < 1.0f);
-        assertTrue(sharedEdge > shoreline);
+        assertEquals(WorldChunk.waterSurfaceHeight(1), sharedEdge, 0.0001f);
+        assertEquals(sharedEdge, shoreline, 0.0001f);
     }
 
     @Test
@@ -236,8 +242,315 @@ class WaterSimulationTest {
         chunk.setWaterLevel(4, 6, 4, 2);
         assertEquals(0.45f, chunk.waterCornerHeight(5, 6, 5), 0.0001f);
 
+        // Meeting a level-7 neighbour, the shared lattice corner sits midway
+        // between the two surfaces -- a slope, not a step to the high side.
         chunk.setWaterLevel(5, 6, 4, 7);
-        assertEquals(0.95f, chunk.waterCornerHeight(5, 6, 5), 0.0001f);
+        assertEquals(0.70f, chunk.waterCornerHeight(5, 6, 5), 0.0001f);
+    }
+
+    /**
+     * Free-standing water keeps its slope: a cascade over successive weaker
+     * levels must place each lattice corner strictly between the adjoining
+     * column surfaces, monotonically downhill.
+     */
+    @Test
+    void cascadeCornersSlopeMonotonicallyDownstream() {
+        WorldChunk chunk = chunk(0, 0);
+        chunk.setWaterLevel(3, 6, 4, 6);
+        chunk.setWaterLevel(4, 6, 4, 4);
+        chunk.setWaterLevel(5, 6, 4, 2);
+
+        float up = chunk.waterCornerHeight(4, 6, 4);
+        float down = chunk.waterCornerHeight(5, 6, 4);
+
+        float six = WorldChunk.waterSurfaceHeight(6);
+        float four = WorldChunk.waterSurfaceHeight(4);
+        float two = WorldChunk.waterSurfaceHeight(2);
+        assertTrue(up < six && up > four, "upstream corner not between its columns");
+        assertTrue(up > down, "cascade corner did not descend");
+        assertTrue(down < four && down > two, "downstream corner not between its columns");
+    }
+
+    /**
+     * Spill-over: a sheet ending where liquid continues one row down must
+     * ramp its lip down over the block, not shear off at a vertical drop.
+     * The apron is bounded strictly between the carried sheet height and
+     * the cell floor.
+     */
+    /**
+     * A full-cell drop is a waterfall, not a chute: the upper sheet holds
+     * flat to the lip, and the pool below raises a vertical curtain that
+     * meets the overhang's underside (see the corner above the pool).
+     */
+    @Test
+    void fullDropKeepsFlatLipAndRisesAsACurtain() {
+        WorldChunk chunk = chunk(0, 0);
+        chunk.setWaterLevel(4, 6, 4, 4);
+        chunk.setWaterLevel(5, 5, 3, 4);
+        chunk.setWaterLevel(5, 5, 4, 4);
+
+        float lip = chunk.waterCornerHeight(5, 6, 4);
+        assertEquals(WorldChunk.waterSurfaceHeight(4), lip, 0.0001f);
+
+        float poolAtTheFall = chunk.waterCornerHeight(6, 5, 4);
+        // Nothing hangs over the pool's FAR side; only the fall-side corner
+        // may rise. Pin that this sample stays a plain flat mean.
+        assertEquals(WorldChunk.waterSurfaceHeight(4), poolAtTheFall, 0.0001f);
+
+        float curtainBase = chunk.waterCornerHeight(5, 5, 4);
+        assertEquals(1.0f, curtainBase, 0.0001f);
+    }
+
+    /**
+     * Tall overhangs no longer warp lattice corners upward (that produced
+     * glass fins); they earn connector geometry instead -- the corners stay
+     * flat means, and solid plugs the scan cannot see through.
+     */
+    @Test
+    void curtainClimbsTheShaftButNotThroughStone() {
+        WorldChunk chunk = chunk(0, 0);
+        chunk.setWaterLevel(4, 4, 3, 4);
+        chunk.setWaterLevel(4, 4, 4, 4);
+        // Water two shaft rows above the pool edge at x=5.
+        chunk.setWaterLevel(5, 6, 3, 8);
+        chunk.setWaterLevel(5, 6, 4, 8);
+
+        // Two-row fall: flat means now; geometry handles the bridge.
+        assertEquals(WorldChunk.waterSurfaceHeight(4),
+                chunk.waterCornerHeight(5, 4, 4), 0.0001f);
+
+        // One-row contact still welds to the underside.
+        chunk.setWaterLevel(5, 5, 3, 8);
+        chunk.setWaterLevel(5, 5, 4, 8);
+        assertEquals(1.0f, chunk.waterCornerHeight(5, 4, 4), 0.0001f);
+    }
+
+    /**
+     * Vertical fill: where water directly overhangs a lower sheet, that
+     * sheet's shared corner drives flush to the cell top -- the underside
+     * of the overhanging water -- welding surface to surface instead of
+     * leaving a peeled strip of bank between them. Interior corners of the
+     * same sheet stay flat.
+     */
+    @Test
+    void sheetUnderOverhangingWaterFillsVertically() {
+        WorldChunk chunk = chunk(0, 0);
+        chunk.setWaterLevel(4, 5, 3, 4);
+        chunk.setWaterLevel(4, 5, 4, 4);
+        // Thick water hanging one row directly above the columns x=5.
+        chunk.setWaterLevel(5, 6, 3, 8);
+        chunk.setWaterLevel(5, 6, 4, 8);
+
+        float sealed = chunk.waterCornerHeight(5, 5, 4);
+        float interior = chunk.waterCornerHeight(4, 5, 4);
+
+        assertEquals(1.0f, sealed, 0.0001f);
+        assertTrue(interior < 1.0f, "whole sheet flattened against the ceiling");
+    }
+
+    /**
+     * Ground beneath a dry neighbour is NOT a participant: a shoreline over
+     * solid ground must stay flush no matter what the sheet rests on.
+     */
+    @Test
+    void flushShorelineIgnoresGroundBelow() {
+        WorldChunk chunk = chunk(0, 0);
+        chunk.setWaterLevel(4, 6, 4, 4);
+        chunk.blocks[WorldChunk.blockIndex(5, 5, 4)] = (byte) Block.STONE;
+
+        float interior = chunk.waterCornerHeight(4, 6, 4);
+        float shore = chunk.waterCornerHeight(5, 6, 4);
+
+        assertEquals(WorldChunk.waterSurfaceHeight(4), shore, 0.0001f);
+        assertEquals(interior, shore, 0.0001f);
+    }
+
+    /**
+     * Spring detection scans DOWN THROUGH flowing columns: an active fall
+     * (flow cells in transit above a resting pool, at least ~2 cells down)
+     * is detected; a resting sheet over a dug hollow or a rim sitting on
+     * its own pool is not.
+     */
+    @Test
+    void springDetectionSeesThroughFallingColumns() {
+        WorldChunk chunk = chunk(0, 0);
+        byte[] voxels = chunk.blocks;
+        chunk.blocks[WorldChunk.blockIndex(5, 3, 4)] = (byte) Block.STONE;
+        chunk.setWaterLevel(5, 4, 4, 1);    // resting pool
+        chunk.setWaterLevel(5, 5, 4, 7);    // flow in transit
+        chunk.setWaterLevel(5, 6, 4, 7);    // flow in transit
+        chunk.setWaterLevel(5, 7, 4, 7);    // flow leaving the rim
+
+        assertEquals(-3.0f + WorldChunk.waterSurfaceHeight(1),
+                chunk.waterfallFallRelY(5, 7, 4), 0.0001f);
+        assertTrue(chunk.springOverFall(5, 8, 4, voxels)
+                        || chunk.springOverFall(5, 7, 4, voxels),
+                "active fall missed its spring flag");
+
+        // A resting sheet over a shallow dug hollow: geometry trivia, no.
+        chunk.setWaterLevel(5, 5, 4, 0);
+        chunk.setWaterLevel(5, 6, 4, 0);
+        chunk.setWaterLevel(5, 7, 4, 0);
+        chunk.setWaterLevel(5, 6, 4, 1);    // resting water, one cell down
+        assertFalse(chunk.springOverFall(5, 7, 4, voxels),
+                "rest sheet mistaken for a waterfall");
+    }
+
+    /**
+     * Curtains dress real falls only: a two-row-plus open step earns one,
+     * a one-row terrace now tiles flush on the tension law alone, and a
+     * flush shelf or solid bank earns none.
+     */
+    @Test
+    void stepCurtainDetectsEveryQualifyingEdge() {
+        WorldChunk chunk = chunk(0, 0);
+        // A supporting shelf under both water cells.
+        for (int y = 0; y <= 2; y++) {
+            for (int x = 4; x <= 6; x++) {
+                chunk.blocks[WorldChunk.blockIndex(x, y, 4)] = (byte) Block.STONE;
+            }
+        }
+        // +X of (6,3,4): a modest one-row step down.
+        for (int y = 0; y <= 1; y++) {
+            chunk.blocks[WorldChunk.blockIndex(7, y, 4)] = (byte) Block.STONE;
+        }
+        // +Z of (6,3,4): a deeper step down.
+        chunk.blocks[WorldChunk.blockIndex(6, 0, 5)] = (byte) Block.STONE;
+        // -Z of (6,3,4): a solid bank, not a step.
+        chunk.blocks[WorldChunk.blockIndex(6, 3, 3)] = (byte) Block.STONE;
+
+        chunk.setWaterLevel(5, 3, 4, 6);
+        chunk.setWaterLevel(6, 3, 4, 6);
+
+        int[] dirs = new int[4];
+        float[] landings = new float[4];
+        int count = chunk.collectStepCurtains(6, 3, 4, dirs, landings);
+
+        assertEquals(1, count, "a one-row step now tiles flush and earns no curtain");
+        boolean sawDeep = false;
+        for (int i = 0; i < count; i++) {
+            assertEquals(2, dirs[i]);
+            assertEquals(-3.0f + 0.98f, landings[i], 0.001f);
+            sawDeep = true;
+        }
+        assertTrue(sawDeep, "the two-row drop should still earn a curtain");
+
+        // The middle of a flush shelf (wet or banked all round) has no step.
+        assertEquals(0, chunk.collectStepCurtains(5, 3, 4, dirs, landings));
+    }
+
+    /**
+     * The curtain assembly: a 45-degree lip off the cell's flat floor edge
+     * (not the sloped water-surface top, so it never overlaps the block's
+     * own side face) plus a stream falling from the lip's outer edge to the
+     * landing -- two quads, finite, offset past the cell boundary.
+     */
+    @Test
+    void stepCurtainAssemblyClearsTheBoundaryPlane() {
+        java.nio.FloatBuffer buffer = org.lwjgl.BufferUtils.createFloatBuffer(2 * 56);
+        java.nio.IntBuffer indices = org.lwjgl.BufferUtils.createIntBuffer(2 * 6);
+
+        Block.writeWaterfallCurtain(buffer, indices, 6, 3, 4, 0, -1.02f, 0.8f);
+
+        assertEquals(2 * 56, buffer.position());
+        assertEquals(2 * 6, indices.position());
+        assertEquals(7.0f, buffer.get(0), 0.0001f);        // lip starts at plane x+1
+        assertEquals(3.0f, buffer.get(1), 0.0001f);        // ... at this cell's flat floor
+        assertEquals(4.0f, buffer.get(2), 0.0001f);        // weld at z
+        // The stream quad (second, at offset 56) must stand past the boundary
+        // plane, not on it -- otherwise it re-coincides with a wall's own face.
+        assertTrue(buffer.get(56) > 7.0f, "stream should be offset past the cell boundary");
+        for (int i = 0; i < buffer.position(); i++) {
+            assertFalse(Float.isNaN(buffer.get(i)), "NaN at vertex float " + i);
+        }
+    }
+
+    /**
+     * The waterfall connector (plug + skirt + sheet + cap = 13 quads) emits
+     * its full vertex/index budget with finite coordinates.
+     */
+    @Test
+    void waterfallConnectorEmitsCompleteFiniteAssembly() {
+        java.nio.FloatBuffer buffer = org.lwjgl.BufferUtils.createFloatBuffer(13 * 56);
+        java.nio.IntBuffer indices = org.lwjgl.BufferUtils.createIntBuffer(13 * 6);
+
+        Block.writeWaterfallConnector(buffer, indices, 3, 40, 5, 0.875f, -1.45f, 0.9f);
+
+        assertEquals(13 * 56, buffer.position());
+        assertEquals(13 * 6, indices.position());
+        for (int i = 0; i < buffer.position(); i++) {
+            assertFalse(Float.isNaN(buffer.get(i)), "NaN at vertex float " + i);
+        }
+    }
+
+    @Test
+    void weakLateralCadenceOpensAfterItsWindow() {
+        WorldChunk chunk = chunk(0, 0);
+        chunk.setWaterLevel(4, 6, 4, 4);
+
+        // First sighting loiters, then spreads on each window expiry.
+        assertFalse(chunk.lateralFlowTurn(4, 6, 4, 10));
+        assertFalse(chunk.lateralFlowTurn(4, 6, 4, 11));
+        assertFalse(chunk.lateralFlowTurn(4, 6, 4, 13));
+        assertTrue(chunk.lateralFlowTurn(4, 6, 4, 14), "window never opened");
+        assertFalse(chunk.lateralFlowTurn(4, 6, 4, 15));
+        assertTrue(chunk.lateralFlowTurn(4, 6, 4, 18), "cadence went one-shot");
+
+        // Epoch recycling keeps counting, never sticks open or shut.
+        assertFalse(chunk.lateralFlowTurn(4, 6, 5, 126));   // arms at 4(130)
+        assertFalse(chunk.lateralFlowTurn(4, 6, 5, 1));     // delta 3 across wrap
+        assertTrue(chunk.lateralFlowTurn(4, 6, 5, 4));      // opens on schedule
+    }
+
+    /**
+     * Integration: a source-fed channel races outward at full speed until
+     * the head weakens; the last rings arrive only ring-by-ring, opening
+     * once per cadence window instead of soaking the corridor in one wash.
+     */
+    @Test
+    void sourceFedChannelCreepsItsWeakTailRingByRing() {
+        WorldChunk chunk = chunk(0, 0);
+        World.chunks.add(chunk);
+        for (int x = 1; x <= 13; x++) {
+            for (int z = 2; z <= 6; z++) {
+                chunk.blocks[WorldChunk.blockIndex(x, 5, z)] = (byte) Block.STONE;
+            }
+        }
+        chunk.setWaterLevel(5, 6, 4, 8);
+
+        // Legs down to a level-5 emitter run ungated: source(8)->7->6->5.
+        for (int i = 0; i < 4; i++) {
+            World.processGlobalWaterUpdates(1 << 20);
+        }
+        assertTrue(chunk.waterLevel(8, 6, 4) > 0, "strong head stalled too early");
+
+        // The level-5 emitter's ring and everything past it wait a window.
+        World.processGlobalWaterUpdates(1 << 20);
+        World.processGlobalWaterUpdates(1 << 20);
+        World.processGlobalWaterUpdates(1 << 20);
+        assertEquals(0, chunk.waterLevel(9, 6, 4), "weak tail ran a full wash");
+        for (int i = 0; i < 20; i++) {
+            World.processGlobalWaterUpdates(1 << 20);
+        }
+        assertTrue(chunk.waterLevel(9, 6, 4) > 0, "weak tail never arrived");
+        assertTrue(chunk.waterLevel(10, 6, 4) > 0, "cadence froze the front");
+    }
+
+    /**
+     * No corner may ever rise above the tallest wet column it touches: that
+     * was the bank-climbing bump, where two shallow films stacked into a
+     * corner higher than the water feeding them.
+     */
+    @Test
+    void cornerNeverExceedsItsTallestColumn() {
+        WorldChunk chunk = chunk(0, 0);
+        chunk.setWaterLevel(4, 6, 4, 3);
+        chunk.setWaterLevel(4, 6, 5, 3);
+        chunk.setWaterLevel(5, 6, 4, 2);
+
+        // Highest participating surface: level 3 = 0.55.
+        float corner = chunk.waterCornerHeight(5, 6, 5);
+        assertTrue(corner <= WorldChunk.waterSurfaceHeight(3) + 0.0001f);
     }
 
     /**
@@ -519,5 +832,209 @@ class WaterSimulationTest {
 
         assertTrue(late.waterLevel(0, 6, 4) > 0,
                 "boundary replay failed to carry seam water into the loaded neighbour");
+    }
+
+    @Test
+    void waterDroppingOverALedgeLandsWithFullHeightAgain() {
+        WorldChunk chunk = chunk(0, 0);
+        // Terrace floor at y=4 (x=1..4); the ground below the lip drops to y=2.
+        for (int x = 1; x <= 4; x++) {
+            chunk.blocks[WorldChunk.blockIndex(x, 4, 4)] = (byte) Block.STONE;
+        }
+        for (int x = 4; x <= 7; x++) {
+            chunk.blocks[WorldChunk.blockIndex(x, 2, 4)] = (byte) Block.STONE;
+        }
+        // A stream that has faded to mid strength as it crosses the terrace.
+        chunk.setWaterLevel(1, 5, 4, 8);
+        World.enqueueWaterUpdate(1, 5, 4);
+
+        World.processWaterUpdates(300);
+
+        // The lip cell spilled thinner than full (5 reached (4,5), 4 at (5,5)),
+        // but the drop itself recharges: the whole fall column and the plunge
+        // pool at its foot arrive at full flow height, not the faded level.
+        assertEquals(7, chunk.waterLevel(5, 4, 4),
+                "falling water kept the thin stream's level instead of recharging");
+        assertEquals(7, chunk.waterLevel(5, 3, 4),
+                "plunge pool did not land at full height");
+
+        // And it stays there: the trickle feeding the drop must support the
+        // recharged column instead of rotting it back down tick by tick.
+        World.processWaterUpdates(300);
+        assertEquals(7, chunk.waterLevel(5, 3, 4),
+                "recharged plunge pool decayed despite continuing feed");
+        assertEquals(7, chunk.waterLevel(5, 4, 4),
+                "waterfall column decayed despite continuing feed");
+    }
+
+    /**
+     * Spill contact weld: every lattice corner touching a bank that carries
+     * water over its brim must meet the bank's top, whichever side spills.
+     * A one-block hole's walls are banks too, so the rule is symmetric --
+     * north, south, east, west all weld; the far edge of each lower sheet
+     * keeps its level-derived height.
+     */
+    @Test
+    void brimmingBankWeldsEveryTouchingCornerOnAllFourSides() {
+        WorldChunk chunk = chunk(0, 0);
+        chunk.blocks[WorldChunk.blockIndex(5, 5, 5)] = (byte) Block.STONE;
+        chunk.setWaterLevel(5, 6, 5, 5);     // feed brimming the bank's brim
+        chunk.setWaterLevel(6, 5, 5, 4);     // east lower sheet
+        chunk.setWaterLevel(4, 5, 5, 4);     // west
+        chunk.setWaterLevel(5, 5, 6, 4);     // +z
+        chunk.setWaterLevel(5, 5, 4, 4);     // -z
+
+        // All four lattice corners of the bank touch both the bank and a
+        // lower sheet: each meets the bank top exactly.
+        assertEquals(1.0f, chunk.waterCornerHeight(5, 5, 5), 0.0001f);
+        assertEquals(1.0f, chunk.waterCornerHeight(6, 5, 5), 0.0001f);
+        assertEquals(1.0f, chunk.waterCornerHeight(5, 5, 6), 0.0001f);
+        assertEquals(1.0f, chunk.waterCornerHeight(6, 5, 6), 0.0001f);
+
+        // The east sheet's far edge is untouched: level 4 votes 0.65.
+        assertEquals(0.65f, chunk.waterCornerHeight(7, 5, 5), 0.0001f);
+
+        // Pull the feed back and the weld releases: an ordinary dry bank
+        // still votes nothing, so the shared corners sag to the flow mean.
+        chunk.setWaterLevel(5, 6, 5, 0);
+        assertEquals(0.65f, chunk.waterCornerHeight(5, 5, 5), 0.0001f);
+        assertEquals(0.65f, chunk.waterCornerHeight(6, 5, 5), 0.0001f);
+    }
+
+    /**
+     * The bank probe reads (x, y, z) -- unequal coordinates would sail past
+     * a transposed lookup: the bank sits at z=10 while the buggy probe
+     * would interrogate y=10 in vain and vote the bank dry and open.
+     */
+    @Test
+    void brimmingBankProbeUsesRealHeightsNotTransposedCoordinates() {
+        WorldChunk chunk = chunk(0, 0);
+        chunk.blocks[WorldChunk.blockIndex(3, 6, 10)] = (byte) Block.STONE;
+        chunk.setWaterLevel(3, 7, 10, 5);    // feed brimming the bank's brim
+        chunk.setWaterLevel(4, 6, 10, 4);    // east lower sheet
+
+        assertEquals(1.0f, chunk.waterCornerHeight(4, 6, 10), 0.0001f);
+    }
+
+    /**
+     * A wall two blocks tall with its pond seated on top: the crest row
+     * beside the bank reads dry masonry, but the feed sits two rows up.
+     * The corner at the pool's back edge must still reach the wall top.
+     */
+    @Test
+    void pondAtopTallerWallWeldsPoolBackEdge() {
+        WorldChunk chunk = chunk(0, 0);
+        chunk.blocks[WorldChunk.blockIndex(5, 5, 5)] = (byte) Block.STONE;
+        chunk.blocks[WorldChunk.blockIndex(5, 6, 5)] = (byte) Block.STONE;
+        chunk.setWaterLevel(6, 5, 5, 4);     // lower pool at the wall foot
+
+        // Pond absent: dry masonry above the foot. No lift.
+        assertEquals(0.65f, chunk.waterCornerHeight(6, 5, 5), 0.0001f);
+
+        // Pond seated two rows up, crowning the taller wall.
+        chunk.setWaterLevel(5, 7, 5, 5);
+        assertEquals(1.0f, chunk.waterCornerHeight(6, 5, 5), 0.0001f);
+    }
+
+    /**
+     * The feed slab reaches a bench pond sitting two columns back and a
+     * row up, but water perched five rows above a cliff face is another
+     * world's business and must not drag the pool's rim up.
+     */
+    @Test
+    void feedSlabReachesBackBenchButStopsBelowCliffPonds() {
+        WorldChunk chunk = chunk(0, 0);
+        chunk.blocks[WorldChunk.blockIndex(5, 5, 5)] = (byte) Block.STONE;
+        chunk.blocks[WorldChunk.blockIndex(5, 6, 5)] = (byte) Block.STONE;
+        chunk.setWaterLevel(6, 5, 5, 4);     // lower pool at the wall foot
+
+        assertEquals(0.65f, chunk.waterCornerHeight(6, 5, 5), 0.0001f);
+
+        // Bench pond two columns back, a row up the slope: in the slab.
+        chunk.setWaterLevel(5, 6, 7, 5);
+        assertEquals(1.0f, chunk.waterCornerHeight(6, 5, 5), 0.0001f);
+
+        // Swap to a pond only a tall cliff could hold: window misses it.
+        chunk.setWaterLevel(5, 6, 7, 0);
+        chunk.blocks[WorldChunk.blockIndex(5, 7, 5)] = (byte) Block.STONE;
+        chunk.blocks[WorldChunk.blockIndex(5, 8, 5)] = (byte) Block.STONE;
+        chunk.blocks[WorldChunk.blockIndex(5, 9, 5)] = (byte) Block.STONE;
+        chunk.setWaterLevel(5, 10, 5, 5);
+        assertEquals(0.65f, chunk.waterCornerHeight(6, 5, 5), 0.0001f);
+    }
+
+    /**
+     * Resting reservoir water never earns waterfall decoration: static
+     * benches around a dug hollow were draping curtains over every pillar
+     * like laundry. Flow over the same benches still spills freely.
+     */
+    @Test
+    void reservoirBenchesDrapeNoCurtainsButFlowStillDoes() {
+        WorldChunk chunk = chunk(0, 0);
+        for (int y = 0; y <= 2; y++) {
+            for (int x = 5; x <= 6; x++) {
+                chunk.blocks[WorldChunk.blockIndex(x, y, 4)] = (byte) Block.STONE;
+            }
+        }
+        chunk.blocks[WorldChunk.blockIndex(6, 0, 5)] = (byte) Block.STONE;
+        int[] dirs = new int[4];
+        float[] landings = new float[4];
+
+        chunk.setWaterLevel(5, 3, 4, 1);
+        chunk.setWaterLevel(6, 3, 4, 1);     // reservoir bench over a pit
+        assertEquals(0, chunk.collectStepCurtains(6, 3, 4, dirs, landings),
+                "resting reservoir spilled a curtain");
+
+        chunk.setWaterLevel(5, 3, 4, 6);
+        chunk.setWaterLevel(6, 3, 4, 6);     // same bench, live flow
+        assertTrue(chunk.collectStepCurtains(6, 3, 4, dirs, landings) > 0,
+                "live flow lost its rightful curtain");
+    }
+
+    /**
+     * The shore-placed column that spread into a full block over a dug
+     * pit: its feet ride the pool's row but wear more water above, so the
+     * old sampler let them vote nothing and the pool's near corners sagged
+     * into a missed stitch. A covered water column is a wet step wall --
+     * the pool's back corners weld to its face.
+     */
+    @Test
+    void poolStitchesToCoveredWaterStepNotJustStone() {
+        WorldChunk chunk = chunk(0, 0);
+        for (int x = 5; x <= 7; x++) {
+            for (int z = 4; z <= 5; z++) {
+                chunk.blocks[WorldChunk.blockIndex(x, 4, z)] = (byte) Block.STONE;
+            }
+        }
+        chunk.setWaterLevel(6, 5, 5, 4);     // low pool in front
+        chunk.setWaterLevel(5, 5, 5, 1);     // step's wet foot, same row
+        chunk.setWaterLevel(5, 6, 5, 1);     // ...covered by its own body
+
+        assertEquals(1.0f, chunk.waterCornerHeight(6, 5, 5), 0.0001f);
+
+        // Unstack the step: an open same-row neighbour is just a slope.
+        chunk.setWaterLevel(5, 6, 5, 0);
+        assertEquals(0.60f, chunk.waterCornerHeight(6, 5, 5), 0.0001f);
+    }
+
+    /**
+     * The image-3 fixture: a wall spans a lower pool, and the spilling
+     * pond sits one row BACK from the brim -- the cell directly above the
+     * wall column reads dry. Flow crossing toward the lip is still a
+     * spill, so the corner touching that wall must weld to its top.
+     */
+    @Test
+    void flowApproachingTheBrimFromBehindStillWelds() {
+        WorldChunk chunk = chunk(0, 0);
+        chunk.blocks[WorldChunk.blockIndex(5, 5, 5)] = (byte) Block.STONE;
+        chunk.setWaterLevel(6, 5, 5, 4);     // east lower sheet at wall foot
+        chunk.setWaterLevel(5, 5, 6, 4);     // south lower sheet
+
+        // Crest dry: nothing above the wall, nothing behind it.
+        assertEquals(0.65f, chunk.waterCornerHeight(6, 5, 5), 0.0001f);
+
+        // Pond one row back and a step up -- classic over-the-bank feed.
+        chunk.setWaterLevel(5, 6, 6, 5);
+        assertEquals(1.0f, chunk.waterCornerHeight(6, 5, 5), 0.0001f);
     }
 }

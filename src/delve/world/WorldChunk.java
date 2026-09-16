@@ -204,6 +204,41 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         return waterLevels[blockIndex(x, y, z)] & 0xFF;
     }
 
+    /*
+     * Flow cadence for ambient spread. Weak-headed cells spread sideways at
+     * most once every few global-pass epochs -- oozing like seepage instead
+     * of flash-soaking the neighborhood at once -- while strong heads and
+     * queued (player-driven) water keep acting immediately. Pure tempo: the
+     * fixed point and every reached cell are unchanged; only when.
+     */
+    private transient byte[] lateralFlowClock;
+    private static final int LATERAL_PAUSE_EPOCHS = 4;
+
+    /**
+     * Claims this cell's spread turn. False = hold; true = spread now.
+     * First sighting loiters one window, then each window expiry grants
+     * one spread burst. Clock is the low 7 bits of the epoch counter, so
+     * it recycles every 128 slices; a recycled collision only ever mis-times
+     * a seepage beat, which is scenery tempo, not state.
+     */
+    boolean lateralFlowTurn(int x, int y, int z, int epoch) {
+        if (lateralFlowClock == null) {
+            lateralFlowClock = new byte[waterLevels.length];
+        }
+        int index = blockIndex(x, y, z);
+        int stored = lateralFlowClock[index] & 0x7F;
+        if (stored == 0) {
+            lateralFlowClock[index] = (byte) (((byte) (epoch + LATERAL_PAUSE_EPOCHS)) & 0x7F | 0x00);
+            return false;
+        }
+        int delta = (stored - (epoch & 0x7F) + 128) & 0x7F;
+        if (delta >= 1 && delta <= LATERAL_PAUSE_EPOCHS) {
+            return false;   // window still closing
+        }
+        lateralFlowClock[index] = (byte) (((epoch + LATERAL_PAUSE_EPOCHS) & 0x7F));
+        return true;
+    }
+
     public boolean setWaterLevel(int x, int y, int z, int level) {
         int index = blockIndex(x, y, z);
         int old = waterLevels[index] & 0xFF;
@@ -2258,6 +2293,8 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
             int faceCount = 0;
             int blockCount = 0;
             boolean transparentBlocks = false;
+            int[] curtainDirs = new int[4];
+            float[] curtainLandings = new float[4];
             for (int i = 0; i < sizeX; i++) {
                 for (int j = 0; j < ceiling; j++) {
                     for (int k = 0; k < sizeZ; k++) {
@@ -2271,7 +2308,12 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                                     faceCount += 8; // centered closed rock mesh (octahedron)
                                 }
                             } else {
-                                faceCount += computeExposedFaces(voxels, i, j, k, EXPOSED_FACES);
+                                int exposed = computeExposedFaces(voxels, i, j, k, EXPOSED_FACES);
+                                faceCount += exposed;
+                                if (exposed > 0 && type == Block.WATER) {
+                                    faceCount += waterConnectorFaces(i, j, k, voxels,
+                                            curtainDirs, curtainLandings);
+                                }
                             }
                             blockCount++;
                         }
@@ -2330,6 +2372,15 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
                                 fillWaterCornerHeights(i, j, k, waterTopHeights);
                                 Block.writeWaterCube(buffer, indices, i, j, k,
                                         EXPOSED_FACES, this, waterTopHeights);
+                                int curtainCount = collectStepCurtains(i, j, k,
+                                        curtainDirs, curtainLandings);
+                                float fallLight = Math.max(
+                                        lightAt(i, j, k), lightAt(i, j - 1, k)) / 15.0f;
+                                for (int c = 0; c < curtainCount; c++) {
+                                    Block.writeWaterfallCurtain(buffer, indices,
+                                            i, j, k, curtainDirs[c], curtainLandings[c],
+                                            fallLight);
+                                }
                             } else {
                                 Block.writeCube(buffer, indices, i, j, k,
                                         EXPOSED_FACES, type, this);
@@ -2442,51 +2493,295 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         out[3] = waterCornerHeight(x + 1, y, z + 1);
     }
 
+    /**
+     * The surface-tension law for one shared lattice corner, sampled from
+     * the same four columns by every incident cell (crisp across blocks
+     * and chunks). Each column presents exactly one of:
+     *  - a cohesion vote: an open water surface, averaged so unequal
+     *    levels meet in an honest slope rather than a step or a tent;
+     *  - a tension vertex: something a wet edge should cling to -- water
+     *    wearing its own body (a step wall of water), a stone bank with
+     *    feed riding or overlooking its brim, a one-row overhang drip, a
+     *    source brim -- which forces the corner to meet it exactly;
+     *  - nothing: bare dry stone, an open hole, or an unknown column.
+     *    Dry material offers no vertex to join, so lakes hug water and
+     *    spills, never every shoreline.
+     */
     float waterCornerHeight(int cornerX, int y, int cornerZ) {
-        int generatedSurfaces = 0;
-        float flowingHeight = 0.0f;
-        boolean surfaceSeen = false;
+        float sum = 0.0f;
+        int wetSurfaces = 0;
         int unknownColumns = 0;
+        boolean hasFullWater = false;
+        boolean tensionWeld = false;
         for (int dx = -1; dx <= 0; dx++) {
             for (int dz = -1; dz <= 0; dz++) {
                 int cx = cornerX + dx;
                 int cz = cornerZ + dz;
-                int level = seamPaved
-                        ? waterLevelAtOrUnknown(cx, y, cz)
-                        : waterLevelAt(cx, y, cz);
+                int level = waterLevelAtOrUnknown(cx, y, cz);
                 if (level < 0) {
                     unknownColumns++;
                     continue;
                 }
-                if (waterLevelAt(cx, y + 1, cz) != 0) {
+                if (level > 0) {
+                    if (waterLevelAt(cx, y + 1, cz) != 0) {
+                        // Tension vertex: a water column wearing its own
+                        // body is a step wall of water; the lower sheet
+                        // clings to its face rather than sagging beside it.
+                        tensionWeld = true;
+                        continue;
+                    }
+                    if (level == 8) {
+                        hasFullWater = true;
+                        sum += 1.0f;
+                    } else {
+                        sum += waterSurfaceHeight(level);
+                    }
+                    wetSurfaces++;
                     continue;
                 }
-                if (level == 8) {
-                    return 1.0f;
+                // Dry. Tension vertex only when soaked: a bank with feed
+                // riding or overlooking its brim is part of a spill and
+                // its top is a joinable vertex; any edge can qualify, and
+                // an ordinary dry shoreline still offers nothing.
+                if (solidHere(cx, y, cz)) {
+                    if (feedAboveBrim(cx, cz, y)) {
+                        tensionWeld = true;
+                    }
+                    continue;
                 }
-                if (level == 1) {
-                    surfaceSeen = true;
-                    generatedSurfaces++;
-                } else if (level > 1 && level < 8) {
-                    surfaceSeen = true;
-                    flowingHeight = Math.max(flowingHeight, waterSurfaceHeight(level));
+
+                // Tension vertex for a one-row overhang drip: the sheet
+                // under it glues to the dripping water's underside. Taller
+                // shafts earn dedicated connector geometry instead, so the
+                // surface never tents after far-away water.
+                int k = waterfallColumnAbove(cx, cz, y);
+                if (k == 1) {
+                    tensionWeld = true;
                 }
             }
         }
-        // Pavement: while a neighbour's water field is unreadable, its lattice
-        // columns count as generated-water continuations of this corner rather
-        // than as dry ground, whenever a readable column proves the corner is
-        // a water surface. Both sides of the seam then derive matching corner
-        // heights, and the boundary replay queued at publish settles the
-        // levels into the exact values. Without this, the chunk that builds
-        // first bakes a dry trough where its neighbour will bake a surface --
-        // the crack along the edge.
-        if (seamPaved && surfaceSeen) {
-            generatedSurfaces += unknownColumns;
+        if (wetSurfaces == 0) {
+            return 0.0f;
         }
-        float generatedHeight = generatedSurfaces == 0
-                ? 0.0f : 0.55f + generatedSurfaces * 0.10f;
-        return Math.max(generatedHeight, flowingHeight);
+        if (hasFullWater) {
+            // A brim shared with plain water keeps full height: the trough
+            // killer at source rims.
+            return 1.0f;
+        }
+        if (tensionWeld) {
+            // Something joinable touched this corner: meet its vertex
+            // exactly instead of blending an unreconciled gap beside it.
+            return 1.0f;
+        }
+        // Plain mean of adjacent wet surfaces: equal levels tile flat,
+        // unequal levels slope midway -- free-standing tapers survive,
+        // shorelines meet flush. Unreadable neighbour columns sag the corner
+        // unpaved and are neutralised while seam-paved; the boundary replay
+        // queued at publish settles the real values.
+        if (seamPaved) {
+            return sum / wetSurfaces;
+        }
+        return sum / (wetSurfaces + unknownColumns);
+    }
+
+    /**
+     * Rows of open, non-solid shaft between this cell and the first water
+     * directly above it, 1..4; 0 when solid or nothing is above. Unloaded
+     * ground reads as no water, conservatively.
+     */
+    private int waterfallColumnAbove(int x, int z, int y) {
+        for (int k = 1; k <= 4; k++) {
+            int yy = y + k;
+            if (yy >= sizeY || solidHere(x, yy, z)) {
+                return 0;
+            }
+            if (waterLevelAt(x, yy, z) > 0) {
+                return k;
+            }
+        }
+        return 0;
+    }
+
+    private boolean solidHere(int x, int y, int z) {
+        return y < 0 || y >= sizeY
+                || World.isSolidGlobal(worldPosX + x, y, worldPosY + z);
+    }
+
+    /**
+     * Whether credible spill feed overlooks this bank column: water on
+     * the crest, one row back, or seated on the bench a few rows up and
+     * a couple of columns back -- a bounded slab above and behind the
+     * bank. Steeper water above that window belongs to another world and
+     * cannot vote, so cliff faces keep their honest foot, and ordinary
+     * dry shorelines still vote nothing. Lift is only ever offered to
+     * corners that already touch a wet sheet.
+     */
+    private boolean feedAboveBrim(int cx, int cz, int y) {
+        for (int k = 1; k <= 4; k++) {
+            if (waterLevelAt(cx, y + k, cz) > 0) {
+                return true;
+            }
+        }
+        for (int dir = 0; dir < 4; dir++) {
+            int ox = switch (dir) {
+                case 0 -> 1;
+                case 1 -> -1;
+                default -> 0;
+            };
+            int oz = switch (dir) {
+                case 2 -> 1;
+                case 3 -> -1;
+                default -> 0;
+            };
+            for (int d = 1; d <= 2; d++) {
+                for (int k = 1; k <= 4; k++) {
+                    if (waterLevelAt(cx + ox * d, y + k, cz + oz * d) > 0) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    private static final int MAX_FALL_SCAN = 8;
+
+    /**
+     * A spring ledge: a fall's FEED, not a damp floor. Detector retained
+     * for fall-aware styling experiments; meshing no longer emits bespoke
+     * connector geometry -- the fall's own water cells render the stream.
+     * Requires water in transit (levels 2-7) somewhere down the shaft -- a
+     * resting sheet over a dug hollow is geometry trivia, not a waterfall
+     * -- and a landing at least about two cells down, so spread-flow over
+     * shallow troughs keeps its plain skin.
+     */
+    boolean springOverFall(int x, int y, int z, byte[] voxels) {
+        if (y < 3) {
+            return false;
+        }
+        if (waterLevelAt(x, y, z) == 1) {
+            return false;  // a reservoir's own rim earns no collar or plug
+        }
+        if (voxels[blockIndex(x, y - 1, z)] != 0 && waterLevelAt(x, y - 1, z) == 0) {
+            return false;   // solid: no fall here at all
+        }
+        float rel = waterfallFallRelY(x, y, z);
+        return rel <= -1.7f && lastFallHadTransit;
+    }
+
+    private boolean lastFallHadTransit;
+
+    /**
+     * Resting surface (pool skin or shaft floor) below a spring, relative
+     * to this cell's floor: scan down THROUGH flowing columns (levels 2-7
+     * are transit, not a landing) until resting water (level 1 or 8), a
+     * solid floor, or the scan budget ends. Zero means no credible fall.
+     * Also records whether any transit water stood in the shaft.
+     */
+    float waterfallFallRelY(int x, int y, int z) {
+        lastFallHadTransit = false;
+        for (int d = 1; d <= MAX_FALL_SCAN && y - d >= 0; d++) {
+            int level = waterLevelAt(x, y - d, z);
+            if (level == 1 || level == 8) {
+                return -d + waterSurfaceHeight(level);
+            }
+            if (level >= 2 && level <= 7) {
+                lastFallHadTransit = true;
+                continue;   // in transit: not a landing, keep scanning
+            }
+            int type = getBlock(x, y - d, z);
+            if (type != 0 && type != Block.WATER) {
+                return -d + 0.98f;   // dry shaft floor, skimmed
+            }
+            // Air: open shaft, keep falling.
+        }
+        return 0.0f;
+    }
+
+    private static final int CURTAIN_FACES_PER_SPILL = 2;   // 45-degree lip + falling stream
+
+    /**
+     * Connector faces this water surface cell emits: 13 for a spring's
+     * collar+stream, 2 per qualifying step-curtain edge. Both build passes
+     * call this identical pair of predicates, so the exact-fit buffers
+     * always hold the geometry.
+     */
+    private int waterConnectorFaces(int x, int y, int z, byte[] voxels,
+                                    int[] curtainDirs, float[] curtainLandings) {
+        // Spring connectors retired: the fall's own water cells render as
+        // the stream column, and tension welds close its joints. A bespoke
+        // collar/skin/cap only added a glass box around the water.
+        return collectStepCurtains(x, y, z, curtainDirs, curtainLandings)
+                * CURTAIN_FACES_PER_SPILL;
+    }
+
+    private static final int[] CURTAIN_DX = {1, -1, 0, 0};
+    private static final int[] CURTAIN_DZ = {0, 0, 1, -1};
+    // A curtain dresses a real fall only: one-row terraces tile flush on
+    // the tension law alone, so the sill below must be at least ~2 down.
+    private static final float CURTAIN_MIN_DROP = -1.5f;
+    private static final float CURTAIN_MAX_DROP = -8.6f;
+
+    /**
+     * Gap-filling spill edges: this ledge cell carries a visible surface and
+     * looks across into a bone-dry, unobstructed step that finishes its drop
+     * within a bounded scan -- a terrace edge, a dug-out brink, a pool-side
+     * shelf too far below to tile flush. Every qualifying edge gets its own
+     * spill (a pit corner has two open walls, and both need bridging, not
+     * just the deeper one). Springs own the vertical story directly beneath
+     * a cell; a cell hanging over its own open shaft (nothing supporting it)
+     * emits no curtain there -- that is the stream connector's turf. Fills
+     * dirs[0..count) / landings[0..count); returns the count, 0-4.
+     */
+    int collectStepCurtains(int x, int y, int z, int[] dirs, float[] landings) {
+        if (y < 2) {
+            return 0;
+        }
+        if (waterLevelAt(x, y, z) == 1) {
+            return 0;   // resting reservoir benches drape no waterfalls
+        }
+        if (waterLevelAt(x, y - 1, z) == 0
+                && !World.isSolidGlobal(worldPosX + x, y - 1, worldPosY + z)) {
+            return 0;   // unsupported: a shaft cell, the stream connector's own turf
+        }
+        int count = 0;
+        for (int d = 0; d < 4; d++) {
+            int nx = x + CURTAIN_DX[d];
+            int nz = z + CURTAIN_DZ[d];
+            if (waterLevelAt(nx, y, nz) != 0) {
+                continue;   // wet neighbour: the lattice surface already tiles across
+            }
+            if (World.isSolidGlobal(worldPosX + nx, y, worldPosY + nz)) {
+                continue;   // a bank, not a step
+            }
+            float rel = curtainLanding(nx, y, nz);
+            if (rel <= CURTAIN_MIN_DROP && rel >= CURTAIN_MAX_DROP) {
+                dirs[count] = d;
+                landings[count] = rel;
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /**
+     * The offset a step curtain should reach: descend a column until resting
+     * or transit water (whose surface is taken) or solid ground (skimmed just
+     * proud of its top). Zero means no landing worth bridging to -- bottomless
+     * or the very first row below already holds water, so there is no open
+     * step here.
+     */
+    private float curtainLanding(int x, int y, int z) {
+        for (int d = 1; d <= MAX_FALL_SCAN && y - d >= 0; d++) {
+            int level = waterLevelAt(x, y - d, z);
+            if (level > 0) {
+                return -d + waterSurfaceHeight(level);
+            }
+            if (World.isSolidGlobal(worldPosX + x, y - d, worldPosY + z)) {
+                return -d + 0.98f;
+            }
+        }
+        return 0.0f;
     }
 
     static float waterSurfaceHeight(int level) {
@@ -2630,14 +2925,54 @@ public class WorldChunk implements Serializable, Block.SolidityLookup {
         PENDING_MESH_BYTES.addAndGet(-this.pendingMeshBytes);
         this.pendingMeshBytes = 0;
         buildVBO(mesh);
-        if (mesh != PendingMesh.EMPTY && this.seamPaved
-                && this.seamPavedRetries < MAX_SEAM_PAVED_MESH_RETRIES) {
-            // Published on paved corners: ask for one more rebuild so exact
-            // heights bake once the neighbours publish. Bounded so a chunk
-            // permanently on the edge of the loaded region cannot rebuild in
-            // a loop; its paved mesh stands, replayed each publish.
-            this.seamPavedRetries++;
-            this.meshIsStale = true;
+        if (mesh == PendingMesh.EMPTY) {
+            return;
+        }
+        if (this.seamPaved) {
+            // A neighbourhood that finished filling in deserves a fresh
+            // rebuild budget: the earlier ones were spent waiting. Without
+            // the top-up, a chunk that burned its retries while the neighbour
+            // was still loading freezes a paved approximation forever -- a
+            // permanent dark slit across the water surface at the chunk line.
+            if (!hasIncompleteNeighbor()) {
+                this.seamPavedRetries = 0;
+            }
+            if (this.seamPavedRetries < MAX_SEAM_PAVED_MESH_RETRIES) {
+                // Published on paved corners: ask for one more rebuild so exact
+                // heights bake once the neighbours publish. Bounded so a chunk
+                // permanently on the edge of the loaded region cannot rebuild in
+                // a loop; its paved mesh stands, replayed each publish.
+                this.seamPavedRetries++;
+                this.meshIsStale = true;
+            }
+        } else {
+            // Fully readable publish: any neighbour still holding a mesh built
+            // on paved corners was approximating US. Force one correction pass
+            // for it, closing the staleness loop in the other direction.
+            markPavedNeighborsStale();
+        }
+    }
+
+    /** Wakes neighbouring chunks whose published mesh was paved over us. */
+    private void markPavedNeighborsStale() {
+        for (int dx = -1; dx <= 1; dx++) {
+            int cx = posX + dx;
+            if (cx < 0 || cx >= World.sizeX) {
+                continue;
+            }
+            for (int dz = -1; dz <= 1; dz++) {
+                if (dx == 0 && dz == 0) {
+                    continue;
+                }
+                int cz = posY + dz;
+                if (cz < 0 || cz >= World.sizeY) {
+                    continue;
+                }
+                WorldChunk neighbor = World.getChunk(cx, cz);
+                if (neighbor != null && neighbor.seamPaved) {
+                    neighbor.meshIsStale = true;
+                }
+            }
         }
     }
 

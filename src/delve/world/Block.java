@@ -538,13 +538,17 @@ public class Block implements Serializable {
         }
 
         float[] base = blockColors[type];
-        float r = base[0] + jitter(x, y, z, 1);
-        float g = base[1] + jitter(x, y, z, 2);
-        float b = base[2] + jitter(x, y, z, 3);
+        // Rock and vegetation speckle per voxel; water must not, or a single
+        // sheet tessellates into a checkerboard of tones along every cell
+        // border -- the colour seam, distinct from the geometric one.
+        boolean calmWater = type == WATER;
+        float r = base[0] + (calmWater ? 0.0f : jitter(x, y, z, 1));
+        float g = base[1] + (calmWater ? 0.0f : jitter(x, y, z, 2));
+        float b = base[2] + (calmWater ? 0.0f : jitter(x, y, z, 3));
 
         // Per-block brightness. Folded into the AO channel so it also varies the
         // textured blocks, where the palette color is ignored entirely.
-        float shade = 0.93f + jitter(x, y, z, 7) * 1.75f;
+        float shade = calmWater ? 1.0f : 0.93f + jitter(x, y, z, 7) * 1.75f;
 
         int[] tiles = BLOCK_TILES[type];
         int tintKind = biomeTintKind(type);
@@ -621,6 +625,202 @@ public class Block implements Serializable {
                     light, t3v, bottom, cornerHeight(corners[3], height, topHeights));
             indices.put(vi).put(vi + 1).put(vi + 2).put(vi + 2).put(vi + 3).put(vi);
         }
+    }
+
+    /**
+     * Connector for an active fall: a short collar throats the shaft rim,
+     * and a two-layer stream -- bright core inside fuller skin -- falls
+     * rim to pool through it. No coaxial sleeves: those read as pipes.
+     * Vertices are offsets from the ledge cell's base; poolRelY is the
+     * pool surface's (negative) offset.
+     */
+    static void writeWaterfallConnector(FloatBuffer buffer, IntBuffer indices,
+                                        int x, int y, int z,
+                                        float springTop, float poolRelY, float light) {
+        float[] base = blockColors[WATER];
+        float r = base[0], g = base[1], b = base[2];
+        float rRim = 0.52f, rThroat = 0.32f;
+        float rSkin = 0.26f, rCore = 0.15f;
+        float yThroat = Math.max(poolRelY, -0.62f);      // short collar only
+        float ySkinFoot = poolRelY - 0.32f;              // skin dunks into pool
+        float yCoreFoot = poolRelY - 0.45f;              // core plunges deeper
+        float yc = 0.12f;                                // core brightening
+
+        for (int side = 0; side < 4; side++) {
+            double a1 = Math.PI / 2.0 * side + Math.PI / 4.0;
+            double a2 = Math.PI / 2.0 * (side + 1) + Math.PI / 4.0;
+            float c1 = (float) Math.cos(a1), s1 = (float) Math.sin(a1);
+            float c2 = (float) Math.cos(a2), s2 = (float) Math.sin(a2);
+            // Collar: rim ring drawing inward to the throat (the constriction
+            // a real fall draws at its lip) -- kept short, so nothing trails
+            // through the shaft like a pipe.
+            quad(buffer, indices, x, y, z,
+                    c1 * rRim, 0.0f, s1 * rRim,
+                    c2 * rRim, 0.0f, s2 * rRim,
+                    c2 * rThroat, yThroat, s2 * rThroat,
+                    c1 * rThroat, yThroat, s1 * rThroat,
+                    c1, -0.45f, s1,
+                    r, g, b, 0.95f, light,
+                    0.5f + c1 * 0.5f, 0.0f, 0.5f + c2 * 0.5f,
+                    Math.min(1.0f, -yThroat * 0.8f));
+            // Stream skin: the fall's body, rim to below the pool surface.
+            quad(buffer, indices, x, y, z,
+                    c1 * rSkin, springTop, s1 * rSkin,
+                    c2 * rSkin, springTop, s2 * rSkin,
+                    c2 * rSkin, ySkinFoot, s2 * rSkin,
+                    c1 * rSkin, ySkinFoot, s1 * rSkin,
+                    c1 * 0.6f, 0.8f, s1 * 0.6f,
+                    r, g, b, 1.0f, light,
+                    0.5f + c1 * 0.5f, 0.0f, 0.5f + c2 * 0.5f,
+                    Math.min(1.0f, (springTop - ySkinFoot) * 0.5f));
+            // Bright core: sightlines stack skin+core+skin into heavy water.
+            quad(buffer, indices, x, y, z,
+                    c1 * rCore, springTop * 0.98f, s1 * rCore,
+                    c2 * rCore, springTop * 0.98f, s2 * rCore,
+                    c2 * rCore, yCoreFoot, s2 * rCore,
+                    c1 * rCore, yCoreFoot, s1 * rCore,
+                    c1 * 0.6f, 0.8f, s1 * 0.6f,
+                    Math.min(1.0f, r + yc), Math.min(1.0f, g + yc),
+                    Math.min(1.0f, b + yc), 1.0f, light,
+                    0.5f + c1 * 0.5f, 0.0f, 0.5f + c2 * 0.5f,
+                    Math.min(1.0f, (springTop - yCoreFoot) * 0.5f));
+        }
+        // Throat cap the stream passes through.
+        quad(buffer, indices, x, y, z,
+                -rThroat, yThroat, -rThroat,
+                rThroat, yThroat, -rThroat,
+                rThroat, yThroat, rThroat,
+                -rThroat, yThroat, rThroat,
+                0.0f, -1.0f, 0.0f,
+                r, g, b, 0.85f, light,
+                0.5f, 0.0f, 0.5f, 0.5f);
+    }
+
+    private static final float CURTAIN_LIP = 0.42f;   // ~45 degrees: out equals drop
+
+    /**
+     * Two-quad spill closing a step between water cells: a short lip tilts
+     * outward at roughly 45 degrees from this cell's flat floor edge (y=0,
+     * the same edge every ordinary side face already ends at -- not the
+     * sloped water-surface corners, so nothing overlaps the block's own side
+     * face and z-fights it), then a vertical stream falls from the lip's
+     * outer edge down to the landing. Offsetting the stream past the cell
+     * boundary also keeps it off whatever solid wall's own face sits exactly
+     * on that boundary plane one row down.
+     */
+    static void writeWaterfallCurtain(FloatBuffer buffer, IntBuffer indices,
+                                      int x, int y, int z, int dir,
+                                      float landingRel, float light) {
+        float[] base = blockColors[WATER];
+        float r = base[0], g = base[1], b = base[2];
+        // The lip cannot punch through a landing shallower than its own drop.
+        float lipDrop = Math.min(CURTAIN_LIP, -landingRel);
+        // Half-projection: a full 0.42 cantilever reads as a sail from
+        // pond level; half keeps the fall's silhouette without the wing.
+        float lipOut = lipDrop * 0.5f;
+        float vLenLip = Math.min(1.0f, lipDrop * 1.2f);
+        float vLenStream = Math.min(1.0f, (-landingRel - lipDrop) * 0.45f);
+        float nDiag = 0.7071f;
+
+        switch (dir) {
+            case 0: // +X: lip leans out past the boundary, stream falls beyond it
+                quad(buffer, indices, x, y, z,
+                        1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 1.0f,
+                        1.0f + lipOut, -lipDrop, 1.0f, 1.0f + lipOut, -lipDrop, 0.0f,
+                        nDiag, nDiag, 0.0f, r, g, b, 0.92f, light,
+                        0.0f, 0.0f, 1.0f, vLenLip);
+                quad(buffer, indices, x, y, z,
+                        1.0f + lipOut, -lipDrop, 0.0f, 1.0f + lipOut, -lipDrop, 1.0f,
+                        1.0f + lipOut, landingRel, 1.0f, 1.0f + lipOut, landingRel, 0.0f,
+                        1.0f, 0.0f, 0.0f, r, g, b, 0.95f, light,
+                        0.0f, 0.0f, 1.0f, vLenStream);
+                break;
+            case 1: // -X
+                quad(buffer, indices, x, y, z,
+                        0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f,
+                        -lipOut, -lipDrop, 0.0f, -lipOut, -lipDrop, 1.0f,
+                        -nDiag, nDiag, 0.0f, r, g, b, 0.92f, light,
+                        0.0f, 0.0f, 1.0f, vLenLip);
+                quad(buffer, indices, x, y, z,
+                        -lipOut, -lipDrop, 1.0f, -lipOut, -lipDrop, 0.0f,
+                        -lipOut, landingRel, 0.0f, -lipOut, landingRel, 1.0f,
+                        -1.0f, 0.0f, 0.0f, r, g, b, 0.95f, light,
+                        0.0f, 0.0f, 1.0f, vLenStream);
+                break;
+            case 2: // +Z
+                quad(buffer, indices, x, y, z,
+                        1.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f,
+                        0.0f, -lipDrop, 1.0f + lipOut, 1.0f, -lipDrop, 1.0f + lipOut,
+                        0.0f, nDiag, nDiag, r, g, b, 0.92f, light,
+                        0.0f, 0.0f, 1.0f, vLenLip);
+                quad(buffer, indices, x, y, z,
+                        0.0f, -lipDrop, 1.0f + lipOut, 1.0f, -lipDrop, 1.0f + lipOut,
+                        1.0f, landingRel, 1.0f + lipOut, 0.0f, landingRel, 1.0f + lipOut,
+                        0.0f, 0.0f, 1.0f, r, g, b, 0.95f, light,
+                        0.0f, 0.0f, 1.0f, vLenStream);
+                break;
+            default: // -Z
+                quad(buffer, indices, x, y, z,
+                        0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+                        1.0f, -lipDrop, -lipOut, 0.0f, -lipDrop, -lipOut,
+                        0.0f, nDiag, -nDiag, r, g, b, 0.92f, light,
+                        0.0f, 0.0f, 1.0f, vLenLip);
+                quad(buffer, indices, x, y, z,
+                        1.0f, -lipDrop, -lipOut, 0.0f, -lipDrop, -lipOut,
+                        0.0f, landingRel, -lipOut, 1.0f, landingRel, -lipOut,
+                        0.0f, 0.0f, -1.0f, r, g, b, 0.95f, light,
+                        0.0f, 0.0f, 1.0f, vLenStream);
+                break;
+        }
+    }
+
+    private static final float WATER_U0 = BLOCK_TILES[WATER][2] / ATLAS_TILES + UV_INSET;
+    private static final float WATER_U1 = (BLOCK_TILES[WATER][2] + 1) / ATLAS_TILES - UV_INSET;
+    private static final float WATER_V0 = BLOCK_TILES[WATER][3] / ATLAS_TILES + UV_INSET;
+    private static final float WATER_V1 = (BLOCK_TILES[WATER][3] + 1) / ATLAS_TILES - UV_INSET;
+
+    /**
+     * Emits one arbitrary quad: four positions relative to the cell base,
+     * a shared normal, flat water color, AO-ish alpha and UVs whose v is a
+     * 0..1 fraction across the water tile for the falling skin.
+     */
+    private static void quad(FloatBuffer buffer, IntBuffer indices, int x, int y, int z,
+                             float x1, float y1, float z1, float x2, float y2, float z2,
+                             float x3, float y3, float z3, float x4, float y4, float z4,
+                             float nx, float ny, float nz,
+                             float r, float g, float b, float ao, float light,
+                             float ua, float va, float uc, float vc) {
+        int vi = buffer.position() / FLOATS_PER_VERTEX;
+        float uu0 = WATER_U0 + (WATER_U1 - WATER_U0) * ua;
+        float uu1 = WATER_U0 + (WATER_U1 - WATER_U0) * uc;
+        float vv0 = WATER_V0 + (WATER_V1 - WATER_V0) * Math.min(1.0f, Math.max(0.0f, va));
+        float vv1 = WATER_V0 + (WATER_V1 - WATER_V0) * Math.min(1.0f, Math.max(0.0f, vc));
+        vertex(buffer, x, y, z, x1, y1, z1, nx, ny, nz, r, g, b, ao, uu0, vv0, light);
+        vertex(buffer, x, y, z, x2, y2, z2, nx, ny, nz, r, g, b, ao, uu1, vv0, light);
+        vertex(buffer, x, y, z, x3, y3, z3, nx, ny, nz, r, g, b, ao, uu1, vv1, light);
+        vertex(buffer, x, y, z, x4, y4, z4, nx, ny, nz, r, g, b, ao, uu0, vv1, light);
+        indices.put(vi).put(vi + 1).put(vi + 2).put(vi + 2).put(vi + 3).put(vi);
+    }
+
+    private static void vertex(FloatBuffer buffer, int x, int y, int z,
+                               float ox, float oy, float oz,
+                               float nx, float ny, float nz,
+                               float r, float g, float b, float ao,
+                               float u, float v, float light) {
+        buffer.put(x + ox);
+        buffer.put(y + oy);
+        buffer.put(z + oz);
+        buffer.put(nx);
+        buffer.put(ny);
+        buffer.put(nz);
+        buffer.put(r);
+        buffer.put(g);
+        buffer.put(b);
+        buffer.put(ao);
+        buffer.put(u);
+        buffer.put(v);
+        buffer.put(light);
+        buffer.put(NO_TINT);
     }
 
     private static float cornerHeight(float[] corner, float fallback, float[] topHeights) {
